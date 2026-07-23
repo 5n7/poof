@@ -1,0 +1,43 @@
+import { Hono } from "hono";
+
+import { getLiveDocument, getLiveDocumentByShareToken } from "../lib/db";
+import { RAW_HEADERS, uniform404 } from "../lib/http";
+import { nowSeconds } from "../lib/time";
+import { verifyOwnerToken } from "../lib/tokens";
+
+/**
+ * `GET /raw/:token` — public raw document delivery (SPEC §6.2). Two token
+ * kinds: `s_` share tokens (D1-backed) and `o_` owner tokens (stateless HMAC).
+ * Every response carries the sandbox security headers; every failure is the
+ * uniform 404 so probes cannot distinguish missing/expired/revoked.
+ */
+export const rawRoutes = new Hono<{ Bindings: Env }>();
+
+// Sandbox headers belong on *every* /raw response (200 and 404 alike), so
+// apply them once here rather than per exit path — the invariant is structural.
+rawRoutes.use("*", async (c, next) => {
+	await next();
+	for (const [k, v] of Object.entries(RAW_HEADERS)) c.res.headers.set(k, v);
+});
+
+rawRoutes.get("/:token", async (c) => {
+	const token = c.req.param("token");
+	const now = nowSeconds();
+
+	let doc = null;
+	if (token.startsWith("s_")) {
+		// Share → document in one JOIN (see getLiveDocumentByShareToken).
+		doc = await getLiveDocumentByShareToken(c.env.DB, token, now);
+	} else if (token.startsWith("o_")) {
+		const documentId = await verifyOwnerToken(token, c.env.OWNER_TOKEN_SECRET, now);
+		if (documentId) doc = await getLiveDocument(c.env.DB, documentId, now);
+	}
+	if (!doc) return uniform404(c);
+
+	const obj = await c.env.BLOBS.get(doc.r2_key);
+	if (!obj) return uniform404(c);
+
+	return new Response(obj.body, {
+		headers: { "Content-Type": "text/html; charset=utf-8" },
+	});
+});
