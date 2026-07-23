@@ -2,6 +2,9 @@
 	"name": "poof",
 	"private": true,
 	"type": "module",
+	"bin": {
+		"poof": "cli/index.ts"
+	},
 	"engines": {
 		"bun": ">=1.3",
 		"node": ">=22"

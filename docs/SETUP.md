@@ -153,12 +153,16 @@ export POOF_ACCESS_CLIENT_ID=<client-id-from-service-token>
 export POOF_ACCESS_CLIENT_SECRET=<client-secret-from-service-token>
 ```
 
-Add a shell alias so `poof` runs the CLI from anywhere (replace `<repo>` with
-the absolute path to this checkout):
+Make the `poof` command available globally by linking this checkout:
 
 ```sh
-alias poof='bun <repo>/cli/index.ts'
+bun link
 ```
+
+This installs a `poof` executable into `~/.bun/bin` (make sure that directory
+is on your `PATH`); the command follows the checkout, so pulling updates is
+enough. If you prefer not to link, a shell alias works too:
+`alias poof='bun <repo>/cli/index.ts'`.
 
 Run `poof --help` to confirm the wiring.
 
