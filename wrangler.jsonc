@@ -9,14 +9,14 @@
 	"d1_databases": [{
 		"binding": "DB",
 		"database_name": "poof-db",
-		"database_id": "REPLACE_WITH_OUTPUT_OF_bootstrap.sh",
+		"database_id": "b1fbd43f-72f2-4b66-9353-680c82890405",
 		"migrations_dir": "migrations",
 	}],
 	"r2_buckets": [{ "binding": "BLOBS", "bucket_name": "poof-blobs" }],
 	"triggers": { "crons": ["0 3 * * 1"] },
 	"vars": {
-		"ACCESS_TEAM_DOMAIN": "REPLACE.cloudflareaccess.com",
-		"ACCESS_AUD": "REPLACE_WITH_ACCESS_APP_AUD",
+		"ACCESS_TEAM_DOMAIN": "5n7.cloudflareaccess.com",
+		"ACCESS_AUD": "7b1fe8269e149abe3e3c23cd11e0382543813270c5807c743a78175c5bb204ed",
 	},
 	"observability": { "enabled": true },
 }
