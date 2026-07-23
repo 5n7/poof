@@ -1,8 +1,8 @@
 # poof — Ephemeral Document Viewer & Sharing Tool
 
-*Spec v0.2 — incorporates security review decisions (CSP sandbox, unified delivery path), Mermaid support, and CLI.*
+_Spec v0.2 — incorporates security review decisions (CSP sandbox, unified delivery path), Mermaid support, and CLI._
 
-> **poof**: throw a document in, view it rendered, share it with a TTL, and it goes *poof*. Served at `poof.5n7.me` (Cloudflare, subdomain of `5n7.me`).
+> **poof**: throw a document in, view it rendered, share it with a TTL, and it goes _poof_. Served at `poof.5n7.me` (Cloudflare, subdomain of `5n7.me`).
 
 ---
 
@@ -18,7 +18,7 @@ View AI-generated design docs and memos (Markdown / HTML) **properly rendered in
 - Personal library (list view, authenticated, owner-only)
 - Per-document disposable share links (unlisted URL + TTL), with manual revocation
 - JavaScript execution inside documents (interactive charts, tabs, widgets)
-- **Mermaid rendering** in Markdown code fences (` ```mermaid `)
+- **Mermaid rendering** in Markdown code fences (`` ```mermaid ``)
 - **CLI** for headless upload/share (`poof push design.md --share`)
 
 ### Out of scope (for now)
@@ -30,10 +30,10 @@ View AI-generated design docs and memos (Markdown / HTML) **properly rendered in
 
 ## 3. Core model: two surfaces
 
-| Surface | Nature | Auth | TTL |
-|---|---|---|---|
-| **A. Library (private)** | Your documents. Persistent entities. | Yes (owner only) | Optional |
-| **B. Disposable shares** | Links to a specific document. | None (unlisted URL) | Required |
+| Surface                  | Nature                               | Auth                | TTL      |
+| ------------------------ | ------------------------------------ | ------------------- | -------- |
+| **A. Library (private)** | Your documents. Persistent entities. | Yes (owner only)    | Optional |
+| **B. Disposable shares** | Links to a specific document.        | None (unlisted URL) | Required |
 
 **Key design decision**: a share is **its own entity (`share`)**, not an attribute of a document. Share links expire or get revoked independently; multiple links per document (per recipient / per deadline) are possible; killing a share never touches the document.
 
@@ -41,12 +41,12 @@ View AI-generated design docs and memos (Markdown / HTML) **properly rendered in
 
 **Single Cloudflare stack. Everything fits the free tier.**
 
-| Role | Cloudflare service | Free tier (as of 2026) |
-|---|---|---|
-| Runtime | **Workers** | 100K req/day, 10ms CPU/req |
-| Blob storage | **R2** | 10GB, zero egress fees |
-| Metadata (document / share) | **D1** (SQLite) | 5GB, 5M row reads/day |
-| Owner auth | **Cloudflare Access** | Free up to 50 users |
+| Role                        | Cloudflare service    | Free tier (as of 2026)     |
+| --------------------------- | --------------------- | -------------------------- |
+| Runtime                     | **Workers**           | 100K req/day, 10ms CPU/req |
+| Blob storage                | **R2**                | 10GB, zero egress fees     |
+| Metadata (document / share) | **D1** (SQLite)       | 5GB, 5M row reads/day      |
+| Owner auth                  | **Cloudflare Access** | Free up to 50 users        |
 
 ### Tech stack
 
@@ -70,7 +70,7 @@ poof/
 ### Infrastructure management
 
 - `wrangler.jsonc` declares all bindings, routes, and cron triggers (committed, declarative).
-- Resource *creation* (D1 database, R2 bucket) lives in **`scripts/bootstrap.sh`** — an idempotent script (skip-if-exists) so "what should exist" stays in the repo without introducing Terraform state management. Revisit IaC (Terraform/OpenTofu) only if environments multiply.
+- Resource _creation_ (D1 database, R2 bucket) lives in **`scripts/bootstrap.sh`** — an idempotent script (skip-if-exists) so "what should exist" stays in the repo without introducing Terraform state management. Revisit IaC (Terraform/OpenTofu) only if environments multiply.
 - Cloudflare Access (apps, policies, service token) is configured once in the Zero Trust dashboard, documented step-by-step in **`docs/SETUP.md`**.
 - `workers_dev` and `preview_urls` are disabled — the default `*.workers.dev` route would bypass Access entirely. The Worker additionally validates the Access JWT (`Cf-Access-Jwt-Assertion`) as defense in depth.
 
@@ -146,10 +146,10 @@ Known UX constraints of the opaque origin (accepted): `localStorage`/`document.c
 
 A sandboxed iframe has an opaque origin, so its subresource/navigation requests are treated as cross-site and **SameSite cookies (including Access's `CF_Authorization`) are not sent**. Therefore the raw endpoint must not sit behind Access. Instead, `GET /raw/{token}` is public and validates one of two token kinds:
 
-| Prefix | Kind | Backing | Used by |
-|---|---|---|---|
-| `s_` | Share token | `share` row in D1 (checks `expires_at`, `revoked`) | Public shared view `/v/{token}` |
-| `o_` | Owner view token | Stateless HMAC-signed payload `{document_id, exp}`, TTL ~10 min, secret via `wrangler secret` | Private library viewer `/d/{id}` |
+| Prefix | Kind             | Backing                                                                                       | Used by                          |
+| ------ | ---------------- | --------------------------------------------------------------------------------------------- | -------------------------------- |
+| `s_`   | Share token      | `share` row in D1 (checks `expires_at`, `revoked`)                                            | Public shared view `/v/{token}`  |
+| `o_`   | Owner view token | Stateless HMAC-signed payload `{document_id, exp}`, TTL ~10 min, secret via `wrangler secret` | Private library viewer `/d/{id}` |
 
 The Access-protected library page mints an `o_` token when rendering the viewer, so owner viewing and public sharing go through **the exact same hot path** — one endpoint, one set of headers, no cookie problems, no second code path.
 
@@ -188,27 +188,27 @@ Free-tier Workers allow 10ms CPU per request, so rendering happens **once at upl
 ```
 
 - **Converter**: `markdown-it` (CommonMark + tables + strikethrough). No sanitizer (§6.4). Typical AI docs (tens of KB) render in well under 10ms.
-  - *Documented fallback if a doc ever blows the CPU budget*: move MD→HTML into the client (upload page renders in the browser; CLI renders locally) and POST final HTML. The API accepting `kind` and raw content makes this switch non-breaking.
+  - _Documented fallback if a doc ever blows the CPU budget_: move MD→HTML into the client (upload page renders in the browser; CLI renders locally) and POST final HTML. The API accepting `kind` and raw content makes this switch non-breaking.
 - **Viewer template** (MD only; HTML uploads are stored verbatim): minimal GitHub-flavored CSS, plus a tiny inline loader that lazily injects client-side libraries **only when needed**, keeping Worker CPU flat:
-  - **Mermaid**: ` ```mermaid ` fences render as `<pre class="mermaid">` (content escaped); loader injects mermaid.js (CDN, SRI-pinned) if `.mermaid` elements exist.
+  - **Mermaid**: `` ```mermaid `` fences render as `<pre class="mermaid">` (content escaped); loader injects mermaid.js (CDN, SRI-pinned) if `.mermaid` elements exist.
   - **Syntax highlighting**: highlight.js via the same lazy pattern if code blocks exist.
   - Both run inside the sandbox, so they are safe by construction.
 
 ## 9. HTTP surface
 
-| Route | Auth | Purpose |
-|---|---|---|
-| `GET /` | Access | Library list (newest first), upload UI |
-| `POST /api/documents` | Access (incl. service token) | Upload; body = file + title + kind; 10MB cap |
-| `GET /api/documents` | Access | List documents |
-| `DELETE /api/documents/:id` | Access | Delete document (+blob, cascades shares) |
-| `POST /api/documents/:id/shares` | Access | Issue share (TTL param) → returns `/v/{token}` URL |
-| `GET /api/documents/:id/shares` | Access | List active shares for a document |
-| `DELETE /api/shares/:token` | Access | Revoke (`revoked=1`, immediate) |
-| `GET /d/:id` | Access | Private viewer page (mints `o_` token, embeds iframe) |
-| `GET /v/:token` | none | Public shared viewer page (validates share, embeds iframe) |
-| `GET /raw/:token` | none (token is the auth) | Raw HTML blob with sandbox headers (§6) |
-| Cron (weekly) | — | Cleanup (§7) |
+| Route                            | Auth                         | Purpose                                                    |
+| -------------------------------- | ---------------------------- | ---------------------------------------------------------- |
+| `GET /`                          | Access                       | Library list (newest first), upload UI                     |
+| `POST /api/documents`            | Access (incl. service token) | Upload; body = file + title + kind; 10MB cap               |
+| `GET /api/documents`             | Access                       | List documents                                             |
+| `DELETE /api/documents/:id`      | Access                       | Delete document (+blob, cascades shares)                   |
+| `POST /api/documents/:id/shares` | Access                       | Issue share (TTL param) → returns `/v/{token}` URL         |
+| `GET /api/documents/:id/shares`  | Access                       | List active shares for a document                          |
+| `DELETE /api/shares/:token`      | Access                       | Revoke (`revoked=1`, immediate)                            |
+| `GET /d/:id`                     | Access                       | Private viewer page (mints `o_` token, embeds iframe)      |
+| `GET /v/:token`                  | none                         | Public shared viewer page (validates share, embeds iframe) |
+| `GET /raw/:token`                | none (token is the auth)     | Raw HTML blob with sandbox headers (§6)                    |
+| Cron (weekly)                    | —                            | Cleanup (§7)                                               |
 
 **Cloudflare Access configuration**: one Access application protecting `poof.5n7.me` with an allow policy (owner's Google account) **plus a service-token policy** (for the CLI), and a bypass application for `/v/*` and `/raw/*`.
 
@@ -251,17 +251,17 @@ $0/month realistic. All components in free tiers; R2 egress is free. Only real c
 
 ## 14. Decision summary
 
-| Item | Decision |
-|---|---|
-| Share model | Unlisted URL + TTL; `share` as its own entity; revocation in initial scope |
+| Item              | Decision                                                                                                                                                      |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Share model       | Unlisted URL + TTL; `share` as its own entity; revocation in initial scope                                                                                    |
 | Security boundary | **CSP `sandbox allow-scripts allow-popups` response header** on `/raw/*` (primary) + iframe `sandbox` attribute (defense in depth); never `allow-same-origin` |
-| Delivery path | Single public `/raw/{token}` endpoint; `s_` share tokens (D1) + `o_` owner tokens (HMAC, ~10 min) |
-| Sanitization | None; all docs treated as untrusted blobs, sandbox is the boundary |
-| Rendering | Write-time `markdown-it` in the Worker; Mermaid + highlight.js lazily loaded client-side inside the sandbox |
-| Errors | Uniform 404 for missing/expired/revoked |
-| Tokens | `crypto.getRandomValues`, 128-bit, base64url |
-| Auth | Cloudflare Access (`/` + API); service token for CLI; bypass on `/v/*` `/raw/*` |
-| Infra / stack | Cloudflare Workers + R2 + D1 + Access; TypeScript + Hono + wrangler + vitest-pool-workers |
-| Provisioning | Idempotent `scripts/bootstrap.sh` + `docs/SETUP.md`; no Terraform until environments multiply; `workers_dev` disabled; Access JWT verified in-Worker |
-| TTL defaults | Library: none; shares: 1 day (1h/1d/1w selectable) |
-| Headers | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex` on viewer/raw paths |
+| Delivery path     | Single public `/raw/{token}` endpoint; `s_` share tokens (D1) + `o_` owner tokens (HMAC, ~10 min)                                                             |
+| Sanitization      | None; all docs treated as untrusted blobs, sandbox is the boundary                                                                                            |
+| Rendering         | Write-time `markdown-it` in the Worker; Mermaid + highlight.js lazily loaded client-side inside the sandbox                                                   |
+| Errors            | Uniform 404 for missing/expired/revoked                                                                                                                       |
+| Tokens            | `crypto.getRandomValues`, 128-bit, base64url                                                                                                                  |
+| Auth              | Cloudflare Access (`/` + API); service token for CLI; bypass on `/v/*` `/raw/*`                                                                               |
+| Infra / stack     | Cloudflare Workers + R2 + D1 + Access; TypeScript + Hono + wrangler + vitest-pool-workers                                                                     |
+| Provisioning      | Idempotent `scripts/bootstrap.sh` + `docs/SETUP.md`; no Terraform until environments multiply; `workers_dev` disabled; Access JWT verified in-Worker          |
+| TTL defaults      | Library: none; shares: 1 day (1h/1d/1w selectable)                                                                                                            |
+| Headers           | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex` on viewer/raw paths                                                                                   |

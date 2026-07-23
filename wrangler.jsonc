@@ -1,0 +1,22 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "poof",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-07-01",
+	"workers_dev": false,
+	"preview_urls": false,
+	"routes": [{ "pattern": "poof.5n7.me", "custom_domain": true }],
+	"d1_databases": [{
+		"binding": "DB",
+		"database_name": "poof-db",
+		"database_id": "REPLACE_WITH_OUTPUT_OF_bootstrap.sh",
+		"migrations_dir": "migrations",
+	}],
+	"r2_buckets": [{ "binding": "BLOBS", "bucket_name": "poof-blobs" }],
+	"triggers": { "crons": ["0 3 * * 1"] },
+	"vars": {
+		"ACCESS_TEAM_DOMAIN": "REPLACE.cloudflareaccess.com",
+		"ACCESS_AUD": "REPLACE_WITH_ACCESS_APP_AUD",
+	},
+	"observability": { "enabled": true },
+}

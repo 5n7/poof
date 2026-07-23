@@ -1,0 +1,4 @@
+ACCESS_AUD=your-access-app-aud-tag
+ACCESS_TEAM_DOMAIN=your-team.cloudflareaccess.com
+DEV_DISABLE_ACCESS=1
+OWNER_TOKEN_SECRET=dev-secret-change-me
