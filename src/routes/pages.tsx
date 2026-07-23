@@ -11,6 +11,13 @@ type Ctx<P extends string = string> = Context<{ Bindings: Env }, P>;
 const ACCENT = "oklch(0.68 0.17 52)";
 const ACCENT_HOVER = "oklch(0.62 0.17 52)";
 
+// Inlined as data URIs so the icon also loads on /v/* pages, where anonymous
+// visitors could not fetch a favicon path sitting behind Cloudflare Access.
+const FAVICON_SVG =
+	"data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2096%2096'%3E%3Crect%20width='96'%20height='96'%20rx='24'%20fill='%231a1a1e'/%3E%3Ctext%20x='26'%20y='60'%20font-family='ui-monospace,Menlo,SF%20Mono,Consolas,monospace'%20font-weight='650'%20font-size='54'%20fill='%23fff'%3Ep%3C/text%3E%3Ccircle%20cx='66'%20cy='52'%20r='8'%20fill='%23e8823f'/%3E%3C/svg%3E";
+const FAVICON_PNG =
+	"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAC40lEQVR4AcxWX0iTURT/bW3lwinZg6G2lQ/9eRBJe1IkB1pPQhhCkW+SRgQ99qC5jYGkoPXQW++BD5EJmj5tezQIIZfENrYoEYTY6GHNjbWvcy6fN76xzblvbY577j33nO/+fr97d74/RuT82tou9Le02FytrXYvjUolTMVy5VCJqUYAkbmy2ayXMk5FUfpprEhTsZyEzxvSCJECKMkJZ0UYi4OwEOYSVwkBVSQXpNRJEUIAB8iq3Zxcb0Z199UmF3xUb/1Gg8FwQ8xq0DG3Ua3QGtADzH1QAzURwKTHW4DFYsH29mdhy8vvMDs7g3D4K3Z2vmFraxO9vT28CV1W9ARMJhMaGxuFdXd3YXT0PlgUFQ+ampqwuPgGdrvt/wnIRU6n01hZ+YBMJiNSLMTjcQu/3K7oCeSCDg3dxvj4Q0xOPpOpzs5O6ZfjlCyAdx0IfBEcq6trYuSuocHKg8barAbcungCV88eDn/4FSo03bOqBySTSenz3yAn5IxcMcF7z4JXg6ewfKcOT66bKVq4lSzAbDbDZjsvkAYHB8TIXSKR4EHaVM9J6bPzuMsMe0NhmsIZXp1jS0tvMTHxAHNzz2UmGo1K/0ydAadNciqdc/UG6ec6RxLQ3NyM6ekpWK31EsfjmZF+fF9B4GdWztlJ03Rz7w+7ea1kAfF4HJFIRAMyP/8CGxsfNbGnvjQ+7RErRaO/FDxaTyFdmB8lC+Ai7OtzwOEYwNjYONrbL2Fh4SXRaFswlsXd9/u4/Po3bi4m4f9RhJ2WliyArhUtGAxhbW0dqVRKzAt1WaVQRhs/sgDtcv2zogL44ROLxcAWCoX1s+VBKCqAHzgdHdfANjw8kme5/hB/kvn0w5SHQE9RH3+S+ctbrn8V3Vl+I/1qdgK7u99dRvq6YQH6XurlHYbgFEXISghDBGisRnOrnP+ehGqgGiIkOe9UnAA7bCyCjF9dbq5Qjuk1Xq9iuaneHITv4tiB/QUAAP//NJmctQAAAAZJREFUAwAtzvtXfUxb5gAAAABJRU5ErkJggg==";
+
 const PAGE_CSS = `
 html, body { height: 100%; }
 body { margin: 0; background: #fafafa; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; color: #1a1a1e; }
@@ -287,6 +294,8 @@ const Layout: FC<PropsWithChildren<{ title: string }>> = ({ title, children }) =
 		<head>
 			<meta charset="utf-8" />
 			<meta name="viewport" content="width=device-width, initial-scale=1" />
+			<link rel="icon" type="image/png" sizes="32x32" href={FAVICON_PNG} />
+			<link rel="icon" type="image/svg+xml" href={FAVICON_SVG} />
 			<title>{title}</title>
 			<style dangerouslySetInnerHTML={{ __html: PAGE_CSS }} />
 		</head>
