@@ -225,6 +225,15 @@ async function openModal(docId, docTitle) {
 window.addEventListener("keydown", function (e) { if (e.key === "Escape") closeModal(); });`;
 
 const LIBRARY_JS = `
+// Created timestamps ship as UTC text plus a raw epoch; restate them in the
+// viewer's own timezone. Mirror of server-side fmtCreated (pages.tsx).
+const CREATED_FMT = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+document.querySelectorAll("[data-created]").forEach(function (node) {
+	const p = {};
+	CREATED_FMT.formatToParts(new Date(Number(node.dataset.created) * 1000)).forEach(function (x) { p[x.type] = x.value; });
+	node.textContent = p.month + " " + p.day + ", " + p.hour + ":" + p.minute;
+});
+
 const dropEl = document.getElementById("drop");
 const fileInput = document.getElementById("file");
 let dragDepth = 0;
@@ -315,7 +324,11 @@ const ViewerShell: FC<PropsWithChildren<{ src: string }>> = ({ src, children }) 
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-/** created_at (epoch seconds) → "Jul 21, 14:02" (en-US short month, 24h, UTC). */
+/**
+ * created_at (epoch seconds) → "Jul 21, 14:02" (en-US short month, 24h, UTC).
+ * The worker has no viewer timezone, so this is the no-JS fallback: LIBRARY_JS
+ * rewrites `[data-created]` to the browser's local zone on load.
+ */
 function fmtCreated(sec: number): string {
 	const d = new Date(sec * 1000);
 	const hh = String(d.getUTCHours()).padStart(2, "0");
@@ -355,7 +368,9 @@ export async function libraryPage(c: Ctx) {
 								<div class="row" data-id={d.id} data-title={d.title}>
 									<div class="row-main">
 										<div class="row-title">{d.title}</div>
-										<div class="row-meta">{fmtCreated(d.created_at)}</div>
+										<div class="row-meta" data-created={String(d.created_at)}>
+											{fmtCreated(d.created_at)}
+										</div>
 									</div>
 									{shared ? (
 										<span class="shared-label">

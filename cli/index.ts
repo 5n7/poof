@@ -34,9 +34,12 @@ function firstMarkdownHeading(content: string): string | null {
 	return null;
 }
 
+/** epoch seconds → "YYYY-MM-DD HH:mm" in the machine's local timezone. */
 function formatTime(seconds: number | null): string {
 	if (seconds == null) return "-";
-	return new Date(seconds * 1000).toISOString().replace("T", " ").slice(0, 16);
+	const d = new Date(seconds * 1000);
+	const pad = (n: number) => String(n).padStart(2, "0");
+	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 const ls = defineCommand({
