@@ -52,8 +52,10 @@ function formatTime(seconds: number | null): string {
 
 /** Column-aligned plain-text table, shared so every listing lines up the same. */
 function printTable(header: string[], rows: string[][]): void {
-	const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
-	const line = (cells: string[]) => cells.map((cell, i) => cell.padEnd(widths[i])).join("  ");
+	// Bun.stringWidth counts display columns, so double-width CJK titles stay aligned.
+	const widths = header.map((h, i) => Math.max(Bun.stringWidth(h), ...rows.map((r) => Bun.stringWidth(r[i]))));
+	const line = (cells: string[]) =>
+		cells.map((cell, i) => cell + " ".repeat(widths[i] - Bun.stringWidth(cell))).join("  ");
 	for (const cells of [header, ...rows]) process.stdout.write(line(cells) + "\n");
 }
 
