@@ -156,16 +156,31 @@ function updateShareCount() {
 	root.querySelector(".active-head").textContent = "Active links \\u00b7 " + n;
 	root.querySelector(".empty").style.display = n ? "none" : "";
 }
+// writeText can hang, not just reject: Chrome waits on document focus or a
+// pending permission prompt. Race it with a timeout so callers always get an
+// answer, and never await it before an update that has to happen regardless.
+function copyToClipboard(text) {
+	if (!navigator.clipboard) return Promise.resolve(false);
+	return Promise.race([
+		navigator.clipboard.writeText(text).then(function () { return true; }, function () { return false; }),
+		new Promise(function (r) { setTimeout(function () { r(false); }, 1000); }),
+	]);
+}
+// Never claim a copy that did not happen; the URL is on screen in .share-url,
+// so a failure just points the user at it.
+function reflectCopy(copy, ok) {
+	if (!ok) { toast("Could not copy \\u2014 select the link instead"); return; }
+	copy.textContent = "Copied \\u2713";
+	copy.classList.add("copied");
+}
 function shareRow(s, highlight) {
 	const full = location.origin + "/v/" + s.token;
 	const display = location.host + "/v/" + s.token;
 	const row = el("div", "share-row" + (highlight ? " hl" : ""));
 	row.append(el("span", "share-url", display));
-	const copy = el("span", "share-copy" + (highlight ? " copied" : ""), highlight ? "Copied \\u2713" : "copy");
-	copy.addEventListener("click", async function () {
-		try { await navigator.clipboard.writeText(full); } catch (e) {}
-		copy.textContent = "Copied \\u2713";
-		copy.classList.add("copied");
+	const copy = el("span", "share-copy", "copy");
+	copy.addEventListener("click", function () {
+		copyToClipboard(full).then(function (ok) { reflectCopy(copy, ok); });
 	});
 	row.append(copy);
 	row.append(el("span", "share-left", fmtRemaining(s.expires_at - nowSec()) + " left"));
@@ -187,9 +202,13 @@ async function createLink(docId) {
 	});
 	if (!res.ok) { toast("Could not create link"); return; }
 	const s = await res.json();
-	try { await navigator.clipboard.writeText(location.origin + "/v/" + s.token); } catch (e) {}
-	document.getElementById("modal-root").querySelector(".share-list").prepend(shareRow(s, true));
+	// The link is live server-side now, so render it before touching the
+	// clipboard — a stalled copy must not leave the list looking empty.
+	const row = shareRow(s, true);
+	document.getElementById("modal-root").querySelector(".share-list").prepend(row);
 	updateShareCount();
+	const copy = row.querySelector(".share-copy");
+	copyToClipboard(location.origin + "/v/" + s.token).then(function (ok) { reflectCopy(copy, ok); });
 }
 async function openModal(docId, docTitle) {
 	modalTtl = "1d";
