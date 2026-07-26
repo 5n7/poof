@@ -1,8 +1,30 @@
 import { describe, expect, it } from "vitest";
 
-import { mintOwnerToken, newShareToken, parseTtl, randomToken, verifyOwnerToken } from "../src/lib/tokens";
+import { b64url, mintOwnerToken, newShareToken, parseTtl, randomToken, verifyOwnerToken } from "../src/lib/tokens";
 
 const SECRET = "test-secret";
+
+const enc = new TextEncoder();
+
+/** The decoded JSON payload of an o_ token, without verifying it. */
+function payloadOf(token: string): Record<string, unknown> {
+	const seg = token.slice(2, token.indexOf("."));
+	return JSON.parse(atob(seg.replace(/-/g, "+").replace(/_/g, "/")));
+}
+
+/**
+ * Mint an o_ token over an arbitrary payload with a *correct* signature — the
+ * only way to test that verification distrusts the payload's shape rather than
+ * relying on the HMAC alone.
+ */
+async function forgeOwnerToken(payload: unknown, secret = SECRET): Promise<string> {
+	const payloadB64 = b64url(enc.encode(JSON.stringify(payload)));
+	const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [
+		"sign",
+	]);
+	const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(payloadB64)));
+	return "o_" + payloadB64 + "." + b64url(sig);
+}
 
 describe("randomToken", () => {
 	it("is 22-char base64url with no + / = characters", () => {
@@ -29,7 +51,7 @@ describe("mintOwnerToken / verifyOwnerToken", () => {
 	it("round-trips the document id", async () => {
 		const token = await mintOwnerToken("doc123", SECRET);
 		expect(token.startsWith("o_")).toBe(true);
-		expect(await verifyOwnerToken(token, SECRET)).toBe("doc123");
+		expect(await verifyOwnerToken(token, SECRET)).toEqual({ documentId: "doc123", version: null });
 	});
 
 	it("rejects an expired token", async () => {
@@ -65,6 +87,28 @@ describe("mintOwnerToken / verifyOwnerToken", () => {
 		expect(await verifyOwnerToken("garbage", SECRET)).toBeNull();
 		expect(await verifyOwnerToken("o_only-no-dot", SECRET)).toBeNull();
 		expect(await verifyOwnerToken("s_notanownertoken", SECRET)).toBeNull();
+	});
+
+	it("round-trips a version pin", async () => {
+		const token = await mintOwnerToken("doc123", SECRET, 600, 2);
+		expect(await verifyOwnerToken(token, SECRET)).toEqual({ documentId: "doc123", version: 2 });
+	});
+
+	it("omits `v` entirely when no version is pinned, keeping the legacy payload shape", async () => {
+		expect(Object.keys(payloadOf(await mintOwnerToken("doc123", SECRET)))).toEqual(["d", "exp"]);
+		expect(Object.keys(payloadOf(await mintOwnerToken("doc123", SECRET, 600, 1)))).toEqual(["d", "v", "exp"]);
+	});
+
+	it("rejects a non-integer or non-positive `v` even with a valid signature", async () => {
+		const exp = Math.floor(Date.now() / 1000) + 600;
+		for (const v of [0, -1, 1.5, "2", null, true]) {
+			const token = await forgeOwnerToken({ d: "doc123", v, exp });
+			expect(await verifyOwnerToken(token, SECRET)).toBeNull();
+		}
+		// Same forging path with a sane `v` verifies — so the rejections above are
+		// about the value, not about the forged token being malformed.
+		const good = await forgeOwnerToken({ d: "doc123", v: 3, exp });
+		expect(await verifyOwnerToken(good, SECRET)).toEqual({ documentId: "doc123", version: 3 });
 	});
 });
 

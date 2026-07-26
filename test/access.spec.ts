@@ -19,6 +19,14 @@ async function fetchWith(path: string, init?: RequestInit) {
 	return res;
 }
 
+/** A minimal valid "add version" multipart body. */
+function versionBody() {
+	const fd = new FormData();
+	fd.set("file", new File(["# new version"], "v.md"), "v.md");
+	fd.set("kind", "md");
+	return fd;
+}
+
 /** Seed a document (+blob) and a live share directly. */
 async function seed(id: string, token: string) {
 	await seedDoc(id, { title: "access doc", body: "<html><body>access doc</body></html>" });
@@ -42,6 +50,27 @@ describe("Access enforcement (DEV_DISABLE_ACCESS unset)", () => {
 		const res = await fetchWith("/d/doc_someid");
 		expect(res.status).toBe(403);
 		expect(await res.text()).toBe("Forbidden");
+	});
+
+	it("rejects the pinned owner viewer GET /d/:id?v=1 without the Access header (403)", async () => {
+		// The version pin must not be a hole in Access: only the owner may mint a
+		// pinned o_ token, so this page has to stay behind it.
+		const res = await fetchWith("/d/doc_someid?v=1");
+		expect(res.status).toBe(403);
+		expect(await res.text()).toBe("Forbidden");
+	});
+
+	it("rejects the version API routes without the Access header (403)", async () => {
+		const requests: [string, RequestInit | undefined][] = [
+			["/api/documents/doc_someid/versions", { method: "POST", body: versionBody() }],
+			["/api/documents/doc_someid/versions", undefined],
+			["/api/documents/doc_someid/versions/1/rollback", { method: "POST" }],
+		];
+		for (const [path, init] of requests) {
+			const res = await fetchWith(path, init);
+			expect(res.status).toBe(403);
+			expect(await res.text()).toBe("Forbidden");
+		}
 	});
 
 	it("keeps /v/* reachable (not behind Access)", async () => {
@@ -109,5 +138,46 @@ describe("CSRF protection on state-changing API routes", () => {
 			body: JSON.stringify({ ttl: "1d" }),
 		});
 		expect(res.status).toBe(201);
+	});
+
+	it("guards POST /api/documents/:id/versions the same way", async () => {
+		const id = await seededDoc();
+
+		const cross = await SELF.fetch(`${BASE}/api/documents/${id}/versions`, {
+			method: "POST",
+			headers: { "Sec-Fetch-Site": "cross-site" },
+			body: versionBody(),
+		});
+		expect(cross.status).toBe(403);
+		expect(await cross.text()).toBe("Forbidden");
+
+		const same = await SELF.fetch(`${BASE}/api/documents/${id}/versions`, {
+			method: "POST",
+			headers: { "Sec-Fetch-Site": "same-origin" },
+			body: versionBody(),
+		});
+		expect(same.status).toBe(201);
+
+		const bare = await SELF.fetch(`${BASE}/api/documents/${id}/versions`, {
+			method: "POST",
+			body: versionBody(),
+		});
+		expect(bare.status).toBe(201);
+	});
+
+	it("guards POST /api/documents/:id/versions/:version/rollback the same way", async () => {
+		const id = await seededDoc();
+		const url = `${BASE}/api/documents/${id}/versions/1/rollback`;
+
+		const cross = await SELF.fetch(url, { method: "POST", headers: { "Sec-Fetch-Site": "cross-site" } });
+		expect(cross.status).toBe(403);
+		expect(await cross.text()).toBe("Forbidden");
+
+		// Version 1 is already current, so these are idempotent 200s.
+		const same = await SELF.fetch(url, { method: "POST", headers: { "Sec-Fetch-Site": "same-origin" } });
+		expect(same.status).toBe(200);
+
+		const bare = await SELF.fetch(url, { method: "POST" });
+		expect(bare.status).toBe(200);
 	});
 });

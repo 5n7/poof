@@ -1,7 +1,15 @@
 import type { Context } from "hono";
-import type { FC, PropsWithChildren } from "hono/jsx";
+import type { Child, FC, PropsWithChildren } from "hono/jsx";
 
-import { getLiveDocument, getLiveShare, listDocumentsWithShares, listShares } from "../lib/db";
+import type { ResolvedDocument } from "../lib/db";
+import {
+	getLiveDocument,
+	getLiveDocumentAtVersion,
+	getLiveShare,
+	listDocumentsWithShares,
+	listShares,
+	listVersions,
+} from "../lib/db";
 import { applyHeaders, uniform404, VIEWER_HEADERS } from "../lib/http";
 import { nowSeconds } from "../lib/time";
 import { mintOwnerToken } from "../lib/tokens";
@@ -62,9 +70,13 @@ a:hover { color: #b45309; }
 .tb-brand { font-size: 12px; color: #b3b3bb; }
 .tb-title { font-size: 13px; font-weight: 600; }
 .tb-chip { font-size: 12px; color: #8b8b94; white-space: nowrap; }
+.tb-ver { background: #fff; border: 1px solid #e0e0e6; color: #6e6e76; font-size: 12px; font-weight: 500; font-family: inherit; padding: 5px 11px; border-radius: 7px; cursor: pointer; white-space: nowrap; }
+.tb-ver:hover { border-color: #c9c9d1; color: #1a1a1e; }
 .share-btn { background: ${ACCENT}; color: #fff; font-size: 12px; font-weight: 600; padding: 5px 14px; border-radius: 7px; cursor: pointer; border: 0; font-family: inherit; }
 .share-btn:hover { background: ${ACCENT_HOVER}; }
 .frame { flex: 1; border: 0; width: 100%; }
+.banner { display: flex; align-items: center; gap: 12px; padding: 8px 16px; font-size: 12px; color: #6e6e76; background: oklch(0.68 0.17 52 / .08); border-bottom: 1px solid oklch(0.68 0.17 52 / .3); }
+.banner-act { font-size: 12px; font-weight: 500; color: oklch(0.55 0.17 52); cursor: pointer; white-space: nowrap; }
 
 .backdrop { position: fixed; inset: 0; z-index: 50; background: rgba(24,24,32,.32); backdrop-filter: blur(2px); display: grid; place-items: center; animation: fadeIn .12s ease; }
 .modal { width: 440px; max-width: calc(100vw - 40px); background: #fff; border: 1px solid #e0e0e6; border-radius: 12px; box-shadow: 0 12px 40px rgba(20,20,40,.22); padding: 22px 24px; animation: popIn .14s ease; }
@@ -112,6 +124,15 @@ function fmtRemaining(sec) {
 	if (sec >= 172800) return Math.floor(sec / 86400) + "d";
 	if (sec >= 3600) return Math.floor(sec / 3600) + "h";
 	return Math.max(0, Math.floor(sec / 60)) + "m";
+}
+// Local-timezone twin of the server-side fmtCreated (pages.tsx), which can only
+// render UTC — keep the two in sync. Used by the [data-created] rewrite on the
+// library and by the version rows in the versions modal.
+const CREATED_FMT = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+function fmtCreated(sec) {
+	const p = {};
+	CREATED_FMT.formatToParts(new Date(sec * 1000)).forEach(function (x) { p[x.type] = x.value; });
+	return p.month + " " + p.day + ", " + p.hour + ":" + p.minute;
 }
 let toastT;
 function toast(msg) {
@@ -224,46 +245,62 @@ async function openModal(docId, docTitle) {
 }
 window.addEventListener("keydown", function (e) { if (e.key === "Escape") closeModal(); });`;
 
-const LIBRARY_JS = `
-// Created timestamps ship as UTC text plus a raw epoch; restate them in the
-// viewer's own timezone. Mirror of server-side fmtCreated (pages.tsx).
-const CREATED_FMT = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-document.querySelectorAll("[data-created]").forEach(function (node) {
-	const p = {};
-	CREATED_FMT.formatToParts(new Date(Number(node.dataset.created) * 1000)).forEach(function (x) { p[x.type] = x.value; });
-	node.textContent = p.month + " " + p.day + ", " + p.hour + ":" + p.minute;
-});
-
+// Drag/drop, paste and file-picker uploading, shared by the library and the
+// owner viewer. `#drop` carries the target: `data-endpoint` is where the file is
+// POSTed and `data-with-title` asks for a `title` field (the library names a new
+// document after the file; a new version keeps the document's title). No `#drop`
+// = a read-only page, so nothing is wired at all.
+//
+// On the viewer the content sits in a sandboxed iframe — a separate document on
+// an opaque origin — so its drag events never reach this document and a drop
+// only registers over the topbar, banner or margins. ⌘V still works whenever
+// focus is outside the iframe. The primary affordance there is therefore the
+// explicit "Upload new version" button in the versions modal, not the drop zone.
+const UPLOAD_JS = `
 const dropEl = document.getElementById("drop");
 const fileInput = document.getElementById("file");
 let dragDepth = 0;
 async function uploadFile(file) {
 	const name = file.name || "pasted.md";
+	// Extension → kind. Mirror of kindFromExtension (cli/index.ts) and the
+	// server's kind check (api.ts) — keep the three in sync.
 	const kind = /\\.html?$/i.test(name) ? "html" : "md";
 	const fd = new FormData();
 	fd.set("file", file, name);
 	fd.set("kind", kind);
-	fd.set("title", name);
-	const res = await fetch("/api/documents", { method: "POST", body: fd });
-	if (res.ok) { toast("Uploaded \\u2014 " + name); setTimeout(function () { location.reload(); }, 600); }
+	if (dropEl.dataset.withTitle) fd.set("title", name);
+	const res = await fetch(dropEl.dataset.endpoint, { method: "POST", body: fd });
+	// Drop any ?v= pin so both pages land on the current version.
+	if (res.ok) { toast("Uploaded \\u2014 " + name); setTimeout(function () { location.href = location.pathname; }, 600); }
 	else toast(await res.text());
 }
-window.addEventListener("dragenter", function (e) { e.preventDefault(); dragDepth++; dropEl.style.display = "grid"; });
-window.addEventListener("dragleave", function (e) { e.preventDefault(); dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) dropEl.style.display = "none"; });
-window.addEventListener("dragover", function (e) { e.preventDefault(); });
-window.addEventListener("drop", function (e) {
-	e.preventDefault(); dragDepth = 0; dropEl.style.display = "none";
-	const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-	if (f) uploadFile(f);
+if (dropEl && fileInput) {
+	window.addEventListener("dragenter", function (e) { e.preventDefault(); dragDepth++; dropEl.style.display = "grid"; });
+	window.addEventListener("dragleave", function (e) { e.preventDefault(); dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) dropEl.style.display = "none"; });
+	window.addEventListener("dragover", function (e) { e.preventDefault(); });
+	window.addEventListener("drop", function (e) {
+		e.preventDefault(); dragDepth = 0; dropEl.style.display = "none";
+		const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+		if (f) uploadFile(f);
+	});
+	window.addEventListener("paste", function (e) {
+		const f = e.clipboardData && e.clipboardData.files && e.clipboardData.files[0];
+		if (f) { uploadFile(f); return; }
+		const text = e.clipboardData && e.clipboardData.getData("text");
+		if (text) uploadFile(new File([text], "pasted.md", { type: "text/markdown" }));
+	});
+	const hint = document.getElementById("hint");
+	if (hint) hint.addEventListener("click", function () { fileInput.click(); });
+	fileInput.addEventListener("change", function () { const f = fileInput.files[0]; if (f) uploadFile(f); fileInput.value = ""; });
+}`;
+
+const LIBRARY_JS = `
+// Created timestamps are server-rendered in UTC and ship with a raw epoch;
+// restate them in the viewer's own timezone.
+document.querySelectorAll("[data-created]").forEach(function (node) {
+	node.textContent = fmtCreated(Number(node.dataset.created));
 });
-window.addEventListener("paste", function (e) {
-	const f = e.clipboardData && e.clipboardData.files && e.clipboardData.files[0];
-	if (f) { uploadFile(f); return; }
-	const text = e.clipboardData && e.clipboardData.getData("text");
-	if (text) uploadFile(new File([text], "pasted.md", { type: "text/markdown" }));
-});
-document.getElementById("hint").addEventListener("click", function () { fileInput.click(); });
-fileInput.addEventListener("change", function () { const f = fileInput.files[0]; if (f) uploadFile(f); fileInput.value = ""; });
+
 function closeMenus() { document.querySelectorAll("[data-menu-pop]").forEach(function (m) { m.style.display = "none"; }); }
 window.addEventListener("click", closeMenus);
 window.addEventListener("keydown", function (e) { if (e.key === "Escape") closeMenus(); });
@@ -290,13 +327,82 @@ document.querySelectorAll(".row").forEach(function (row) {
 	});
 });`;
 
+// The versions modal: history list, "View" (pinned read-only page), "Restore"
+// (rollback) and, in the header, the viewer's primary upload affordance. Built
+// with el()/textContent only — no user data ever reaches innerHTML.
+const VERSIONS_JS = `
+async function restoreVersion(docId, n) {
+	const res = await fetch("/api/documents/" + docId + "/versions/" + n + "/rollback", { method: "POST" });
+	if (!res.ok) { toast("Restore failed"); return; }
+	toast("Restored \\u2014 v" + n);
+	setTimeout(function () { location.href = "/d/" + docId; }, 600);
+}
+function versionRow(docId, v, current) {
+	const isCurrent = v.version === current;
+	const row = el("div", "share-row" + (isCurrent ? " hl" : ""));
+	row.append(el("span", "share-url", "v" + v.version + " \\u00b7 " + v.kind));
+	row.append(el("span", "share-left", fmtCreated(v.created_at)));
+	if (isCurrent) {
+		row.append(el("span", "share-left", "current"));
+		return row;
+	}
+	const view = el("span", "share-copy", "View");
+	view.addEventListener("click", function () { location.href = "/d/" + docId + "?v=" + v.version; });
+	row.append(view);
+	const restore = el("span", "share-revoke", "Restore");
+	restore.addEventListener("click", function () { restoreVersion(docId, v.version); });
+	row.append(restore);
+	return row;
+}
+async function openVersions(docId) {
+	const root = document.getElementById("modal-root");
+	const backdrop = el("div", "backdrop");
+	const modal = el("div", "modal");
+	backdrop.addEventListener("click", closeModal);
+	modal.addEventListener("click", function (e) { e.stopPropagation(); });
+	backdrop.append(modal);
+
+	const head = el("div", "modal-head");
+	head.append(el("span", "modal-title-main", "Versions"));
+	head.append(el("span", "spacer"));
+	// Dropping onto the viewer barely works over a sandboxed iframe (see
+	// UPLOAD_JS), so this button is how a new version usually gets uploaded.
+	if (fileInput) {
+		const up = el("span", "create-btn", "Upload new version");
+		up.addEventListener("click", function () { fileInput.click(); });
+		head.append(up);
+	}
+	const x = el("span", "modal-x", "\\u2715");
+	x.addEventListener("click", closeModal);
+	head.append(x);
+	modal.append(head);
+
+	modal.append(el("div", "active-head", "History"));
+	modal.append(el("div", "share-list"));
+
+	root.textContent = "";
+	root.append(backdrop);
+
+	const res = await fetch("/api/documents/" + docId + "/versions");
+	if (!res.ok) { toast("Could not load versions"); return; }
+	const data = await res.json();
+	const versions = data.versions || [];
+	const list = root.querySelector(".share-list");
+	versions.forEach(function (v) { list.append(versionRow(docId, v, data.current_version)); });
+	root.querySelector(".active-head").textContent = "History \\u00b7 " + versions.length;
+}`;
+
 const VIEWER_JS = `
 const sc = document.getElementById("share-current");
-if (sc) sc.addEventListener("click", function () { openModal(sc.dataset.id, sc.dataset.title); });`;
+if (sc) sc.addEventListener("click", function () { openModal(sc.dataset.id, sc.dataset.title); });
+const vb = document.getElementById("ver-btn");
+if (vb) vb.addEventListener("click", function () { openVersions(vb.dataset.id); });
+const vr = document.getElementById("ver-restore");
+if (vr) vr.addEventListener("click", function () { restoreVersion(vr.dataset.id, Number(vr.dataset.version)); });`;
 
 // Per-page bundles, concatenated once at module load rather than per request.
-const LIBRARY_SCRIPT = CORE_JS + LIBRARY_JS;
-const VIEWER_SCRIPT = CORE_JS + VIEWER_JS;
+const LIBRARY_SCRIPT = CORE_JS + UPLOAD_JS + LIBRARY_JS;
+const VIEWER_SCRIPT = CORE_JS + UPLOAD_JS + VERSIONS_JS + VIEWER_JS;
 
 const Layout: FC<PropsWithChildren<{ title: string }>> = ({ title, children }) => (
 	<html lang="en">
@@ -315,9 +421,10 @@ const Layout: FC<PropsWithChildren<{ title: string }>> = ({ title, children }) =
 // Shared viewer scaffold: topbar (contents vary per page) above the sandboxed
 // iframe. The sandbox attribute is security-load-bearing (SPEC §6.1) and lives
 // here once — never add `allow-same-origin`.
-const ViewerShell: FC<PropsWithChildren<{ src: string }>> = ({ src, children }) => (
+const ViewerShell: FC<PropsWithChildren<{ src: string; banner?: Child }>> = ({ src, banner, children }) => (
 	<div class="viewer">
 		<div class="topbar">{children}</div>
+		{banner}
 		<iframe class="frame" sandbox="allow-scripts allow-popups" src={src} />
 	</div>
 );
@@ -368,8 +475,11 @@ export async function libraryPage(c: Ctx) {
 								<div class="row" data-id={d.id} data-title={d.title}>
 									<div class="row-main">
 										<div class="row-title">{d.title}</div>
-										<div class="row-meta" data-created={String(d.created_at)}>
-											{fmtCreated(d.created_at)}
+										<div class="row-meta">
+											{/* The timestamp sits in its own node: LIBRARY_JS replaces the
+											    text content of [data-created] wholesale. */}
+											<span data-created={String(d.created_at)}>{fmtCreated(d.created_at)}</span>
+											{d.current_version > 1 ? <span>{` · v${d.current_version}`}</span> : null}
 										</div>
 									</div>
 									{shared ? (
@@ -401,7 +511,7 @@ export async function libraryPage(c: Ctx) {
 				</div>
 			</div>
 
-			<div class="drop" id="drop" style="display:none">
+			<div class="drop" id="drop" style="display:none" data-endpoint="/api/documents" data-with-title="1">
 				<div style="text-align:center">
 					<div class="drop-icon">↓</div>
 					<div class="drop-title">Drop it — poof</div>
@@ -416,12 +526,28 @@ export async function libraryPage(c: Ctx) {
 	);
 }
 
-/** GET /d/:id — private owner viewer; mints a short-lived o_ token (SPEC §6.2). */
+/**
+ * GET /d/:id (+ optional `?v=N`) — private owner viewer; mints a short-lived o_
+ * token (SPEC §6.2), pinned to the version when one is asked for.
+ */
 export async function ownerViewerPage(c: Ctx<"/d/:id">) {
 	const id = c.req.param("id");
 	const now = nowSeconds();
-	const doc = await getLiveDocument(c.env.DB, id, now);
+
+	// This is a page, not the API: a malformed `?v=` is not a 400, it is simply
+	// not a page. Unknown versions fold into the same uniform 404 downstream.
+	const rawVersion = c.req.query("v");
+	if (rawVersion !== undefined && !/^[1-9][0-9]*$/.test(rawVersion)) return uniform404(c);
+	const asked = rawVersion === undefined ? null : Number(rawVersion);
+
+	const doc =
+		asked === null
+			? await getLiveDocument(c.env.DB, id, now)
+			: await getLiveDocumentAtVersion(c.env.DB, id, asked, now);
 	if (!doc) return uniform404(c);
+	// `?v=` naming the live version is the normal page — never render the current
+	// content as a read-only dead end.
+	if (asked !== null && asked !== doc.current_version) return pinnedViewerPage(c, doc);
 
 	// Independent of each other once the document is known — run concurrently.
 	const [shares, oToken] = await Promise.all([
@@ -444,9 +570,66 @@ export async function ownerViewerPage(c: Ctx<"/d/:id">) {
 				<span class="tb-title">{doc.title}</span>
 				<span class="spacer" />
 				{chip ? <span class="tb-chip">{chip}</span> : null}
+				{/* Shown even at v1: it is how the history and "you can add a version" are discoverable. */}
+				<button type="button" id="ver-btn" class="tb-ver" data-id={id}>
+					v{doc.current_version}
+				</button>
 				<button type="button" id="share-current" class="share-btn" data-id={id} data-title={doc.title}>
 					Share
 				</button>
+			</ViewerShell>
+			<div class="drop" id="drop" style="display:none" data-endpoint={`/api/documents/${id}/versions`}>
+				<div style="text-align:center">
+					<div class="drop-icon">↓</div>
+					<div class="drop-title">Drop it — new version</div>
+					<div class="drop-sub">.md / .html · up to 10 MB · replaces the live content</div>
+				</div>
+			</div>
+			<div id="modal-root" />
+			<input type="file" id="file" accept=".md,.markdown,.html,.htm" style="display:none" />
+			<script dangerouslySetInnerHTML={{ __html: VIEWER_SCRIPT }} />
+		</Layout>,
+	);
+}
+
+/**
+ * The `?v=N` branch of the owner viewer: a past version, read-only. No Share
+ * button (shares always serve the current version, so offering one here would
+ * read as "they can see v2") and no uploader (there is no branching model, so
+ * "drop a file while looking at v2" has no meaning).
+ */
+async function pinnedViewerPage(c: Ctx<"/d/:id">, doc: ResolvedDocument) {
+	const [versions, oToken] = await Promise.all([
+		listVersions(c.env.DB, doc.id),
+		mintOwnerToken(doc.id, c.env.OWNER_TOKEN_SECRET, 600, doc.version),
+	]);
+	applyHeaders(c, VIEWER_HEADERS);
+	return c.html(
+		<Layout title={doc.title}>
+			<ViewerShell
+				src={`/raw/${oToken}`}
+				banner={
+					<div class="banner">
+						<span>Viewing version {doc.version} · read-only</span>
+						<span class="spacer" />
+						<span class="banner-act" id="ver-restore" data-id={doc.id} data-version={String(doc.version)}>
+							Restore this version
+						</span>
+						<a class="banner-act" href={`/d/${doc.id}`}>
+							Back to current
+						</a>
+					</div>
+				}
+			>
+				<a href="/" class="back">
+					←
+				</a>
+				<span class="tb-brand">poof</span>
+				<span class="tb-title">{doc.title}</span>
+				<span class="spacer" />
+				<span class="tb-chip">
+					v{doc.version} of {versions.length}
+				</span>
 			</ViewerShell>
 			<div id="modal-root" />
 			<script dangerouslySetInnerHTML={{ __html: VIEWER_SCRIPT }} />

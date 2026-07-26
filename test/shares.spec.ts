@@ -97,7 +97,7 @@ describe("share lifecycle through the API", () => {
 		const up = await upload("# Cascade", "md");
 		const doc = await up.json<{ id: string }>();
 		const share = await (await issueShare(doc.id)).json<{ token: string }>();
-		const r2Key = `doc/${doc.id}.html`;
+		const r2Key = `doc/${doc.id}/v1.html`;
 
 		expect(await env.BLOBS.get(r2Key)).not.toBeNull();
 

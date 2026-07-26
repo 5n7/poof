@@ -1,6 +1,11 @@
 import { Hono } from "hono";
 
-import { getLiveDocument, getLiveDocumentByShareToken } from "../lib/db";
+import {
+	type ResolvedDocument,
+	getLiveDocument,
+	getLiveDocumentAtVersion,
+	getLiveDocumentByShareToken,
+} from "../lib/db";
 import { RAW_HEADERS, uniform404 } from "../lib/http";
 import { nowSeconds } from "../lib/time";
 import { verifyOwnerToken } from "../lib/tokens";
@@ -24,13 +29,21 @@ rawRoutes.get("/:token", async (c) => {
 	const token = c.req.param("token");
 	const now = nowSeconds();
 
-	let doc = null;
+	let doc: ResolvedDocument | null = null;
 	if (token.startsWith("s_")) {
-		// Share → document in one JOIN (see getLiveDocumentByShareToken).
+		// Share → current version in one JOIN (see getLiveDocumentByShareToken).
 		doc = await getLiveDocumentByShareToken(c.env.DB, token, now);
 	} else if (token.startsWith("o_")) {
-		const documentId = await verifyOwnerToken(token, c.env.OWNER_TOKEN_SECRET, now);
-		if (documentId) doc = await getLiveDocument(c.env.DB, documentId, now);
+		const payload = await verifyOwnerToken(token, c.env.OWNER_TOKEN_SECRET, now);
+		// The version pin comes from the signed payload and nowhere else: here the
+		// token *is* the authorization, so accepting a version from the URL would
+		// let anyone holding a share link enumerate the document's history.
+		if (payload) {
+			doc =
+				payload.version === null
+					? await getLiveDocument(c.env.DB, payload.documentId, now)
+					: await getLiveDocumentAtVersion(c.env.DB, payload.documentId, payload.version, now);
+		}
 	}
 	if (!doc) return uniform404(c);
 

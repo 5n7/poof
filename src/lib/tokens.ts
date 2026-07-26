@@ -47,23 +47,44 @@ function hmacKey(secret: string): Promise<CryptoKey> {
 }
 
 /**
- * Mint a stateless owner view token: `o_` + b64url(JSON {d, exp}) +
+ * Mint a stateless owner view token: `o_` + b64url(JSON {d, v?, exp}) +
  * "." + b64url(HMAC-SHA256(payloadB64, secret)). Default TTL 600s (SPEC §6.2).
+ *
+ * `version` pins the token to one past version. When it is undefined the `v`
+ * field is omitted *entirely*, so tokens for the current version stay
+ * byte-identical to the pre-versioning format and tokens minted before this
+ * change keep verifying.
  */
-export async function mintOwnerToken(documentId: string, secret: string, ttlSeconds = 600): Promise<string> {
+export async function mintOwnerToken(
+	documentId: string,
+	secret: string,
+	ttlSeconds = 600,
+	version?: number,
+): Promise<string> {
 	const exp = nowSeconds() + ttlSeconds;
-	const payloadB64 = b64url(enc.encode(JSON.stringify({ d: documentId, exp })));
+	const payload = version === undefined ? { d: documentId, exp } : { d: documentId, v: version, exp };
+	const payloadB64 = b64url(enc.encode(JSON.stringify(payload)));
 	const key = await hmacKey(secret);
 	const sig = new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(payloadB64)));
 	return "o_" + payloadB64 + "." + b64url(sig);
 }
 
+export interface OwnerTokenPayload {
+	documentId: string;
+	/** Pinned version, or null when the token follows the current version. */
+	version: number | null;
+}
+
 /**
- * Verify an owner token. Returns the document id, or null on malformed,
- * expired, or bad-signature input. Signature check uses `crypto.subtle.verify`
+ * Verify an owner token. Returns its payload, or null on malformed, expired, or
+ * bad-signature input. Signature check uses `crypto.subtle.verify`
  * (constant-time).
  */
-export async function verifyOwnerToken(token: string, secret: string, now = nowSeconds()): Promise<string | null> {
+export async function verifyOwnerToken(
+	token: string,
+	secret: string,
+	now = nowSeconds(),
+): Promise<OwnerTokenPayload | null> {
 	if (!token.startsWith("o_")) return null;
 	const rest = token.slice(2);
 	const dot = rest.indexOf(".");
@@ -86,7 +107,14 @@ export async function verifyOwnerToken(token: string, secret: string, now = nowS
 		const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(payloadB64)));
 		if (typeof payload?.d !== "string" || typeof payload?.exp !== "number") return null;
 		if (payload.exp <= now) return null;
-		return payload.d;
+		let version: number | null = null;
+		if ("v" in payload) {
+			// The payload is authenticated, not trusted to be sane: a valid
+			// signature over v: 0 / -1 / 1.5 / "2" is still a rejection.
+			if (typeof payload.v !== "number" || !Number.isInteger(payload.v) || payload.v < 1) return null;
+			version = payload.v;
+		}
+		return { documentId: payload.d, version };
 	} catch {
 		return null;
 	}

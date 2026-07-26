@@ -5,7 +5,15 @@ import { defineCommand, runMain } from "citty";
 import { readFile } from "node:fs/promises";
 import { basename, extname } from "node:path";
 
-import { api, loadConfig, type DocumentRow, type ShareResult } from "./api";
+import {
+	api,
+	loadConfig,
+	type DocumentRow,
+	type RollbackResult,
+	type ShareResult,
+	type UpdateResult,
+	type VersionsResult,
+} from "./api";
 
 const TTL_OPTIONS = ["1h", "1d", "1w"];
 
@@ -42,10 +50,17 @@ function formatTime(seconds: number | null): string {
 	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** Column-aligned plain-text table, shared so every listing lines up the same. */
+function printTable(header: string[], rows: string[][]): void {
+	const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
+	const line = (cells: string[]) => cells.map((cell, i) => cell.padEnd(widths[i])).join("  ");
+	for (const cells of [header, ...rows]) process.stdout.write(line(cells) + "\n");
+}
+
 const ls = defineCommand({
 	meta: {
 		name: "ls",
-		description: "List documents (id, title, kind, created, expires).",
+		description: "List documents (id, title, kind, version, updated, expires).",
 	},
 	run: () =>
 		attempt(async () => {
@@ -57,12 +72,20 @@ const ls = defineCommand({
 				return;
 			}
 
-			const header = ["ID", "TITLE", "KIND", "CREATED", "EXPIRES"];
-			const rows = documents.map((d) => [d.id, d.title, d.kind, formatTime(d.created_at), formatTime(d.expires_at)]);
-			const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
-
-			const line = (cells: string[]) => cells.map((cell, i) => cell.padEnd(widths[i])).join("  ");
-			for (const cells of [header, ...rows]) process.stdout.write(line(cells) + "\n");
+			// UPDATED rather than CREATED, to keep six columns: an un-updated document
+			// has updated_at === created_at, and the true creation time is version 1's
+			// created_at, visible in `poof versions`.
+			printTable(
+				["ID", "TITLE", "KIND", "VER", "UPDATED", "EXPIRES"],
+				documents.map((d) => [
+					d.id,
+					d.title,
+					d.kind,
+					`v${d.current_version}`,
+					formatTime(d.updated_at),
+					formatTime(d.expires_at),
+				]),
+			);
 		}),
 });
 
@@ -175,6 +198,39 @@ const rm = defineCommand({
 		}),
 });
 
+const rollback = defineCommand({
+	meta: {
+		name: "rollback",
+		description: "Make a past version current again (share links follow it immediately).",
+	},
+	args: {
+		"doc-id": {
+			type: "positional",
+			description: "Document id to roll back.",
+			required: true,
+		},
+		version: {
+			type: "positional",
+			description: "Version number to restore (see 'poof versions').",
+			required: true,
+		},
+	},
+	run: ({ args }) =>
+		attempt(async () => {
+			// Reject a malformed version before the network: the server answers 400 for
+			// this, but there is no reason to spend a round-trip on a local typo.
+			if (!/^[1-9][0-9]*$/.test(args.version)) fail(`invalid version '${args.version}' (expected a positive integer)`);
+
+			const cfg = loadConfig();
+			const result = await api<RollbackResult>(
+				cfg,
+				"POST",
+				`/api/documents/${args["doc-id"]}/versions/${args.version}/rollback`,
+			);
+			process.stdout.write(`rolled back ${args["doc-id"]} to v${result.current_version}\n`);
+		}),
+});
+
 const share = defineCommand({
 	meta: {
 		name: "share",
@@ -202,6 +258,88 @@ const share = defineCommand({
 		}),
 });
 
+const update = defineCommand({
+	meta: {
+		name: "update",
+		description:
+			"Replace a document's contents with a new version, keeping its /d/{id} and share links. " +
+			"kind is inferred from the extension (.md/.markdown, .html/.htm).",
+	},
+	args: {
+		"doc-id": {
+			type: "positional",
+			description: "Document id to update.",
+			required: true,
+		},
+		file: {
+			type: "positional",
+			description: "File to upload as the new version.",
+			required: true,
+		},
+		title: {
+			type: "string",
+			description: "New document title (default: keep the current one).",
+			valueHint: "t",
+		},
+	},
+	run: ({ args }) =>
+		attempt(async () => {
+			// Same fail-fast order as push: infer kind and read the file before touching
+			// the network, so bad input fails without an API round-trip.
+			const kind = kindFromExtension(args.file);
+			let content: string;
+			try {
+				content = await readFile(args.file, "utf8");
+			} catch (err) {
+				fail(`cannot read file '${args.file}': ${(err as Error).message}`);
+			}
+
+			const cfg = loadConfig();
+
+			const form = new FormData();
+			form.append("file", new Blob([content]), basename(args.file));
+			form.append("kind", kind);
+			// Deliberately no firstMarkdownHeading fallback here: push infers a title
+			// because a new document has none, but silently renaming an existing
+			// document on every content fix would be a surprise. Omitting the field
+			// tells the server to keep the current title; --title is the explicit opt-in.
+			if (args.title) form.append("title", args.title);
+
+			const result = await api<UpdateResult>(cfg, "POST", `/api/documents/${args["doc-id"]}/versions`, form);
+			process.stdout.write(`${cfg.url}/d/${result.id}\n`);
+			process.stdout.write(`v${result.version}\n`);
+		}),
+});
+
+const versions = defineCommand({
+	meta: {
+		name: "versions",
+		description: "List a document's versions, newest first ('*' marks the current one).",
+	},
+	args: {
+		"doc-id": {
+			type: "positional",
+			description: "Document id to inspect.",
+			required: true,
+		},
+	},
+	run: ({ args }) =>
+		attempt(async () => {
+			const cfg = loadConfig();
+			const result = await api<VersionsResult>(cfg, "GET", `/api/documents/${args["doc-id"]}/versions`);
+
+			printTable(
+				["VER", "KIND", "CREATED", "CURRENT"],
+				result.versions.map((v) => [
+					`v${v.version}`,
+					v.kind,
+					formatTime(v.created_at),
+					v.version === result.current_version ? "*" : "",
+				]),
+			);
+		}),
+});
+
 const main = defineCommand({
 	meta: {
 		name: "poof",
@@ -209,7 +347,7 @@ const main = defineCommand({
 			"Ephemeral document viewer & sharing CLI. " +
 			"Reads POOF_URL, POOF_ACCESS_CLIENT_ID, and POOF_ACCESS_CLIENT_SECRET from the environment.",
 	},
-	subCommands: { ls, push, revoke, rm, share },
+	subCommands: { ls, push, revoke, rm, rollback, share, update, versions },
 });
 
 runMain(main);

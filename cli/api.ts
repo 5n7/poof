@@ -12,7 +12,35 @@ export interface DocumentRow {
 	title: string;
 	kind: "md" | "html";
 	created_at: number;
+	updated_at: number;
+	current_version: number;
 	expires_at: number | null;
+}
+
+/** One history entry as the API projects it — r2_key stays server-side. */
+export interface VersionRow {
+	version: number;
+	kind: "md" | "html";
+	created_at: number;
+}
+
+export interface VersionsResult {
+	current_version: number;
+	versions: VersionRow[];
+}
+
+export interface UpdateResult {
+	id: string;
+	version: number;
+	kind: "md" | "html";
+	title: string;
+	updated_at: number;
+	url: string;
+}
+
+export interface RollbackResult {
+	current_version: number;
+	updated_at: number;
 }
 
 export interface ShareResult {

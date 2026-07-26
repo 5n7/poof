@@ -10,6 +10,10 @@ Push a Markdown/HTML file, get a URL. The library and owner views sit behind
 Cloudflare Access; share links (`/v/{token}`) are public, always expire, and
 can be revoked instantly.
 
+Documents update in place: a new version keeps the same URLs, so share links
+already handed out follow the latest content. Past versions stay around for
+the owner to view and roll back to.
+
 ## Usage
 
 ```sh
@@ -17,7 +21,10 @@ poof ls                       # list documents
 poof push report.md --share   # upload + print a share URL (1d TTL)
 poof revoke <share-token>     # kill a share link now
 poof rm <doc-id>              # delete a document and its shares
+poof rollback <doc-id> <n>    # make version n current again
 poof share <doc-id>           # issue another share link
+poof update <doc-id> file.md  # new version; same URLs keep working
+poof versions <doc-id>        # version history, newest first
 ```
 
 Drag & drop or ⌘V on the web library works too.

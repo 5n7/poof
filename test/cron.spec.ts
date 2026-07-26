@@ -2,7 +2,7 @@ import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { runCleanup } from "../src/cron";
-import { seedDoc, seedShare } from "./helpers";
+import { seedDoc, seedShare, seedVersion } from "./helpers";
 
 const HTML = "<html><body>doc</body></html>";
 
@@ -76,5 +76,68 @@ describe("runCleanup", () => {
 
 		// The live document is still present after both runs.
 		expect(await docExists("cron_idem_live")).toBe(true);
+	});
+
+	it("never sweeps the blob of a non-current version", async () => {
+		const now = (Date.now() / 1000) | 0;
+		// v1 under the legacy flat key (as migration 0002 backfilled it), v2 and v3
+		// nested; the pointer trails the maximum, as it does after a rollback.
+		const v1 = await seedDoc("cron_history", { body: HTML });
+		const v2 = await seedVersion("cron_history", 2, { body: HTML });
+		const v3 = await seedVersion("cron_history", 3, { body: HTML, setCurrent: false });
+		const keys = [v1, v2, v3];
+
+		for (let run = 0; run < 2; run++) {
+			const counts = await runCleanup(env, now);
+			expect(counts).toEqual({ shares: 0, documents: 0, orphans: 0 });
+			for (const key of keys) expect(await env.BLOBS.get(key)).not.toBeNull();
+		}
+		expect(await docExists("cron_history")).toBe(true);
+	});
+
+	it("deletes every version blob of an expired document, flat and nested alike", async () => {
+		const now = (Date.now() / 1000) | 0;
+		const v1 = await seedDoc("cron_exp_history", { expiresAt: now - 100, body: HTML });
+		const v2 = await seedVersion("cron_exp_history", 2, { body: HTML });
+		const v3 = await seedVersion("cron_exp_history", 3, { body: HTML });
+		expect(v1).toBe("doc/cron_exp_history.html");
+
+		// orphans stays 0: phase 2 must remove all three itself rather than leaving
+		// rowless blobs for the sweep to find.
+		const counts = await runCleanup(env, now);
+		expect(counts).toEqual({ shares: 0, documents: 1, orphans: 0 });
+
+		expect(await docExists("cron_exp_history")).toBe(false);
+		for (const key of [v1, v2, v3]) expect(await env.BLOBS.get(key)).toBeNull();
+	});
+
+	it("sweeps a nested version blob that has no row", async () => {
+		const now = (Date.now() / 1000) | 0;
+		const live = await seedDoc("cron_nested_orphan", { body: HTML });
+		await env.BLOBS.put("doc/cron_nested_orphan/v2.html", HTML);
+
+		const counts = await runCleanup(env, now);
+		expect(counts).toEqual({ shares: 0, documents: 0, orphans: 1 });
+		expect(await env.BLOBS.get("doc/cron_nested_orphan/v2.html")).toBeNull();
+		expect(await env.BLOBS.get(live)).not.toBeNull();
+	});
+
+	it("sweeps correctly when a listing page holds more than 100 keys", async () => {
+		const now = (Date.now() / 1000) | 0;
+		// A listing page carries up to 1000 keys but a statement binds at most 100,
+		// so an unchunked `r2_key IN (…)` probe would blow up right here.
+		const known = [await seedDoc("cron_bulk", { body: HTML })];
+		for (let v = 2; v <= 105; v++) {
+			known.push(await seedVersion("cron_bulk", v, { body: HTML, setCurrent: false }));
+		}
+		expect(known.length).toBe(105);
+		const orphanKeys = ["doc/cron_bulk_orphan_a.html", "doc/cron_bulk_orphan_b.html", "doc/cron_bulk/v999.html"];
+		for (const key of orphanKeys) await env.BLOBS.put(key, HTML);
+
+		const counts = await runCleanup(env, now);
+		expect(counts).toEqual({ shares: 0, documents: 0, orphans: 3 });
+
+		for (const key of orphanKeys) expect(await env.BLOBS.get(key)).toBeNull();
+		for (const key of known) expect(await env.BLOBS.get(key)).not.toBeNull();
 	});
 });
