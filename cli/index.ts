@@ -4,9 +4,12 @@
 import { defineCommand, runMain } from "citty";
 import { readFile } from "node:fs/promises";
 import { basename, extname } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 import {
 	api,
+	apiStream,
 	loadConfig,
 	p,
 	type DocumentRow,
@@ -35,6 +38,14 @@ function kindFromExtension(file: string): "md" | "html" {
 	fail(`cannot infer kind from extension '${ext || "(none)"}' (expected .md/.markdown or .html/.htm)`);
 }
 
+/**
+ * Reject a malformed version before the network: the server answers 400 for
+ * this, but there is no reason to spend a round-trip on a local typo.
+ */
+function requireVersion(version: string): void {
+	if (!/^[1-9][0-9]*$/.test(version)) fail(`invalid version '${version}' (expected a positive integer)`);
+}
+
 function firstMarkdownHeading(content: string): string | null {
 	for (const line of content.split(/\r?\n/)) {
 		const match = /^#\s+(.+?)\s*$/.exec(line);
@@ -59,6 +70,43 @@ function printTable(header: string[], rows: string[][]): void {
 		cells.map((cell, i) => cell + " ".repeat(widths[i] - Bun.stringWidth(cell))).join("  ");
 	for (const cells of [header, ...rows]) process.stdout.write(line(cells) + "\n");
 }
+
+const cat = defineCommand({
+	meta: {
+		name: "cat",
+		description:
+			"Print a document's stored HTML — the rendered blob share links serve, not the Markdown source it came from.",
+	},
+	args: {
+		"doc-id": {
+			type: "positional",
+			description: "Document id to print.",
+			required: true,
+		},
+		version: {
+			type: "string",
+			description: "Version to print (default: the current one; see 'poof versions').",
+			valueHint: "n",
+		},
+	},
+	run: ({ args }) =>
+		attempt(async () => {
+			if (args.version !== undefined) requireVersion(args.version);
+
+			const cfg = loadConfig();
+			// The version is validated above, so it needs no encoding of its own.
+			const query = args.version === undefined ? "" : `?v=${args.version}`;
+			const body = await apiStream(cfg, "GET", p`/api/documents/${args["doc-id"]}/content` + query);
+			if (!body) return;
+			// Streamed verbatim, with no trailing newline added: `poof cat id > out.html`
+			// has to be byte-identical to what /raw serves. `end: false` leaves stdout
+			// open for whatever citty does after us; a reader that hangs up (`| head`)
+			// surfaces as EPIPE, which is a clean stop, not an error to report.
+			await pipeline(Readable.fromWeb(body), process.stdout, { end: false }).catch((err: NodeJS.ErrnoException) => {
+				if (err.code !== "EPIPE") throw err;
+			});
+		}),
+});
 
 const ls = defineCommand({
 	meta: {
@@ -220,9 +268,7 @@ const rollback = defineCommand({
 	},
 	run: ({ args }) =>
 		attempt(async () => {
-			// Reject a malformed version before the network: the server answers 400 for
-			// this, but there is no reason to spend a round-trip on a local typo.
-			if (!/^[1-9][0-9]*$/.test(args.version)) fail(`invalid version '${args.version}' (expected a positive integer)`);
+			requireVersion(args.version);
 
 			const cfg = loadConfig();
 			const result = await api<RollbackResult>(
@@ -350,7 +396,7 @@ const main = defineCommand({
 			"Ephemeral document viewer & sharing CLI. " +
 			"Reads POOF_URL, POOF_ACCESS_CLIENT_ID, and POOF_ACCESS_CLIENT_SECRET from the environment.",
 	},
-	subCommands: { ls, push, revoke, rm, rollback, share, update, versions },
+	subCommands: { cat, ls, push, revoke, rm, rollback, share, update, versions },
 });
 
 runMain(main);

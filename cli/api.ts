@@ -133,3 +133,13 @@ export async function api<T>(cfg: PoofConfig, method: string, path: string, body
 	}
 	return (await res.json()) as T;
 }
+
+/**
+ * Same request, but hands back the undecoded body stream — documents run to
+ * 10 MiB, so `poof cat big > out.html` must not buffer the whole thing as a JS
+ * string before writing its first byte. Null only if the server sent no body.
+ */
+export async function apiStream(cfg: PoofConfig, method: string, path: string): Promise<ReadableStream | null> {
+	const res = await request(cfg, method, path);
+	return res.body;
+}

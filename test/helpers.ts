@@ -90,3 +90,16 @@ export async function seedShare(
 		revoked: opts.revoked ?? 0,
 	});
 }
+
+/**
+ * Every response header as one "name: value\n" blob — for the negative
+ * assertions ("no `allow-*` anywhere in here") that have to cover headers the
+ * spec does not name individually.
+ */
+export function headerDump(res: Response): string {
+	let all = "";
+	res.headers.forEach((v, k) => {
+		all += `${k}: ${v}\n`;
+	});
+	return all;
+}

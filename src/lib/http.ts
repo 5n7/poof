@@ -36,6 +36,24 @@ export const RAW_HEADERS: Record<string, string> = {
 	"Cache-Control": "no-store",
 };
 
+/**
+ * Security headers on every `GET /api/documents/:id/content` response (200s,
+ * 400s and 404s alike) — the endpoint `poof cat` reads. It hands out untrusted
+ * document HTML from the real `poof.5n7.me` origin, where SPEC §6.1 forbids
+ * executing it, so a browser that navigates here carrying the Access cookie
+ * must see text, never markup: a bare `sandbox` (never `allow-scripts`) plus
+ * `nosniff`. The 200 body additionally carries `Content-Type: text/plain;
+ * charset=utf-8`, which is what `nosniff` then pins it to; the 400/404 bodies
+ * keep their own JSON / `uniform404` types.
+ */
+export const API_CONTENT_HEADERS: Record<string, string> = {
+	"Content-Security-Policy": "sandbox",
+	"Referrer-Policy": "no-referrer",
+	"X-Robots-Tag": "noindex",
+	"X-Content-Type-Options": "nosniff",
+	"Cache-Control": "no-store",
+};
+
 /** Headers on viewer pages (`/d/*`, `/v/*`) — SPEC §9. */
 export const VIEWER_HEADERS: Record<string, string> = {
 	"Referrer-Policy": "no-referrer",

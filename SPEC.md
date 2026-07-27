@@ -248,6 +248,7 @@ Free-tier Workers allow 10ms CPU per request, so rendering happens **once per ve
 | `DELETE /api/documents/:id`                          | Access                       | Delete document (+every version's blob, cascades shares)            |
 | `POST /api/documents/:id/versions`                   | Access (incl. service token) | Add a version and make it live; body = file + kind + optional title |
 | `GET /api/documents/:id/versions`                    | Access                       | List versions (newest first) + `current_version`; no `r2_key`       |
+| `GET /api/documents/:id/content`                     | Access                       | Raw stored HTML of the current version; `?v=N` pins a past one      |
 | `POST /api/documents/:id/versions/:version/rollback` | Access                       | Point the document at an existing version                           |
 | `POST /api/documents/:id/shares`                     | Access                       | Issue share (TTL param) → returns `/v/{token}` URL                  |
 | `GET /api/documents/:id/shares`                      | Access                       | List active shares for a document                                   |
@@ -263,6 +264,7 @@ Version-route conventions:
 - A new version is gated on the document being **live** (not merely existing), so an owner-expired document 404s on both the POST and the GET, exactly like `POST …/shares`.
 - The write is a three-phase sequence — stage the row, put the blob, then one guarded `UPDATE` as the atomic cutover — so a reader always sees either the old version or the new one, never a pointer to a blob that isn't there yet.
 - Rollback is a path (`…/versions/:version/rollback`), not a `PATCH` assigning `current_version`: it verifies that the target version exists, which folds "no such version" into the existing uniform 404, and it matches the verb the CLI and UI use. A malformed `:version` is a `400 {error:"invalid version"}`; a well-formed but unknown one is a uniform 404. Rolling back to the version that is already live is an idempotent no-op that does not bump `updated_at`.
+- `GET …/content` takes its version pin from `?v=N`, which `/raw` refuses (§6.2), because the two routes authorize differently: on `/raw` the token _is_ the authorization, so a URL version would let a share holder enumerate history, while `…/content` sits behind Access, where the session authorizes and the URL grants nothing. Malformed `v` is a `400 {error:"invalid version"}`, unknown is a uniform 404. The body is served as `text/plain; charset=utf-8` with `nosniff` and a bare `sandbox` CSP: it is untrusted document HTML on the real origin, which §6.1 forbids executing there, so a browser navigating in with the Access cookie must render text, never markup.
 - `/d/{id}?v=N` is a page, not an API, so a malformed `v` is a uniform 404 rather than a 400. `?v=` naming the live version falls through to the normal viewer instead of rendering the current content as a read-only dead end.
 
 **Cloudflare Access configuration**: one Access application protecting `poof.5n7.me` with an allow policy (owner's Google account) **plus a service-token policy** (for the CLI), and a bypass application for `/v/*` and `/raw/*`.
@@ -276,6 +278,8 @@ The primary upload path in practice (AI output → terminal → link). TypeScrip
 ```
 poof push <file> [--title <t>] [--ttl <dur>] [--share [--share-ttl 1d]]
                                 # upload; prints /d/{id} URL; --share also prints /v/{token}
+poof cat <doc-id> [--version <n>]
+                                # print the stored (rendered) HTML to stdout
 poof ls                         # list documents
 poof update <doc-id> <file> [--title <t>]
                                 # new version of an existing document; prints /d/{id} then v{n}
@@ -292,6 +296,8 @@ poof rm <doc-id>
 - **Title**: `push` defaults to the first `# heading` (Markdown) or the filename. `update` **keeps the existing title** unless `--title` is passed — silently renaming a document on every content fix (down to the `<title>` on the recipient's page) would be a surprise, so the inference is deliberately not reused here.
 - `ls` columns are `ID TITLE KIND VER UPDATED EXPIRES`. `VER` is `current_version`; `UPDATED` replaces the old `CREATED` to hold the table at six columns — an un-updated document has `updated_at === created_at`, and the true creation time is version 1's `created_at` in `poof versions`.
 - `rollback` validates the version number locally before spending a round-trip, and prints `rolled back {id} to v{n}`.
+- `cat` prints **the rendered HTML, not the Markdown source**: only the rendered blob is retained (§8), so a Markdown document comes back wrapped in the viewer template. It is for checking what a recipient actually sees — piping it back through `update` would overwrite the document with its own rendering and destroy the source. `--version` is validated locally like `rollback`'s, and the body is written to stdout verbatim (no added trailing newline), so `poof cat {id} > out.html` is byte-identical to what `/raw` serves.
+- The API answers `cat` with `text/plain`, not `text/html`, even though the body is HTML: the response comes from the real `poof.5n7.me` origin, so it must be inert if a browser ever navigates to it (§6.1, §9). The CLI does not care about the type, and the choice costs it nothing.
 
 ## 11. Main flows
 
@@ -308,6 +314,7 @@ poof rm <doc-id>
 - **Physically separate serving origin** (e.g. `poof-v.5n7.me`) if sharing with third parties becomes serious — full cookie-space isolation on top of the CSP sandbox. Near-zero cost with an extra Workers route.
 - **Share-side auth** (passcode or Access allowlist) if unlisted+TTL stops being enough.
 - **Per-share version pinning** — a share that keeps serving the version it was issued against instead of following the current one. The schema already supports it (`share` would gain a nullable `version`); the reason not to build it is that "the link I sent shows what I fixed" is the whole point of §3, and a pinned share silently diverging from the document is the confusing case.
+- **Retaining the source blob** alongside the rendered one, so a document could be round-tripped (`poof cat --source {id} > report.md`, edit, `poof update`) instead of only inspected. Today §8 stores the rendering and nothing else, which is why `poof cat` can only print HTML. Costs a second R2 object per version and a schema column; not worth it until editing-from-the-server is actually wanted.
 - **Version diffs** in the owner UI (v2 vs v3). Needs a diff renderer and a second read path, and so far reading the two versions side by side has been enough.
 - **KV read-through cache** for the public path (§5).
 

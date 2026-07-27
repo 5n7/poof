@@ -107,6 +107,13 @@ dashboard (Access → Applications).
 > requests. The share/owner token in the URL is the authentication for these
 > paths.
 
+> ⚠️ Keep the bypass applications to exactly those two paths — **`/api/*` must
+> never be added to one**. The API is owner-only by session, not by token: its
+> routes list, mutate, and dump documents (`GET /api/documents/:id/content`
+> returns the raw stored HTML of any version) with no secret in the URL to
+> stand in for authentication. A bypass covering `/api/*` would make the whole
+> library world-readable.
+
 ### Service token (for the CLI)
 
 Under **Access → Service Auth**, create a service token named **`poof-cli`**.

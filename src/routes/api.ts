@@ -9,6 +9,7 @@ import {
 	deleteVersion,
 	getDocument,
 	getLiveDocument,
+	getLiveDocumentAt,
 	getVersion,
 	insertDocument,
 	insertShare,
@@ -22,7 +23,7 @@ import {
 	setCurrentVersion,
 	versionR2Key,
 } from "../lib/db";
-import { isVersionString, uniform404 } from "../lib/http";
+import { API_CONTENT_HEADERS, isVersionString, uniform404, withHeaders } from "../lib/http";
 import { renderMarkdown, wrapViewerHtml } from "../lib/render";
 import { nowSeconds } from "../lib/time";
 import { newShareToken, parseTtl, randomToken } from "../lib/tokens";
@@ -223,6 +224,35 @@ apiRoutes.get("/documents/:id/versions", async (c) => {
 		current_version: doc.current_version,
 		versions: versions.map((v) => ({ version: v.version, kind: v.kind, created_at: v.created_at })),
 	});
+});
+
+apiRoutes.use("/documents/:id/content", withHeaders(API_CONTENT_HEADERS));
+
+/**
+ * The stored HTML of one version — what `poof cat` prints. A `?v=N` pin is
+ * accepted here and refused on `/raw` for the same reason: there the token *is*
+ * the authorization, so a version in the URL would let anyone holding a share
+ * link enumerate history, while this route sits behind Access, where the
+ * session is the authorization and the URL grants nothing on its own.
+ */
+apiRoutes.get("/documents/:id/content", async (c) => {
+	const id = c.req.param("id");
+	// Same split as the rollback handler: malformed input is a 400, a well-formed
+	// but unknown version falls into the uniform 404 below.
+	const raw = c.req.query("v");
+	if (raw !== undefined && !isVersionString(raw)) return c.json({ error: "invalid version" }, 400);
+	const asked = raw === undefined ? null : Number(raw);
+
+	const now = nowSeconds();
+	const doc = await getLiveDocumentAt(c.env.DB, id, asked, now);
+	if (!doc) return uniform404(c);
+
+	// A staged version can exist without its blob (phase 1 → 2 of an upload), and
+	// documents run to 10 MiB — so stream the body straight through, as /raw does.
+	const obj = await c.env.BLOBS.get(doc.r2_key);
+	if (!obj) return uniform404(c);
+
+	return new Response(obj.body, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
 });
 
 apiRoutes.post("/documents/:id/versions/:version/rollback", async (c) => {

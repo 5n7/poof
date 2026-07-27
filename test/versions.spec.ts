@@ -1,7 +1,7 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { seedDoc, seedVersion } from "./helpers";
+import { headerDump, seedDoc, seedVersion } from "./helpers";
 
 const BASE = "https://poof.5n7.me";
 
@@ -102,6 +102,17 @@ async function rawText(token: string, query = ""): Promise<string> {
 	return res.text();
 }
 
+async function contentRes(id: string, query = ""): Promise<Response> {
+	return SELF.fetch(`${BASE}/api/documents/${id}/content${query}`);
+}
+
+/** Stored HTML served for a document, asserting a 200 first (like rawText). */
+async function contentText(id: string, query = ""): Promise<string> {
+	const res = await contentRes(id, query);
+	expect(res.status).toBe(200);
+	return res.text();
+}
+
 async function listRow(id: string): Promise<ListRow> {
 	const res = await SELF.fetch(`${BASE}/api/documents`);
 	expect(res.status).toBe(200);
@@ -188,6 +199,138 @@ describe("GET /api/documents/:id/versions", () => {
 			expect(res.status).toBe(404);
 			expect(await res.text()).toBe("Not Found");
 		}
+	});
+});
+
+describe("GET /api/documents/:id/content", () => {
+	it("serves exactly what a share link serves, following the pointer through updates and rollbacks", async () => {
+		const doc = await createDoc("# v1 content", { title: "Cat" });
+		const token = await issueShare(doc.id);
+		expect(await contentText(doc.id)).toBe(await rawText(token));
+
+		await addVersion(doc.id, "# v2 content");
+		const after = await contentText(doc.id);
+		expect(after).toBe(await rawText(token));
+		expect(after).toContain("<h1>v2 content</h1>");
+
+		expect((await rollback(doc.id, 1)).status).toBe(200);
+		const rolled = await contentText(doc.id);
+		expect(rolled).toBe(await rawText(token));
+		expect(rolled).toContain("<h1>v1 content</h1>");
+	});
+
+	it("pins a past version with ?v=N while the default stays on the current one", async () => {
+		const doc = await createDoc("# first", { title: "Cat pin" });
+		await addVersion(doc.id, "# second");
+
+		const pinned = await contentText(doc.id, "?v=1");
+		expect(pinned).toContain("<h1>first</h1>");
+		expect(pinned).not.toContain("second");
+		expect(await contentText(doc.id)).toContain("<h1>second</h1>");
+	});
+
+	it("serves the same bytes with and without a ?v= naming the current version", async () => {
+		const doc = await createDoc("# first", { title: "Cat current pin" });
+		await addVersion(doc.id, "# second");
+
+		const pinned = await contentText(doc.id, "?v=2");
+		expect(pinned).toBe(await contentText(doc.id));
+		expect(pinned).toContain("<h1>second</h1>");
+	});
+
+	it("still serves a version above current_version after a rollback", async () => {
+		const doc = await createDoc("# first", { title: "Cat rolled back" });
+		await addVersion(doc.id, "# second");
+		expect((await rollback(doc.id, 1)).status).toBe(200);
+
+		expect(await contentText(doc.id)).toContain("<h1>first</h1>");
+		// A rollback moves the pointer and nothing else, so history above it stays
+		// readable — v2 is not "in the future", it is just not current.
+		expect(await contentText(doc.id, "?v=2")).toContain("<h1>second</h1>");
+	});
+
+	it("returns the md wrapper for an md version and the html verbatim for an html one", async () => {
+		const doc = await createDoc("# md one", { title: "Cat kinds" });
+		const md = await contentText(doc.id);
+		expect(md).toContain("<h1>md one</h1>");
+		expect(md).toContain("markdown-body");
+
+		await addVersion(doc.id, "<p>raw</p>", { kind: "html" });
+		expect(await contentText(doc.id)).toBe("<p>raw</p>");
+		// The md version is still reachable behind the pin, wrapper and all.
+		expect(await contentText(doc.id, "?v=1")).toContain("markdown-body");
+	});
+
+	it("400s for a malformed ?v=", async () => {
+		const doc = await createDoc("# a", { title: "Cat 400" });
+		for (const v of ["abc", "0", "-1", "1.5"]) {
+			const res = await contentRes(doc.id, `?v=${v}`);
+			expect(res.status).toBe(400);
+			expect(await res.json()).toEqual({ error: "invalid version" });
+		}
+	});
+
+	it("404s for a well-formed but unknown version", async () => {
+		const doc = await createDoc("# a", { title: "Cat 404" });
+		const res = await contentRes(doc.id, "?v=9");
+		expect(res.status).toBe(404);
+		expect(await res.text()).toBe("Not Found");
+	});
+
+	it("404s for an unknown document and for an owner-expired one, pinned or not", async () => {
+		const now = (Date.now() / 1000) | 0;
+		await seedDoc("ver_content_expired", { expiresAt: now - 10 });
+
+		for (const id of ["ver_content_missing", "ver_content_expired"]) {
+			// "?v=1" names a version that does exist on the expired document, so it
+			// covers the pinned lookup rather than falling out as an unknown version.
+			for (const query of ["", "?v=1"]) {
+				const res = await contentRes(id, query);
+				expect(res.status).toBe(404);
+				expect(await res.text()).toBe("Not Found");
+			}
+		}
+	});
+
+	it("404s for a staged version whose blob is missing", async () => {
+		const id = "ver_content_blobless";
+		await seedDoc(id);
+		// Exactly what a crash between phase 1 and phase 2 of an upload leaves behind.
+		await seedVersion(id, 2, { body: null, setCurrent: false });
+
+		const res = await contentRes(id, "?v=2");
+		expect(res.status).toBe(404);
+		expect(await res.text()).toBe("Not Found");
+		// Not over-broad: the current version still serves, byte for byte.
+		expect(await contentText(id)).toBe("<html><body>doc</body></html>");
+	});
+
+	it("serves untrusted HTML as inert text, never as markup", async () => {
+		const source = "<p>hi</p><script>alert(1)</script>";
+		const doc = await createDoc(source, { kind: "html", title: "Cat headers" });
+		const res = await contentRes(doc.id);
+		expect(res.status).toBe(200);
+		// Verbatim: nothing is escaped or rewritten on the way out — the headers
+		// below, not the body, are what keep the script from ever running.
+		expect(await res.text()).toBe(source);
+		expect(res.headers.get("Content-Type")).toBe("text/plain; charset=utf-8");
+		expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+		expect(res.headers.get("Cache-Control")).toBe("no-store");
+		expect(res.headers.get("Content-Security-Policy")).toBe("sandbox");
+
+		const all = headerDump(res);
+		expect(all).not.toContain("allow-scripts");
+		expect(all).not.toContain("allow-same-origin");
+	});
+
+	it("carries the same inert headers on a 404 as on a 200", async () => {
+		const res = await contentRes("ver_content_headers_missing");
+		expect(res.status).toBe(404);
+		expect(res.headers.get("Content-Security-Policy")).toBe("sandbox");
+		expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+		expect(res.headers.get("Cache-Control")).toBe("no-store");
+		expect(res.headers.get("Referrer-Policy")).toBe("no-referrer");
+		expect(res.headers.get("X-Robots-Tag")).toBe("noindex");
 	});
 });
 

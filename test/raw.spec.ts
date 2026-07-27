@@ -2,7 +2,7 @@ import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { mintOwnerToken } from "../src/lib/tokens";
-import { seedDoc, seedShare } from "./helpers";
+import { headerDump, seedDoc, seedShare } from "./helpers";
 
 const now = () => (Date.now() / 1000) | 0;
 
@@ -57,11 +57,7 @@ describe("GET /raw/:token — valid delivery", () => {
 		expect(res.headers.get("Content-Type")).toBe("text/html; charset=utf-8");
 		expect(res.headers.get("Cache-Control")).toBe("no-store");
 
-		let all = "";
-		res.headers.forEach((v, k) => {
-			all += `${k}: ${v}\n`;
-		});
-		expect(all).not.toContain("allow-same-origin");
+		expect(headerDump(res)).not.toContain("allow-same-origin");
 	});
 });
 

@@ -31,6 +31,7 @@ user to set these rather than guessing values.
 ## Commands
 
 ```sh
+poof cat <doc-id> [--version <n>]
 poof ls
 poof push <file> [--title <t>] [--ttl 1h|1d|1w] [--share] [--share-ttl 1h|1d|1w]
 poof revoke <share-token>
@@ -41,6 +42,12 @@ poof update <doc-id> <file> [--title <t>]
 poof versions <doc-id>
 ```
 
+- `cat` prints a document's stored HTML to stdout (`--version <n>` for a past
+  one). ⚠️ The output is the **rendered** HTML, not the Markdown that produced
+  it — poof keeps only the rendering. Use it to verify what a recipient sees.
+  Never `cat` a document and feed the result back through `update`: that
+  replaces the document with its own rendering and destroys the Markdown. To
+  change a document, edit the source file you wrote and `update` from that.
 - `ls` lists documents (id, title, kind, current version, last updated,
   expires).
 - `push` uploads a `.md`/`.markdown` or `.html`/`.htm` file (kind inferred

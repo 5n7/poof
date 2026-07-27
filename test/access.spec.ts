@@ -60,11 +60,15 @@ describe("Access enforcement (DEV_DISABLE_ACCESS unset)", () => {
 		expect(await res.text()).toBe("Forbidden");
 	});
 
-	it("rejects the version API routes without the Access header (403)", async () => {
+	it("rejects the version and content API routes without the Access header (403)", async () => {
 		const requests: [string, RequestInit | undefined][] = [
 			["/api/documents/doc_someid/versions", { method: "POST", body: versionBody() }],
 			["/api/documents/doc_someid/versions", undefined],
 			["/api/documents/doc_someid/versions/1/rollback", { method: "POST" }],
+			// The content route hands out raw document HTML, and its ?v= pin is the
+			// only place a version may come from the URL — both stay behind Access.
+			["/api/documents/doc_someid/content", undefined],
+			["/api/documents/doc_someid/content?v=1", undefined],
 		];
 		for (const [path, init] of requests) {
 			const res = await fetchWith(path, init);

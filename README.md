@@ -17,6 +17,7 @@ the owner to view and roll back to.
 ## Usage
 
 ```sh
+poof cat <doc-id>             # print the stored (rendered) HTML
 poof ls                       # list documents
 poof push report.md --share   # upload + print a share URL (1d TTL)
 poof revoke <share-token>     # kill a share link now
