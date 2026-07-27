@@ -8,6 +8,7 @@ import { basename, extname } from "node:path";
 import {
 	api,
 	loadConfig,
+	p,
 	type DocumentRow,
 	type RollbackResult,
 	type ShareResult,
@@ -154,7 +155,7 @@ const push = defineCommand({
 
 			if (args.share) {
 				const body = args["share-ttl"] ? { ttl: args["share-ttl"] } : {};
-				const share = await api<ShareResult>(cfg, "POST", `/api/documents/${doc.id}/shares`, body);
+				const share = await api<ShareResult>(cfg, "POST", p`/api/documents/${doc.id}/shares`, body);
 				process.stdout.write(`${cfg.url}/v/${share.token}\n`);
 			}
 		}),
@@ -175,7 +176,7 @@ const revoke = defineCommand({
 	run: ({ args }) =>
 		attempt(async () => {
 			const cfg = loadConfig();
-			await api(cfg, "DELETE", `/api/shares/${args["share-token"]}`);
+			await api(cfg, "DELETE", p`/api/shares/${args["share-token"]}`);
 			process.stdout.write(`revoked ${args["share-token"]}\n`);
 		}),
 });
@@ -195,7 +196,7 @@ const rm = defineCommand({
 	run: ({ args }) =>
 		attempt(async () => {
 			const cfg = loadConfig();
-			await api(cfg, "DELETE", `/api/documents/${args["doc-id"]}`);
+			await api(cfg, "DELETE", p`/api/documents/${args["doc-id"]}`);
 			process.stdout.write(`deleted ${args["doc-id"]}\n`);
 		}),
 });
@@ -227,7 +228,7 @@ const rollback = defineCommand({
 			const result = await api<RollbackResult>(
 				cfg,
 				"POST",
-				`/api/documents/${args["doc-id"]}/versions/${args.version}/rollback`,
+				p`/api/documents/${args["doc-id"]}/versions/${args.version}/rollback`,
 			);
 			process.stdout.write(`rolled back ${args["doc-id"]} to v${result.current_version}\n`);
 		}),
@@ -255,7 +256,7 @@ const share = defineCommand({
 		attempt(async () => {
 			const cfg = loadConfig();
 			const body = args["share-ttl"] ? { ttl: args["share-ttl"] } : {};
-			const result = await api<ShareResult>(cfg, "POST", `/api/documents/${args["doc-id"]}/shares`, body);
+			const result = await api<ShareResult>(cfg, "POST", p`/api/documents/${args["doc-id"]}/shares`, body);
 			process.stdout.write(`${cfg.url}/v/${result.token}\n`);
 		}),
 });
@@ -307,7 +308,7 @@ const update = defineCommand({
 			// tells the server to keep the current title; --title is the explicit opt-in.
 			if (args.title) form.append("title", args.title);
 
-			const result = await api<UpdateResult>(cfg, "POST", `/api/documents/${args["doc-id"]}/versions`, form);
+			const result = await api<UpdateResult>(cfg, "POST", p`/api/documents/${args["doc-id"]}/versions`, form);
 			process.stdout.write(`${cfg.url}/d/${result.id}\n`);
 			process.stdout.write(`v${result.version}\n`);
 		}),
@@ -328,7 +329,7 @@ const versions = defineCommand({
 	run: ({ args }) =>
 		attempt(async () => {
 			const cfg = loadConfig();
-			const result = await api<VersionsResult>(cfg, "GET", `/api/documents/${args["doc-id"]}/versions`);
+			const result = await api<VersionsResult>(cfg, "GET", p`/api/documents/${args["doc-id"]}/versions`);
 
 			printTable(
 				["VER", "KIND", "CREATED", "CURRENT"],

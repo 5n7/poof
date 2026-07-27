@@ -81,11 +81,22 @@ export function loadConfig(): PoofConfig {
 }
 
 /**
- * Perform an authenticated API request. Object bodies are sent as JSON;
- * FormData bodies are sent as-is (multipart). Throws with the server error
- * text on a non-2xx response.
+ * Tagged template for API paths: every interpolated value is
+ * percent-encoded. Path segments are user input (ids, tokens): left raw,
+ * `poof cat 'id?v=99' --version 1` would smuggle in its own query and silently
+ * override the pin. Making the encoding part of how a path is *built* means no
+ * call site can forget it.
  */
-export async function api<T>(cfg: PoofConfig, method: string, path: string, body?: FormData | object): Promise<T> {
+export function p(strings: TemplateStringsArray, ...values: string[]): string {
+	return strings.reduce((acc, part, i) => acc + (i > 0 ? encodeURIComponent(values[i - 1]) : "") + part, "");
+}
+
+/**
+ * Perform an authenticated request and return the raw response. Object bodies
+ * are sent as JSON; FormData bodies are sent as-is (multipart). Throws with the
+ * server error text on a non-2xx response.
+ */
+async function request(cfg: PoofConfig, method: string, path: string, body?: FormData | object): Promise<Response> {
 	const headers: Record<string, string> = {
 		"CF-Access-Client-Id": cfg.clientId,
 		"CF-Access-Client-Secret": cfg.clientSecret,
@@ -99,20 +110,26 @@ export async function api<T>(cfg: PoofConfig, method: string, path: string, body
 		payload = JSON.stringify(body);
 	}
 
-	const res = await fetch(`${cfg.url}${path}`, { method, headers, body: payload });
+	// redirect: "manual" — Cloudflare Access answers an unauthenticated request
+	// with a 302 to its sign-in page. Following it would turn an auth failure into
+	// a 200 carrying login HTML: `poof cat` would print it and exit 0, `poof ls`
+	// would parse it into an undefined `documents`. Kept manual, a 3xx stays a
+	// non-2xx and fails like anything else.
+	const res = await fetch(`${cfg.url}${path}`, { method, headers, body: payload, redirect: "manual" });
 
 	if (!res.ok) {
 		const text = await res.text().catch(() => "");
 		throw new Error(`${method} ${path} failed: ${res.status} ${res.statusText}` + (text ? `\n${text}` : ""));
 	}
 
+	return res;
+}
+
+/** Perform an authenticated JSON API request. 204s resolve to undefined. */
+export async function api<T>(cfg: PoofConfig, method: string, path: string, body?: FormData | object): Promise<T> {
+	const res = await request(cfg, method, path, body);
 	if (res.status === 204) {
 		return undefined as T;
 	}
-
-	const contentType = res.headers.get("content-type") ?? "";
-	if (contentType.includes("application/json")) {
-		return (await res.json()) as T;
-	}
-	return (await res.text()) as unknown as T;
+	return (await res.json()) as T;
 }
