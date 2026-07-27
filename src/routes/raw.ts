@@ -1,12 +1,7 @@
 import { Hono } from "hono";
 
-import {
-	type ResolvedDocument,
-	getLiveDocument,
-	getLiveDocumentAtVersion,
-	getLiveDocumentByShareToken,
-} from "../lib/db";
-import { RAW_HEADERS, uniform404 } from "../lib/http";
+import { type ResolvedDocument, getLiveDocumentAt, getLiveDocumentByShareToken } from "../lib/db";
+import { RAW_HEADERS, uniform404, withHeaders } from "../lib/http";
 import { nowSeconds } from "../lib/time";
 import { verifyOwnerToken } from "../lib/tokens";
 
@@ -18,12 +13,7 @@ import { verifyOwnerToken } from "../lib/tokens";
  */
 export const rawRoutes = new Hono<{ Bindings: Env }>();
 
-// Sandbox headers belong on *every* /raw response (200 and 404 alike), so
-// apply them once here rather than per exit path — the invariant is structural.
-rawRoutes.use("*", async (c, next) => {
-	await next();
-	for (const [k, v] of Object.entries(RAW_HEADERS)) c.res.headers.set(k, v);
-});
+rawRoutes.use("*", withHeaders(RAW_HEADERS));
 
 rawRoutes.get("/:token", async (c) => {
 	const token = c.req.param("token");
@@ -38,12 +28,7 @@ rawRoutes.get("/:token", async (c) => {
 		// The version pin comes from the signed payload and nowhere else: here the
 		// token *is* the authorization, so accepting a version from the URL would
 		// let anyone holding a share link enumerate the document's history.
-		if (payload) {
-			doc =
-				payload.version === null
-					? await getLiveDocument(c.env.DB, payload.documentId, now)
-					: await getLiveDocumentAtVersion(c.env.DB, payload.documentId, payload.version, now);
-		}
+		if (payload) doc = await getLiveDocumentAt(c.env.DB, payload.documentId, payload.version, now);
 	}
 	if (!doc) return uniform404(c);
 

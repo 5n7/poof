@@ -177,6 +177,20 @@ export async function getLiveDocumentAtVersion(
 		.first<ResolvedDocument>();
 }
 
+/**
+ * A live document resolved to `version`, or to its current version when
+ * `version` is null — the one branch every versioned read path needs (the API
+ * content route, `/raw` owner tokens, and the owner viewer page).
+ */
+export function getLiveDocumentAt(
+	db: D1Database,
+	id: string,
+	version: number | null,
+	now: number,
+): Promise<ResolvedDocument | null> {
+	return version === null ? getLiveDocument(db, id, now) : getLiveDocumentAtVersion(db, id, version, now);
+}
+
 /** Delete a document row; cascades to its versions and shares. Returns whether a row existed. */
 export async function deleteDocument(db: D1Database, id: string): Promise<boolean> {
 	const res = await db.prepare("DELETE FROM document WHERE id = ?").bind(id).run();

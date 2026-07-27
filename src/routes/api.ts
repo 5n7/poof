@@ -22,7 +22,7 @@ import {
 	setCurrentVersion,
 	versionR2Key,
 } from "../lib/db";
-import { uniform404 } from "../lib/http";
+import { isVersionString, uniform404 } from "../lib/http";
 import { renderMarkdown, wrapViewerHtml } from "../lib/render";
 import { nowSeconds } from "../lib/time";
 import { newShareToken, parseTtl, randomToken } from "../lib/tokens";
@@ -230,7 +230,7 @@ apiRoutes.post("/documents/:id/versions/:version/rollback", async (c) => {
 	// Malformed input is a 400; a well-formed but unknown version falls into the
 	// uniform 404 below, like any other thing that isn't there.
 	const raw = c.req.param("version");
-	if (!/^[1-9][0-9]*$/.test(raw)) return c.json({ error: "invalid version" }, 400);
+	if (!isVersionString(raw)) return c.json({ error: "invalid version" }, 400);
 	const version = Number(raw);
 
 	const now = nowSeconds();

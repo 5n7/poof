@@ -4,13 +4,13 @@ import type { Child, FC, PropsWithChildren } from "hono/jsx";
 import type { ResolvedDocument } from "../lib/db";
 import {
 	getLiveDocument,
-	getLiveDocumentAtVersion,
+	getLiveDocumentAt,
 	getLiveShare,
 	listDocumentsWithShares,
 	listShares,
 	listVersions,
 } from "../lib/db";
-import { applyHeaders, uniform404, VIEWER_HEADERS } from "../lib/http";
+import { applyHeaders, isVersionString, uniform404, VIEWER_HEADERS } from "../lib/http";
 import { nowSeconds } from "../lib/time";
 import { mintOwnerToken } from "../lib/tokens";
 
@@ -556,13 +556,10 @@ export async function ownerViewerPage(c: Ctx<"/d/:id">) {
 	// This is a page, not the API: a malformed `?v=` is not a 400, it is simply
 	// not a page. Unknown versions fold into the same uniform 404 downstream.
 	const rawVersion = c.req.query("v");
-	if (rawVersion !== undefined && !/^[1-9][0-9]*$/.test(rawVersion)) return uniform404(c);
+	if (rawVersion !== undefined && !isVersionString(rawVersion)) return uniform404(c);
 	const asked = rawVersion === undefined ? null : Number(rawVersion);
 
-	const doc =
-		asked === null
-			? await getLiveDocument(c.env.DB, id, now)
-			: await getLiveDocumentAtVersion(c.env.DB, id, asked, now);
+	const doc = await getLiveDocumentAt(c.env.DB, id, asked, now);
 	if (!doc) return uniform404(c);
 	// `?v=` naming the live version is the normal page — never render the current
 	// content as a read-only dead end.
