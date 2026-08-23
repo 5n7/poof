@@ -653,7 +653,7 @@ async function pinnedViewerPage(c: Ctx<"/d/:id">, doc: ResolvedDocument) {
 	);
 }
 
-/** GET /v/:token — public shared viewer; validates the share (SPEC §11.4). */
+/** GET /v/:token — public shared viewer; validates the share (SPEC §12.4). */
 export async function publicViewerPage(c: Ctx<"/v/:token">) {
 	const token = c.req.param("token");
 	const now = nowSeconds();

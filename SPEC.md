@@ -1,6 +1,6 @@
 # poof — Ephemeral Document Viewer & Sharing Tool
 
-_Spec v0.3 — adds document versioning (in-place update, retained history, rollback) on top of v0.2's security review decisions (CSP sandbox, unified delivery path), Mermaid support, and CLI._
+_Spec v0.4 — adds an MCP server (`POST /mcp`) as a second client alongside the CLI, on top of v0.3's document versioning (in-place update, retained history, rollback) and v0.2's security review decisions (CSP sandbox, unified delivery path)._
 
 > **poof**: throw a document in, view it rendered, share it with a TTL, and it goes _poof_. Served at `poof.5n7.me` (Cloudflare, subdomain of `5n7.me`).
 
@@ -22,13 +22,14 @@ View AI-generated design docs and memos (Markdown / HTML) **properly rendered in
 - JavaScript execution inside documents (interactive charts, tabs, widgets)
 - **Mermaid rendering** in Markdown code fences (`` ```mermaid ``)
 - **CLI** for headless upload/share (`poof push design.md --share`)
+- **MCP server** hosted by the Worker, exposing the same operations as tools to AI agents
 
 ### Out of scope (for now)
 
 - Multi-user upload (owner is the only uploader)
 - Viewer authentication for shares (unlisted + TTL is the accepted trade-off)
-- Per-share version pinning and version diffs (future work, §12)
-- Physically separate serving origin (future work, §12)
+- Per-share version pinning and version diffs (future work, §13)
+- Physically separate serving origin (future work, §13)
 
 ## 3. Core model: two surfaces
 
@@ -253,6 +254,7 @@ Free-tier Workers allow 10ms CPU per request, so rendering happens **once per ve
 | `POST /api/documents/:id/shares`                     | Access                       | Issue share (TTL param) → returns `/v/{token}` URL                  |
 | `GET /api/documents/:id/shares`                      | Access                       | List active shares for a document                                   |
 | `DELETE /api/shares/:token`                          | Access                       | Revoke (`revoked=1`, immediate)                                     |
+| `POST /mcp`                                          | Access (incl. service token) | MCP server (Streamable HTTP): nine tools over the same core (§11)   |
 | `GET /d/:id`                                         | Access                       | Private viewer page (mints `o_` token, embeds iframe)               |
 | `GET /d/:id?v=N`                                     | Access                       | Read-only view of version N (banner, no Share, no uploader)         |
 | `GET /v/:token`                                      | none                         | Public shared viewer page; **always the current version**           |
@@ -267,7 +269,7 @@ Version-route conventions:
 - `GET …/content` takes its version pin from `?v=N`, which `/raw` refuses (§6.2), because the two routes authorize differently: on `/raw` the token _is_ the authorization, so a URL version would let a share holder enumerate history, while `…/content` sits behind Access, where the session authorizes and the URL grants nothing. Malformed `v` is a `400 {error:"invalid version"}`, unknown is a uniform 404. The body is served as `text/plain; charset=utf-8` with `nosniff` and a bare `sandbox` CSP: it is untrusted document HTML on the real origin, which §6.1 forbids executing there, so a browser navigating in with the Access cookie must render text, never markup.
 - `/d/{id}?v=N` is a page, not an API, so a malformed `v` is a uniform 404 rather than a 400. `?v=` naming the live version falls through to the normal viewer instead of rendering the current content as a read-only dead end.
 
-**Cloudflare Access configuration**: one Access application protecting `poof.5n7.me` with an allow policy (owner's Google account) **plus a service-token policy** (for the CLI), and a bypass application for `/v/*` and `/raw/*`.
+**Cloudflare Access configuration**: one Access application protecting `poof.5n7.me` with an allow policy (owner's Google account) **plus a service-token policy** (for the CLI and MCP clients), and a bypass application for `/v/*` and `/raw/*`. `/mcp` falls under the same application as `/` and `/api/*` and needs no rule of its own; the bypass list stays exactly `/v/*` and `/raw/*`.
 
 Viewer pages (`/d/*`, `/v/*`) also send `Referrer-Policy: no-referrer` so links inside documents can't leak token URLs via `Referer`.
 
@@ -299,46 +301,113 @@ poof rm <doc-id>
 - `cat` prints **the rendered HTML, not the Markdown source**: only the rendered blob is retained (§8), so a Markdown document comes back wrapped in the viewer template. It is for checking what a recipient actually sees — piping it back through `update` would overwrite the document with its own rendering and destroy the source. `--version` is validated locally like `rollback`'s, and the body is written to stdout verbatim (no added trailing newline), so `poof cat {id} > out.html` is byte-identical to what `/raw` serves.
 - The API answers `cat` with `text/plain`, not `text/html`, even though the body is HTML: the response comes from the real `poof.5n7.me` origin, so it must be inert if a browser ever navigates to it (§6.1, §9). The CLI does not care about the type, and the choice costs it nothing.
 
-## 11. Main flows
+## 11. MCP server
 
-1. **Upload (web or CLI)** → render if MD → insert `document` + version 1 rows → store blob in R2 → return URL.
+The second client surface, alongside the CLI: an **MCP server hosted by the Worker itself** at `POST /mcp`, so an AI agent can push and manage documents without shelling out to `poof`. Same operations, same backend, nothing extra to install or keep running — the deployment that already answers `/api/*` answers `/mcp` too.
+
+### 11.1 Transport, and why it is stateless
+
+**Streamable HTTP**, via `@hono/mcp`'s `StreamableHTTPTransport` over `@modelcontextprotocol/sdk`, mounted as one ordinary Hono route. stdio is not an option (there is no local process to speak it), and the deprecated HTTP+SSE transport would need a second endpoint plus a connection held open — exactly the thing a request-scoped Workers isolate cannot promise. New dependencies: `@hono/mcp`, `@modelcontextprotocol/sdk`, and `zod` for tool input schemas; the bundle grows ~196 KB gzipped. No Durable Objects, no `nodejs_compat`.
+
+**A fresh `McpServer` and transport are constructed per request, and no session id is issued.** Isolates are created, reused, and discarded outside the Worker's control: a server instance parked in module scope would be shared by whatever unrelated requests land in that isolate and be absent from the next one, so "the session" would exist or not exist depending on routing luck. Statelessness makes that a non-question. Nothing is lost by it — every tool call is a self-contained API operation with no cross-call state to keep — and the per-request cost is a constructor and a schema registration, not a round-trip.
+
+**The route takes `POST` only**, and answers every other method with `405` and an `Allow: POST` header. Streamable HTTP also defines a `GET` that opens an SSE stream for server-initiated messages, but a stateless server has nothing to initiate: the stream could only ever be an idle connection held open by keep-alive pings — the same held-open connection that ruled out HTTP+SSE above, arrived at from the other direction. The MCP specification anticipates exactly this and permits a server that offers no SSE stream at the endpoint to answer `GET` with `405` — so the status is the documented way to say "this endpoint is POST-only", not a gap. That permission is not merely on paper: the reference client swallows the status and returns rather than raising, calling it in its own source "an expected case that should not trigger an error" (`@modelcontextprotocol/sdk`, `client/streamableHttp.js`), and handles a `405` on `DELETE` the same way, as "the server does not support explicit session termination". POST-only is a negotiation path the ecosystem implements, not an edge case it merely tolerates.
+
+The 405 has to be registered, not left to fall out: a bare `post("/")` would hand a `GET` to Hono's fall-through **404**, which says "no such endpoint" — the opposite of the truth, and unrecognisable to a client that is looking for the 405 to mean "this server has no stream for you". An explicit `all("/")` after the POST route supplies it, with the `Allow: POST` header the status requires. §9's route table names the method for the same reason.
+
+### 11.2 Auth
+
+`/mcp` sits behind Cloudflare Access exactly like `/api/*`: the same `accessAuth` middleware, registered in the same Access-protected block of `src/index.ts`, plus the same `csrfProtection` guard on state-changing requests (moved out of `src/routes/api.ts` into `src/lib/http.ts` so the two surfaces share one copy rather than two that can drift). Clients authenticate with the **same Access service token the CLI uses**, sent as `CF-Access-Client-Id` / `CF-Access-Client-Secret`; Access exchanges those for the `Cf-Access-Jwt-Assertion` the Worker verifies (§4). No new credential, no second Access application, no token kind of its own — the MCP server carries exactly the owner's authority and nothing more, and revoking the service token closes both clients at once.
+
+`/v/*` and `/raw/*` are untouched and stay public. The tool surface is entirely inside the Access boundary, so it is unreachable without the service token — a share link has never granted anything but "read the current version of this one document", and adding MCP does not change that.
+
+### 11.3 Tools
+
+Nine tools, named exactly after the CLI subcommands (§10) so one mental model covers both clients and the skill's vocabulary transfers unchanged. Clients namespace them — Claude Code exposes `push` as `mcp__poof__push`.
+
+| Tool       | Input                                                                                     | Result                                                                |
+| ---------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `cat`      | document id, optional version                                                             | The stored (rendered) HTML of that version, capped at 128 KiB (§11.4) |
+| `ls`       | —                                                                                         | Documents, newest first, as `poof ls` shows them                      |
+| `push`     | content, kind, optional title, document TTL, share flag + share TTL                       | New document: `/d/{id}` URL, plus a `/v/{token}` URL when shared      |
+| `revoke`   | share token                                                                               | The share is dead on the next request                                 |
+| `rm`       | document id                                                                               | Document, every version's blob, and all its shares deleted            |
+| `rollback` | document id, version                                                                      | That version becomes current; no blob written                         |
+| `share`    | document id, optional share TTL (`1h` / `1d` / `1w`)                                      | A `/v/{token}` URL                                                    |
+| `update`   | document id, content, optional kind (default: the document's current one), optional title | New version, live immediately; same `/d/{id}` and same share links    |
+| `versions` | document id                                                                               | Version history, newest first, with the current one marked            |
+
+Semantics are the CLI's, not a second dialect: the same `md` / `html` kinds, the same 10 MiB cap, the same 1h/1d/1w share TTLs, the same default of 1 day, and the same two-surface URL model (§3).
+
+Foreseeable failures come back **as tool results, not exceptions** — an unknown id, an expired document, oversized content — each a one-sentence `isError` text block the caller can act on.
+
+**The tools distinguish "no such document" from "no such version", where the JSON API folds both into one uniform 404 (§9).** That is deliberate, and it does not weaken §6.3. Uniformity there is a property of the **public** surface: on `/raw` and `/v` the token _is_ the authorization, so a probe must not be able to tell a token that never existed from one that expired or was revoked. Every tool call has already cleared Access (§11.2), so the caller is the owner — who can list the entire library with `ls` regardless, and therefore learns nothing from the distinction that they could not learn by asking. What it buys is the caller's next move: "no live document with that id" sends them to `ls`, "no version N of document X" sends them to `versions`, and a single message for both would have a model guess between them. Inside the document case the states stay folded — "it may never have existed, or its TTL has passed" is one sentence, because no caller acts differently on the two.
+
+### 11.4 Where the tools differ from the CLI
+
+**Content, not a path.** The MCP server runs on the Worker and has no access to the caller's filesystem, so `push` and `update` take the document **content as a string** rather than a file path — which an agent that has just written the document has in hand anyway. Two CLI behaviours hang off the file name and therefore have to be replaced rather than mirrored: `kind` becomes an `md` | `html` input instead of an extension inference, and `push` applies the same first-`#`-heading title rule as the CLI (§10) but falls back to `untitled` where the CLI falls back to the file name.
+
+**What an omitted `kind` means differs between the two tools, and from a single rule**: when the caller does not say, fall back to the best evidence available of what the content is. The CLI never has to fall back — the file it was handed carries an extension. `push` has no evidence at all: a brand-new document has no history, and Markdown is the overwhelming case, so an omitted kind means `md`. `update` does have evidence, the document's current kind, and it is better evidence than a blanket `md` — so an omitted kind **inherits**, and only an explicit `kind` moves a document between Markdown and HTML from one version to the next. That remains allowed and costs nothing (§5 records `kind` per version); it just has to be asked for. One principle, two answers, not two conventions.
+
+The rejected alternative is the symmetric one, defaulting `update` to `md` like `push`. It makes "update this document" quietly change what the document _is_: revising an HTML document without repeating `kind: "html"` would re-render its markup as Markdown, producing a valid new version rather than an error — and by §3 that version is live to everyone holding a share link before anyone notices. A silently wrong rendering is a worse failure than a missing argument, and the caller who omits the argument is precisely the one who did not think about kind at all. A misspelled kind is safe by comparison: the enum rejects `markdown` or `txt` before the handler runs, so nothing is ever coerced.
+
+**Absolute URLs.** Tool results carry full `https://poof.5n7.me/d/{id}` and `/v/{token}` URLs, built from the request origin, where the JSON API returns the relative `/d/{id}` and `/v/{token}` (§9). The CLI joins those against its own `POOF_URL`; an MCP client has no such variable, and a tool result is routinely pasted straight into a chat message or a commit comment, where a bare path is useless.
+
+**A bounded `cat`.** The tool caps its output at **128 KiB**. A document under the cap comes back unchanged; past it the result is truncated and carries a notice giving the document's true total size and its absolute `/d/{id}` URL, so the caller knows it is holding a fragment and where the whole thing is — repeating, as every tool result that emits a `/d/{id}` does, that the URL is owner-only. Neither `poof cat` nor `GET /api/documents/:id/content` (§9) is capped, and both deliberately keep streaming: documents run to 10 MiB, which costs nothing written to a file or a terminal and costs everything written into a model's context window. The limit exists because of the client's medium, not because of the operation, so it lives in the adapter and nowhere near the shared core (§11.5) — the inconsistency between the two surfaces is the point, not an oversight to be tidied away later. Truncation keeps the **head** of the blob: in a `wrapViewerHtml` document that is the reader-visible content, while the tail it drops is the lazy Mermaid and highlight.js loader (§8), which tells a caller checking what a recipient sees nothing it could not already infer. The cap is applied while reading — the stream is pulled to the limit and then cancelled — so an oversized blob is never buffered whole just to be thrown away.
+
+**The cautions ship with the tools.** A tool description is the only documentation the caller reads, so the warnings the Claude Code skill teaches are carried over verbatim rather than assumed. They live in two places on purpose: the server's `instructions` block, handed to the model once ahead of any call, holds the ones that are expensive to get wrong and that no single tool description is guaranteed to be read for — `/d/{id}` is owner-only and must never be handed to a recipient, a `/v/{token}` URL _is_ the secret, a revision is an `update` on the same id rather than a second document, an update or rollback is instantly visible to everyone already holding a live share link, and nothing secret belongs in a shared document. The per-tool descriptions then repeat the caution that belongs to their own operation, most sharply on `cat`: it returns the rendering, never the source, and must never be fed back into `update`.
+
+### 11.5 One core, two adapters
+
+The tools and the JSON API are **not** two implementations of the same rules. The core operations — create a document, add a version, roll the pointer back, issue a share — move into `src/lib/`, `src/routes/api.ts` becomes a thin HTTP adapter over them (multipart in, JSON out), and the MCP tools become a second, equally thin adapter (arguments in, text out). The version-numbering rules of §5 and the three-phase write of §9 are subtle enough that a second copy would diverge silently, and only one of the two surfaces would ever be the one under test.
+
+**Which side of that boundary a limit lives on follows from what the limit is about.** The 10 MiB upload cap (§9) is a property of the document — true of every client, and an invariant the core owes R2 — so it lives in `src/lib/` and throws. Both adapters still check the size first and phrase the refusal in their own idiom (a `413` on `/api`, an `isError` result on `/mcp`), so the core's exception should never be what rejects a real request; it is there so that a third write adapter which forgets the check gets an exception instead of putting a 10 MiB blob in R2. The 128 KiB `cat` cap (§11.4) is the mirror image: a property of the **caller's medium** rather than of the document, so it lives in the MCP adapter and nowhere else. Two constraints that share the word "limit" sit on opposite sides of the boundary, and one question decides which: is this about the data, or about who is asking?
+
+The rejected alternative was letting the tools call the Worker's own `/api/*` over HTTP. It would re-enter Access from inside the Worker — a service token calling itself — and pay a full extra request per tool call, to reuse code that a function call reuses for free.
+
+## 12. Main flows
+
+1. **Upload (web, CLI, or MCP `push`)** → render if MD → insert `document` + version 1 rows → store blob in R2 → return URL.
 2. **Library view** → `/` lists `ORDER BY created_at DESC` → `/d/{id}` embeds sandboxed iframe via minted `o_` token.
 3. **Issue share** → insert `share` row → return `poof.5n7.me/v/{token}`.
 4. **Shared view** → `/v/{token}` validates share (404 on any failure) → joins to the document's **current** version → sandboxed iframe → `/raw/s_{token}` → R2 blob.
 5. **Revoke** → `revoked=1` → next request 404s immediately.
-6. **Update** → `poof update {id} file.md` (or drop/⌘V on `/d/{id}`) → render → stage version `MAX+1` → put blob → move `current_version` → **every existing share link serves the new content on its next load**, same token, nothing re-issued.
+6. **Update** → `poof update {id} file.md` (or the `update` tool, or drop/⌘V on `/d/{id}`) → render → stage version `MAX+1` → put blob → move `current_version` → **every existing share link serves the new content on its next load**, same token, nothing re-issued.
 7. **Rollback** → `poof versions {id}` to pick a number (or the versions modal on `/d/{id}`) → `poof rollback {id} N` → one guarded `UPDATE` of the pointer, no blob written → live share links follow immediately, and a later update is numbered `MAX+1`, not `N+1`.
 
-## 12. Future work (explicitly not now)
+## 13. Future work (explicitly not now)
 
 - **Physically separate serving origin** (e.g. `poof-v.5n7.me`) if sharing with third parties becomes serious — full cookie-space isolation on top of the CSP sandbox. Near-zero cost with an extra Workers route.
 - **Share-side auth** (passcode or Access allowlist) if unlisted+TTL stops being enough.
 - **Per-share version pinning** — a share that keeps serving the version it was issued against instead of following the current one. The schema already supports it (`share` would gain a nullable `version`); the reason not to build it is that "the link I sent shows what I fixed" is the whole point of §3, and a pinned share silently diverging from the document is the confusing case.
-- **Retaining the source blob** alongside the rendered one, so a document could be round-tripped (`poof cat --source {id} > report.md`, edit, `poof update`) instead of only inspected. Today §8 stores the rendering and nothing else, which is why `poof cat` can only print HTML. Costs a second R2 object per version and a schema column; not worth it until editing-from-the-server is actually wanted.
+- **Retaining the source blob** alongside the rendered one, so a document could be round-tripped (`poof cat --source {id} > report.md`, edit, `poof update`) instead of only inspected. Today §8 stores the rendering and nothing else, which is why `poof cat` can only print HTML — and why the MCP `cat` tool inherits the same constraint, warning in its own description that its output must never be handed back to `update` (§11.4). Costs a second R2 object per version and a schema column; not worth it until editing-from-the-server is actually wanted.
 - **Version diffs** in the owner UI (v2 vs v3). Needs a diff renderer and a second read path, and so far reading the two versions side by side has been enough.
 - **KV read-through cache** for the public path (§5).
 
-## 13. Cost
+## 14. Cost
 
 $0/month realistic. All components in free tiers; R2 egress is free. Only real cost is the domain (~$10/year, already owned).
 
-## 14. Decision summary
+## 15. Decision summary
 
-| Item              | Decision                                                                                                                                                          |
-| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Share model       | Unlisted URL + TTL; `share` as its own entity; revocation in initial scope                                                                                        |
-| Versioning        | Document = stable identity + ordered immutable versions; `document_version` is the only source of truth for blobs; `current_version` is a pointer, next = `MAX+1` |
-| Share on update   | Shares **follow the current version** — an update reaches everyone holding a live link, no re-issue; per-share pinning is out of scope (§12)                      |
-| Rollback          | `POST …/versions/:version/rollback`; pointer move only, no blob copied; already-current is an idempotent no-op                                                    |
-| Version viewing   | Owner-only: `/d/{id}?v=N` (read-only, behind Access) via an `o_` token with the version **inside the signed payload**; `/raw` never accepts a `v` query param     |
-| Security boundary | **CSP `sandbox allow-scripts allow-popups` response header** on `/raw/*` (primary) + iframe `sandbox` attribute (defense in depth); never `allow-same-origin`     |
-| Delivery path     | Single public `/raw/{token}` endpoint; `s_` share tokens (D1) + `o_` owner tokens (HMAC, ~10 min)                                                                 |
-| Sanitization      | None; all docs treated as untrusted blobs, sandbox is the boundary                                                                                                |
-| Rendering         | Write-time `markdown-it` in the Worker; Mermaid + highlight.js lazily loaded client-side inside the sandbox                                                       |
-| Errors            | Uniform 404 for missing/expired/revoked                                                                                                                           |
-| Tokens            | `crypto.getRandomValues`, 128-bit, base64url                                                                                                                      |
-| Auth              | Cloudflare Access (`/` + API); service token for CLI; bypass on `/v/*` `/raw/*`                                                                                   |
-| Infra / stack     | Cloudflare Workers + R2 + D1 + Access; TypeScript + Hono + wrangler + vitest-pool-workers                                                                         |
-| Provisioning      | Idempotent `scripts/bootstrap.sh` + `docs/SETUP.md`; no Terraform until environments multiply; `workers_dev` disabled; Access JWT verified in-Worker              |
-| TTL defaults      | Library: none; shares: 1 day (1h/1d/1w selectable)                                                                                                                |
-| Headers           | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex` on viewer/raw paths                                                                                       |
+| Item              | Decision                                                                                                                                                                                                                                                                    |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Share model       | Unlisted URL + TTL; `share` as its own entity; revocation in initial scope                                                                                                                                                                                                  |
+| Versioning        | Document = stable identity + ordered immutable versions; `document_version` is the only source of truth for blobs; `current_version` is a pointer, next = `MAX+1`                                                                                                           |
+| Share on update   | Shares **follow the current version** — an update reaches everyone holding a live link, no re-issue; per-share pinning is out of scope (§13)                                                                                                                                |
+| Rollback          | `POST …/versions/:version/rollback`; pointer move only, no blob copied; already-current is an idempotent no-op                                                                                                                                                              |
+| Version viewing   | Owner-only: `/d/{id}?v=N` (read-only, behind Access) via an `o_` token with the version **inside the signed payload**; `/raw` never accepts a `v` query param                                                                                                               |
+| Security boundary | **CSP `sandbox allow-scripts allow-popups` response header** on `/raw/*` (primary) + iframe `sandbox` attribute (defense in depth); never `allow-same-origin`                                                                                                               |
+| Delivery path     | Single public `/raw/{token}` endpoint; `s_` share tokens (D1) + `o_` owner tokens (HMAC, ~10 min)                                                                                                                                                                           |
+| Sanitization      | None; all docs treated as untrusted blobs, sandbox is the boundary                                                                                                                                                                                                          |
+| Rendering         | Write-time `markdown-it` in the Worker; Mermaid + highlight.js lazily loaded client-side inside the sandbox                                                                                                                                                                 |
+| Errors            | Uniform 404 for missing/expired/revoked                                                                                                                                                                                                                                     |
+| Tokens            | `crypto.getRandomValues`, 128-bit, base64url                                                                                                                                                                                                                                |
+| MCP server        | Worker-hosted at `POST /mcp`, Streamable HTTP (`@hono/mcp`), **stateless** — new server per request, no session id, because isolates are not sticky; POST-only, `405` + `Allow: POST` elsewhere (no SSE stream to offer)                                                    |
+| MCP auth          | Same Access application and same CLI service token (`CF-Access-Client-*`) as `/api/*`, plus the shared CSRF guard; no new credential and no new bypass                                                                                                                      |
+| MCP tools         | Nine, named after the CLI subcommands; `push`/`update` take content, not a file path; an omitted `kind` means `md` on `push` and the document's current kind on `update`; `cat` capped at 128 KiB; results carry absolute URLs; one shared core in `src/lib/`, two adapters |
+| Auth              | Cloudflare Access (`/` + API + `/mcp`); service token for CLI and MCP clients; bypass on `/v/*` `/raw/*`                                                                                                                                                                    |
+| Infra / stack     | Cloudflare Workers + R2 + D1 + Access; TypeScript + Hono + wrangler + vitest-pool-workers                                                                                                                                                                                   |
+| Provisioning      | Idempotent `scripts/bootstrap.sh` + `docs/SETUP.md`; no Terraform until environments multiply; `workers_dev` disabled; Access JWT verified in-Worker                                                                                                                        |
+| TTL defaults      | Library: none; shares: 1 day (1h/1d/1w selectable)                                                                                                                                                                                                                          |
+| Headers           | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex` on viewer/raw paths                                                                                                                                                                                                 |

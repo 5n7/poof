@@ -1,4 +1,22 @@
-import type { Context, MiddlewareHandler } from "hono";
+import type { Context, MiddlewareHandler, Next } from "hono";
+
+/**
+ * CSRF guard for state-changing requests, applied to `/api/*` and `/mcp` — the
+ * two Access-protected write surfaces. A cross-origin form/script can drive the
+ * browser to POST/DELETE with the user's Access cookie attached, so we reject
+ * any `Sec-Fetch-Site` the browser reports as cross-origin. The header is absent
+ * on non-browser clients (the CLI's Node fetch, MCP clients, service tokens), so
+ * an absent value must pass. Safe methods (GET) are never guarded.
+ */
+export async function csrfProtection(c: Context<{ Bindings: Env }>, next: Next) {
+	if (c.req.method !== "GET") {
+		const site = c.req.header("Sec-Fetch-Site");
+		if (site !== undefined && site !== "same-origin" && site !== "none") {
+			return c.text("Forbidden", 403);
+		}
+	}
+	return next();
+}
 
 /**
  * The single 404 used on all public paths (`/raw`, `/v`, and delete-by-token
@@ -14,7 +32,7 @@ const VERSION_PATTERN = /^[1-9][0-9]*$/;
 /**
  * Is `raw` a well-formed version number? Only the judgment is shared — what a
  * malformed one means is not: the API answers 400, the viewer pages answer the
- * uniform 404 (SPEC §11.4). Each caller keeps its own response.
+ * uniform 404 (SPEC §12.4). Each caller keeps its own response.
  */
 export function isVersionString(raw: string): boolean {
 	return VERSION_PATTERN.test(raw);

@@ -85,12 +85,14 @@ dashboard (Access → Applications).
 ### App 1 — Owner surface (self-hosted)
 
 - **Type**: Self-hosted.
-- **Path**: `poof.5n7.me/` (protects the library, viewer `/d/*`, and `/api/*`).
+- **Path**: `poof.5n7.me/` (protects the library, viewer `/d/*`, `/api/*`, and
+  the MCP endpoint `/mcp`).
 - **Policies**:
   - **Allow** — your owner identity (Google account); add **One-Time PIN** as a
     backup login method.
   - **Service Auth** — a policy that accepts the CLI **service token** (created
-    below). This lets `poof push` and friends authenticate headlessly.
+    below). This lets `poof push` and friends — and MCP clients, which use the
+    same token — authenticate headlessly.
 
 ### App 2 — Public shared viewer (bypass)
 
@@ -107,18 +109,20 @@ dashboard (Access → Applications).
 > requests. The share/owner token in the URL is the authentication for these
 > paths.
 
-> ⚠️ Keep the bypass applications to exactly those two paths — **`/api/*` must
-> never be added to one**. The API is owner-only by session, not by token: its
-> routes list, mutate, and dump documents (`GET /api/documents/:id/content`
-> returns the raw stored HTML of any version) with no secret in the URL to
-> stand in for authentication. A bypass covering `/api/*` would make the whole
-> library world-readable.
+> ⚠️ Keep the bypass applications to exactly those two paths — **`/api/*` and
+> `/mcp` must never be added to one**. Both are owner-only by session, not by
+> token: their operations list, mutate, and dump documents
+> (`GET /api/documents/:id/content` and the `cat` tool return the raw stored
+> HTML of any version) with no secret in the URL to stand in for
+> authentication. A bypass covering either one would make the whole library
+> world-readable and world-writable.
 
-### Service token (for the CLI)
+### Service token (for the CLI and MCP clients)
 
 Under **Access → Service Auth**, create a service token named **`poof-cli`**.
 Record the generated **Client ID** and **Client Secret** — they are shown only
 once and become `POOF_ACCESS_CLIENT_ID` / `POOF_ACCESS_CLIENT_SECRET` in step 8.
+The MCP endpoint (step 9) takes the same pair; one token covers both clients.
 
 ### Copy the AUD tag and team domain
 
@@ -173,7 +177,61 @@ enough. If you prefer not to link, a shell alias works too:
 
 Run `poof --help` to confirm the wiring.
 
-## 9. Smoke test
+## 9. MCP client setup (optional)
+
+The Worker serves an MCP endpoint at `POST /mcp` (SPEC §11) so an AI agent can
+use poof without the CLI. It sits behind **App 1** from step 6 and accepts the
+**same `poof-cli` service token** — there is nothing new to create in the Zero
+Trust dashboard, and nothing to install or keep running locally.
+
+Register it with Claude Code, passing the credentials as headers (the shell
+below reads them from the variables exported in step 8):
+
+```sh
+claude mcp add --transport http poof https://poof.5n7.me/mcp \
+  --header "CF-Access-Client-Id: $POOF_ACCESS_CLIENT_ID" \
+  --header "CF-Access-Client-Secret: $POOF_ACCESS_CLIENT_SECRET"
+```
+
+`claude mcp list` should then show `poof` as connected, and the nine tools
+appear as `mcp__poof__push`, `mcp__poof__ls`, and so on.
+
+To check the endpoint without a client, send the MCP handshake by hand. The
+`Accept` header is required by the Streamable HTTP transport, and the reply
+usually arrives as a one-line SSE `data:` frame rather than bare JSON:
+
+```sh
+curl -sS https://poof.5n7.me/mcp \
+  -H "CF-Access-Client-Id: $POOF_ACCESS_CLIENT_ID" \
+  -H "CF-Access-Client-Secret: $POOF_ACCESS_CLIENT_SECRET" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
+```
+
+A healthy deployment answers with a JSON-RPC result naming the server and its
+tool capability. `403 Forbidden` means the service token was rejected — check
+the **Service Auth** policy from step 6. An HTML login page instead of JSON
+means the request reached Access without usable credentials.
+
+The endpoint accepts **POST only**. Opening `https://poof.5n7.me/mcp` in a
+browser, or curling it without `-d`, returns `405 Method Not Allowed` with an
+`Allow: POST` header — that is the endpoint working, not a misconfiguration
+(SPEC §11.1).
+
+For local development, `bun run dev` with `DEV_DISABLE_ACCESS=1` in `.dev.vars`
+(step 4) skips the JWT check, so the local endpoint needs no headers at all:
+
+```sh
+claude mcp add --transport http poof-local http://localhost:8787/mcp
+```
+
+> Only ever do this against `wrangler dev`. `DEV_DISABLE_ACCESS` disables the
+> Worker's own JWT verification, so a headerless MCP client is exactly what an
+> unauthenticated attacker would be if that variable were ever set in
+> production.
+
+## 10. Smoke test
 
 End-to-end check that upload, share, and revocation work:
 

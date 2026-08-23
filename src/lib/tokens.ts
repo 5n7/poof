@@ -120,13 +120,32 @@ export async function verifyOwnerToken(
 	}
 }
 
-const TTL_SECONDS = new Map<string, number>([
-	["1h", 3600],
-	["1d", 86400],
-	["1w", 604800],
-]);
+const TTL_SECONDS = {
+	"1h": 3600,
+	"1d": 86400,
+	"1w": 604800,
+} as const;
+
+export type Ttl = keyof typeof TTL_SECONDS;
+
+/**
+ * The accepted TTLs, for callers that need to state them as a list — the MCP
+ * tool schemas build their enum from this. Derived from `TTL_SECONDS` rather
+ * than written out again: a hand-copied list only stays correct until someone
+ * adds a fourth TTL to one of them, and the failure is a silent NaN expiry.
+ */
+export const TTL_KEYS = Object.keys(TTL_SECONDS) as [Ttl, ...Ttl[]];
+
+/**
+ * Seconds for a TTL already known to be valid — no null branch to handle.
+ * Named `ttlToSeconds` rather than `ttlSeconds` because `mintOwnerToken` already
+ * takes a parameter by that name.
+ */
+export function ttlToSeconds(ttl: Ttl): number {
+	return TTL_SECONDS[ttl];
+}
 
 /** "1h" | "1d" | "1w" → seconds; null otherwise. */
 export function parseTtl(s: string): number | null {
-	return TTL_SECONDS.get(s) ?? null;
+	return Object.hasOwn(TTL_SECONDS, s) ? TTL_SECONDS[s as Ttl] : null;
 }

@@ -48,3 +48,18 @@ npx skills add 5n7/poof
 ```
 
 Teaches Claude to share documents with the `poof` CLI.
+
+## MCP server
+
+The Worker speaks MCP at `/mcp`, behind the same Access service token the CLI
+uses — no local process to run:
+
+```sh
+claude mcp add --transport http poof https://poof.5n7.me/mcp \
+  --header "CF-Access-Client-Id: $POOF_ACCESS_CLIENT_ID" \
+  --header "CF-Access-Client-Secret: $POOF_ACCESS_CLIENT_SECRET"
+```
+
+The tools are the same nine commands. The one difference: `push` and `update`
+take the document content, not a file path — the server can't see your
+filesystem.
