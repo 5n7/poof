@@ -96,8 +96,10 @@ poof versions <doc-id>
   explicit `md` | `html` argument. `push` defaults to `md`. On `update`,
   omitting it **keeps the document's current kind** — pass `kind` only when
   the document should genuinely switch between Markdown and HTML.
-- `push` without a `title` uses the first `#` heading, then falls back to
-  `untitled` (the CLI falls back to the file name).
+- `push` without a `title` lets the server name the document from its own
+  content, so writing one out and pushing it needs no title argument. It
+  falls back to the first `#` heading and then to `untitled`; the CLI, which
+  has a file, falls back to the file name instead.
 - `cat` output is capped at 128 KiB. A longer document comes back truncated,
   with a notice giving its real size and its `/d/{id}` URL.
 - URLs come back absolute and ready to paste; the CLI prints paths against
@@ -114,9 +116,9 @@ poof push report.md --share --share-ttl 1d
 MCP: `push` with the document text as `content`, `share: true`, and
 `share_ttl: "1d"`.
 
-Give the recipient the `/v/...` line only. Titles default to the first `#`
-heading (Markdown), or on the CLI the file name, so a title argument is rarely
-needed.
+Give the recipient the `/v/...` line only. A title argument is rarely needed:
+the server names an untitled document from its content, and the CLI falls back
+to the file name.
 
 Iterating after feedback — revise the source you wrote, then:
 

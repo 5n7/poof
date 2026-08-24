@@ -270,6 +270,11 @@ window.addEventListener("keydown", function (e) { if (e.key === "Escape") closeM
 // document after the file; a new version keeps the document's title). No `#drop`
 // = a read-only page, so nothing is wired at all.
 //
+// The `title` field is sent only when the file carries a name the user chose —
+// a dropped or picked file. Pasted text has no such name (it is synthesized as
+// `pasted.md`), so the field is deliberately omitted and the server names the
+// document instead (lib/title.ts).
+//
 // On the viewer the content sits in a sandboxed iframe — a separate document on
 // an opaque origin — so its drag events never reach this document and a drop
 // only registers over the topbar, banner or margins. ⌘V still works whenever
@@ -279,7 +284,7 @@ const UPLOAD_JS = `
 const dropEl = document.getElementById("drop");
 const fileInput = document.getElementById("file");
 let dragDepth = 0;
-async function uploadFile(file) {
+async function uploadFile(file, named) {
 	const name = file.name || "pasted.md";
 	// Extension → kind. Mirror of kindFromExtension (cli/index.ts) and the
 	// server's kind check (api.ts) — keep the three in sync.
@@ -287,10 +292,17 @@ async function uploadFile(file) {
 	const fd = new FormData();
 	fd.set("file", file, name);
 	fd.set("kind", kind);
-	if (dropEl.dataset.withTitle) fd.set("title", name);
+	if (named && dropEl.dataset.withTitle) fd.set("title", name);
 	const res = await fetch(dropEl.dataset.endpoint, { method: "POST", body: fd });
-	// Drop any ?v= pin so both pages land on the current version.
-	if (res.ok) { toast("Uploaded \\u2014 " + name); setTimeout(function () { location.href = location.pathname; }, 600); }
+	if (res.ok) {
+		// Report the title the server actually stored, not the name we sent: when no
+		// title was sent the server named the document itself (lib/title.ts), and that
+		// result is the one thing worth seeing before the redirect below.
+		const doc = await res.json().catch(function () { return {}; });
+		toast(doc && doc.title ? "Uploaded \\u2014 " + doc.title : "Uploaded");
+		// Drop any ?v= pin so both pages land on the current version.
+		setTimeout(function () { location.href = location.pathname; }, 600);
+	}
 	else toast(await res.text());
 }
 if (dropEl && fileInput) {
@@ -300,17 +312,17 @@ if (dropEl && fileInput) {
 	window.addEventListener("drop", function (e) {
 		e.preventDefault(); dragDepth = 0; dropEl.style.display = "none";
 		const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-		if (f) uploadFile(f);
+		if (f) uploadFile(f, true);
 	});
 	window.addEventListener("paste", function (e) {
 		const f = e.clipboardData && e.clipboardData.files && e.clipboardData.files[0];
-		if (f) { uploadFile(f); return; }
+		if (f) { uploadFile(f, true); return; }
 		const text = e.clipboardData && e.clipboardData.getData("text");
-		if (text) uploadFile(new File([text], "pasted.md", { type: "text/markdown" }));
+		if (text) uploadFile(new File([text], "pasted.md", { type: "text/markdown" }), false);
 	});
 	const hint = document.getElementById("hint");
 	if (hint) hint.addEventListener("click", function () { fileInput.click(); });
-	fileInput.addEventListener("change", function () { const f = fileInput.files[0]; if (f) uploadFile(f); fileInput.value = ""; });
+	fileInput.addEventListener("change", function () { const f = fileInput.files[0]; if (f) uploadFile(f, true); fileInput.value = ""; });
 }`;
 
 const LIBRARY_JS = `
@@ -534,7 +546,7 @@ export async function libraryPage(c: Ctx) {
 				<div style="text-align:center">
 					<div class="drop-icon">↓</div>
 					<div class="drop-title">Drop it — poof</div>
-					<div class="drop-sub">.md / .html · up to 10 MB · title from filename</div>
+					<div class="drop-sub">.md / .html · up to 10 MB · dropped files keep their filename</div>
 				</div>
 			</div>
 

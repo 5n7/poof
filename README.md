@@ -28,11 +28,14 @@ poof update <doc-id> file.md  # new version; same URLs keep working
 poof versions <doc-id>        # version history, newest first
 ```
 
-Drag & drop or ⌘V on the web library works too.
+Drag & drop or ⌘V on the web library works too. A pasted document has no file
+name, so it titles itself: Workers AI reads the opening and names it. Same for
+an MCP `push` sent without a title.
 
 ## Stack
 
-Cloudflare Workers + Hono, D1, R2, Cloudflare Access — all free tier.
+Cloudflare Workers + Hono, D1, R2, Cloudflare Access, Workers AI — all free
+tier.
 Documents are rendered to HTML at upload time and served inside a sandboxed
 iframe with a CSP `sandbox` response header as the primary security boundary.
 

@@ -17,6 +17,7 @@ import {
 	sourceBytes,
 } from "../lib/documents";
 import { nowSeconds } from "../lib/time";
+import { resolveNewTitle } from "../lib/title";
 import { TTL_KEYS, ttlToSeconds } from "../lib/tokens";
 
 /**
@@ -99,41 +100,6 @@ function shareLines(origin: string, row: ShareRow): string[] {
 /** epoch seconds → ISO-8601 UTC; "never" for a document with no TTL. */
 function formatTime(seconds: number | null): string {
 	return seconds === null ? "never" : new Date(seconds * 1000).toISOString();
-}
-
-/**
- * First `# ` heading in a Markdown source.
- *
- * Scanned with one match rather than by splitting into lines: a 10 MiB push
- * would otherwise build an array of every line just to read the first heading,
- * before rendering has even started (~6 ms of a 10 ms budget, for nothing).
- *
- * Two details are load-bearing, both of them about what counts as a line break,
- * because this has to agree exactly with `poof push`'s `split(/\r?\n/)` scan
- * (SPEC §10) — the CLI and this tool must not title the same file differently:
- *
- * - Line breaks are spelled out as `(?:^|\n)` … `\r?(?=\n|$)` instead of using
- *   the `m` flag. Under `m`, `$` also matches before a lone `\r`, which `split`
- *   treats as ordinary in-line text — so `"# a\rb"` would infer "a" here and
- *   nothing in the CLI.
- * - `[^\S\n]` is "whitespace except a newline", and must not be relaxed to
- *   `\s`: `\s` matches newlines, so a bare `#` on its own line would reach
- *   forward and capture the *next* line as the title.
- */
-const MD_HEADING = /(?:^|\n)#[^\S\n]+(.+?)[^\S\n]*\r?(?=\n|$)/;
-
-/**
- * The title a new document gets when the caller did not name one. The API's
- * create path falls back to the uploaded file name, which an MCP client has no
- * equivalent of — so infer the first Markdown heading, exactly as `poof push`
- * does (SPEC §10), rather than leaving the recipient's tab blank.
- */
-function inferTitle(source: string, kind: "md" | "html"): string {
-	if (kind === "md") {
-		const match = MD_HEADING.exec(source);
-		if (match) return match[1];
-	}
-	return "untitled";
 }
 
 /**
@@ -298,7 +264,10 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 				share_ttl: TTL.default("1d").describe(
 					"Share link lifetime. Only takes effect when share is true; it is ignored otherwise. Shares always expire; there is no forever share. Prefer the shortest that works.",
 				),
-				title: z.string().optional().describe("Document title (default: the first '# ' Markdown heading)."),
+				title: z
+					.string()
+					.optional()
+					.describe("Document title. Omit it and poof names the document from its own content."),
 				ttl: TTL.optional().describe(
 					"The document's own lifetime (default: kept forever). When it passes, the document and every one of its shares die.",
 				),
@@ -310,7 +279,14 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 
 			const now = nowSeconds();
 			const expires_at = ttl === undefined ? null : now + ttlToSeconds(ttl);
-			const resolved = title?.trim() || inferTitle(content, kind);
+			// The same naming chain the API create route runs (SPEC §8), with the one
+			// difference this adapter has to supply: an MCP client pushes content, not a
+			// file, so there is no file name to end on and the terminal is "untitled".
+			// `||` rather than `??` keeps a whitespace-only title counting as absent,
+			// matching what `readUpload` does with a blank multipart field. It runs after
+			// tooLarge above, so the model never reads a document that is about to be
+			// refused.
+			const resolved = title?.trim() || (await resolveNewTitle(c.env, { fallback: "untitled", kind, source: content }));
 			const id = await createDocument(c.env, now, { expires_at, kind, source: content, title: resolved });
 
 			const lines = [

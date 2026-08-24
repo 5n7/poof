@@ -13,6 +13,7 @@
 		"migrations_dir": "migrations",
 	}],
 	"r2_buckets": [{ "binding": "BLOBS", "bucket_name": "poof-blobs" }],
+	"ai": { "binding": "AI" },
 	"triggers": { "crons": ["0 3 * * 1"] },
 	"vars": {
 		"ACCESS_TEAM_DOMAIN": "5n7.cloudflareaccess.com",

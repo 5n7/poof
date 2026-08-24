@@ -486,6 +486,53 @@ describe("MCP endpoint", () => {
 	});
 });
 
+// `push` runs the same naming chain as the API create route (SPEC §8), with the
+// one difference this adapter has to supply: an MCP client pushes content, not a
+// file, so there is no file name to end on and the terminal is "untitled". Under
+// the test pool Workers AI is unreachable, so what these pin is the heading rung
+// and that terminal — test/titles.spec.ts explains why the AI rung is not tested
+// here and asserts the binding really is unreachable.
+describe("MCP automatic titling", () => {
+	it("names an untitled document from its own first heading", async () => {
+		const { body, id } = await pushDoc({ content: "# Design Review\n\nbody text" });
+		expect(body).toContain('title "Design Review"');
+		// Baked into the stored blob, not merely reported back in the tool result.
+		expect(await callTool("cat", { id })).toContain("<title>Design Review</title>");
+	});
+
+	it("falls back to untitled when the document has no heading to take", async () => {
+		// Every other rung declines: no AI under the pool, no heading in the content,
+		// and no file name to end on — so this is the terminal and nothing else.
+		const { body, id } = await pushDoc({ content: "just some prose, no heading anywhere" });
+		expect(body).toContain('title "untitled"');
+
+		// And it is what the library actually files it under, not just what push said.
+		const row = (await callTool("ls"))
+			.split("\n")
+			.find((l) => l.startsWith(id))!
+			.split("\t");
+		expect(row[1]).toBe("untitled");
+	});
+
+	it("uses an explicit title over the document's own heading", async () => {
+		// The heading differs from the title so a regression in either direction fails.
+		const { body, id } = await pushDoc({ content: "# Heading Not Used\n\nbody", title: "Explicit Title" });
+		expect(body).toContain('title "Explicit Title"');
+		const html = await callTool("cat", { id });
+		expect(html).toContain("<title>Explicit Title</title>");
+		expect(html).not.toContain("<title>Heading Not Used</title>");
+	});
+
+	it("treats a whitespace-only title as absent and runs the chain", async () => {
+		// `||`, not `??`: a blank title has to count as absent here exactly as a blank
+		// multipart field does in readUpload, or the two surfaces name documents
+		// differently.
+		const { body } = await pushDoc({ content: "# Blank Title Heading\n\nbody", title: "   " });
+		expect(body).toContain('title "Blank Title Heading"');
+		expect(body).not.toContain('title "   "');
+	});
+});
+
 // The owner-TTL split is deliberate and was previously untested: the five tools
 // that act on a document resolve it with getLiveDocument/getLiveDocumentAt and
 // refuse an expired one, while `rm` uses getDocument so the owner can still

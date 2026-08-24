@@ -78,7 +78,9 @@ describe("share lifecycle through the API", () => {
 
 	it("lists only active shares (excludes revoked and expired)", async () => {
 		const up = await upload("# List test", "md");
-		const doc = await up.json<{ id: string }>();
+		const doc = await up.json<{ id: string; title: string }>();
+		// Untitled: the naming chain fell back from AI to the document's own heading.
+		expect(doc.title).toBe("List test");
 
 		const active = await (await postShare(doc.id, "1d")).json<{ token: string }>();
 		const revoked = await (await postShare(doc.id, "1d")).json<{ token: string }>();
@@ -98,7 +100,9 @@ describe("share lifecycle through the API", () => {
 
 	it("cascades deletion: share token 404s and R2 blob is gone", async () => {
 		const up = await upload("# Cascade", "md");
-		const doc = await up.json<{ id: string }>();
+		const doc = await up.json<{ id: string; title: string }>();
+		// Untitled: the naming chain fell back from AI to the document's own heading.
+		expect(doc.title).toBe("Cascade");
 		const share = await (await postShare(doc.id)).json<{ token: string }>();
 		const r2Key = `doc/${doc.id}/v1.html`;
 

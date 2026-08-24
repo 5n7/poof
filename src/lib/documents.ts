@@ -143,7 +143,9 @@ export async function addVersion(
 ): Promise<NewVersion | null> {
 	enforceMaxBytes(input.source);
 	// An absent title keeps the current one: retitling a document on every content
-	// fix (down to the <title> on the recipient's page) would be a surprise.
+	// fix (down to the <title> on the recipient's page) would be a surprise. The
+	// asymmetry with `createDocument`, whose callers run the naming chain on an
+	// absent title (SPEC §8), is deliberate — auto-naming is create-only.
 	const title = input.title ?? doc.title;
 	const html = renderVersion(input.source, input.kind, title);
 

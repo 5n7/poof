@@ -13,6 +13,7 @@ import {
 } from "../lib/documents";
 import { API_CONTENT_HEADERS, isVersionString, uniform404, withHeaders } from "../lib/http";
 import { nowSeconds } from "../lib/time";
+import { resolveNewTitle } from "../lib/title";
 import { parseTtl } from "../lib/tokens";
 
 /** All routes here sit behind `accessAuth` and `csrfProtection` (wired in index.ts). */
@@ -28,8 +29,8 @@ interface Upload {
  * Parse the upload multipart body shared by "create document" and "add
  * version". Returns a Response on rejection (413 too large, 400 missing file /
  * bad kind) so both routes fail identically. `title` is null when absent or
- * blank; only the create path falls back to the file name, since on a version
- * upload "no title" means "keep the document's current one".
+ * blank; the create path then runs the naming chain (lib/title.ts), while on a
+ * version upload "no title" means "keep the document's current one".
  */
 async function readUpload(c: Context<{ Bindings: Env }>): Promise<Upload | Response> {
 	const contentLength = Number(c.req.header("Content-Length") ?? "0");
@@ -54,7 +55,6 @@ async function readUpload(c: Context<{ Bindings: Env }>): Promise<Upload | Respo
 apiRoutes.post("/documents", async (c) => {
 	const upload = await readUpload(c);
 	if (upload instanceof Response) return upload;
-	const title = upload.title ?? upload.file.name;
 
 	const now = nowSeconds();
 	let expires_at: number | null = null;
@@ -67,6 +67,14 @@ apiRoutes.post("/documents", async (c) => {
 	}
 
 	const source = await upload.file.text();
+	// An absent title means "name it for me" (blank counts as absent — readUpload).
+	// A present one is used verbatim, which is what keeps the CLI and every
+	// drag-dropped file naming itself. Ordering: after the TTL check above, so an
+	// `invalid ttl` 400 never spends a neuron; after readUpload's size guard, so
+	// the model never reads a document that is about to be rejected; and before
+	// createDocument, which bakes the title into the stored blob's <title>.
+	const title =
+		upload.title ?? (await resolveNewTitle(c.env, { fallback: upload.file.name, kind: upload.kind, source }));
 	const id = await createDocument(c.env, now, { expires_at, kind: upload.kind, source, title });
 
 	return c.json(

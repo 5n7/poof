@@ -46,6 +46,19 @@ function requireVersion(version: string): void {
 	if (!/^[1-9][0-9]*$/.test(version)) fail(`invalid version '${version}' (expected a positive integer)`);
 }
 
+/**
+ * Mirror of `firstMarkdownHeading` in src/lib/title.ts, the only other copy —
+ * keep the two in sync. Duplicated rather than imported because this tsconfig
+ * narrows `types` and `include`, so the Worker's `Env`/`Ai` globals would fall
+ * outside the CLI's program.
+ *
+ * The two are spelled differently and must still agree exactly, or the CLI and
+ * the server would title the same file differently: this scans lines, while the
+ * Worker's copy is one regex (it may be handed a 10 MiB push and cannot afford
+ * an array of every line). That regex is written around this `split(/\r?\n/)`,
+ * down to how a lone `\r` is treated — see the comment on `MD_HEADING` before
+ * changing either.
+ */
 function firstMarkdownHeading(content: string): string | null {
 	for (const line of content.split(/\r?\n/)) {
 		const match = /^#\s+(.+?)\s*$/.exec(line);

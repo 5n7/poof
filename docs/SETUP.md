@@ -47,6 +47,10 @@ placeholder in the `d1_databases` block:
 }]
 ```
 
+Workers AI (the `AI` binding, used to name untitled documents) needs no
+provisioning at all — there is nothing to create, only an account with Workers
+AI enabled, which every account has by default.
+
 ## 4. Secrets
 
 poof signs owner-view (`o_`) tokens with an HMAC secret. Generate a strong
@@ -60,6 +64,23 @@ openssl rand -base64 32 | bunx wrangler secret put OWNER_TOKEN_SECRET
 For local development, copy `.dev.vars.example` to `.dev.vars` and set a
 throwaway `OWNER_TOKEN_SECRET`. `.dev.vars` also carries `DEV_DISABLE_ACCESS=1`,
 which bypasses Access JWT verification locally (never set it in production).
+
+Note that Workers AI has **no local simulator**, so `wrangler dev` opens a
+remote proxy session for the `AI` binding and `bunx wrangler login` (step 2) is
+required either way.
+
+`.dev.vars` also carries `DEV_DISABLE_AI_TITLES=1`, which skips the inference
+call, so local uploads spend no neurons and wait on nothing; titles fall back to
+the document's first `#` heading, then to the file name (`untitled` over MCP,
+which has no file). Drop the line to exercise the real chain locally — creating
+an untitled Markdown document through the web UI, `POST /api/documents`, or the
+MCP `push` tool then makes a real, free-tier inference call against your
+account.
+
+Neither setting gets you offline: wrangler classifies `ai` as a binding that can
+never run locally and proxies it remotely regardless of any flag, so dev still
+requires auth. To develop with no network at all, comment the `ai` binding out
+of `wrangler.jsonc` — the Worker handles an absent binding as one more fallback.
 
 ## 5. Migrations
 

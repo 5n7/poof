@@ -14,6 +14,13 @@ export default defineConfig({
 		cloudflareTest({
 			main: "./src/index.ts",
 			wrangler: { configPath: "./wrangler.jsonc" },
+			// NOTE: Workers AI has no local simulator, and the pool defaults
+			// `remoteBindings` to true — leaving it on would open a real remote proxy
+			// session and make real, billable inference calls on every `bun run test`.
+			// Switched off, `env.AI` still exists but `run()` rejects with "Binding AI
+			// needs to be run remotely", which is exactly the fallback path (AI fails →
+			// first heading → file name) the suite is there to exercise.
+			remoteBindings: false,
 			miniflare: {
 				bindings: {
 					ACCESS_TEAM_DOMAIN: "t.example",
