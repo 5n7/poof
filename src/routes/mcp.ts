@@ -196,6 +196,23 @@ async function readCapped(stream: ReadableStream, cap: number): Promise<string> 
 }
 
 /**
+ * Every tool below carries `annotations` — the MCP hints a client may surface as
+ * a "read-only" or "destructive" label, or read to decide what to confirm before
+ * running. They are advisory by specification: a client is told to treat them as
+ * untrusted input, so nothing here is enforced by them. The enforcement is in the
+ * handlers, and these only describe it.
+ *
+ * Only the hints that carry information are written, because the defaults are not
+ * neutral. `destructiveHint` and `idempotentHint` are defined solely when
+ * `readOnlyHint` is false, so the reading tools state neither — a value there is
+ * noise a reader has to decide whether to believe.
+ *
+ * `openWorldHint: false` on all nine. Its default is true, meaning the tool may
+ * reach into an open-ended world of external entities; poof's world is closed —
+ * every tool acts on the owner's own library and nothing beyond it.
+ */
+
+/**
  * Build the server for one request. Nothing is held across requests on purpose:
  * a Workers isolate serves many requests concurrently, so a module-level
  * `McpServer` would let one caller's transport answer another caller's request.
@@ -209,6 +226,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 	server.registerTool(
 		"cat",
 		{
+			annotations: { openWorldHint: false, readOnlyHint: true },
 			description:
 				"Print a document's stored HTML. This is the RENDERED blob that share links serve, not the Markdown source it came from — poof keeps only the rendering. Use it to check what a recipient actually sees. Never feed this output back into `update`: that replaces the document with its own rendering and destroys the source. To change a document, edit the source you wrote and `update` from that.",
 			inputSchema: {
@@ -243,6 +261,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 	server.registerTool(
 		"ls",
 		{
+			annotations: { openWorldHint: false, readOnlyHint: true },
 			description:
 				"List the documents in the library: id, title, kind, current version, last update, and expiry. This is the private owner-side library; nothing here is visible to a recipient.",
 			inputSchema: {},
@@ -269,6 +288,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 	server.registerTool(
 		"push",
 		{
+			annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
 			description:
 				"Create a document from Markdown/HTML content and return its owner URL. With share: true it also issues a public share link and returns the /v/{token} URL — give the recipient that line and only that line; the /d/{id} owner URL is behind Cloudflare Access and will not work for anyone else. Anyone holding the /v/ URL can read the document until the share expires or is revoked, so treat it as the secret it is. To revise a document you have already shared, call `update` on its id; do not push a second document and send out a new URL.",
 			inputSchema: {
@@ -318,6 +338,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 	server.registerTool(
 		"revoke",
 		{
+			annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
 			description:
 				"Revoke one share token immediately: its /v/ URL 404s from the next load on. Takes the s_… share token, not a document id. The document and its other share links are untouched.",
 			inputSchema: { token: z.string().describe("Share token to revoke (the s_… value, not a document id).") },
@@ -331,6 +352,10 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 	server.registerTool(
 		"rm",
 		{
+			// Idempotent despite a second call coming back as an error result: the hint
+			// asks about effect on the environment, not about the response, and there is
+			// nothing left to delete. `revoke` is the same shape for the same reason.
+			annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
 			description:
 				"Delete a document, every version's stored blob, and all of its share links. Irreversible. Use `update` when a document merely needs fixing — its URL keeps working — and `rm` only when the old one should genuinely disappear.",
 			inputSchema: { id: z.string().describe("Document id to delete.") },
@@ -344,6 +369,11 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 	server.registerTool(
 		"rollback",
 		{
+			// A pointer move and nothing else: no blob is written (SPEC §11.3), so the
+			// version being left behind survives and this destroys nothing. Idempotent
+			// because `rollbackDocument` returns the document unchanged when the target
+			// is already current, so repeating the call costs a read and no write.
+			annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
 			description:
 				"Make a past version current again (see the `versions` tool for the numbers). Same instant effect on live share links as `update`: everyone holding one sees the restored content on their next load, and there is no way to pin a recipient to another version.",
 			inputSchema: {
@@ -365,6 +395,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 	server.registerTool(
 		"share",
 		{
+			annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
 			description:
 				"Issue a public share link for an existing document and return its /v/{token} URL. That URL, and only that URL, is what a recipient gets — /d/{id} is Access-protected and will not work for them. Anyone holding the /v/ URL can read the document until it expires or is revoked, so treat the URL itself as the secret: prefer a short share_ttl, and `revoke` when access should end early.",
 			inputSchema: {
@@ -401,6 +432,14 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 	server.registerTool(
 		"update",
 		{
+			// `destructiveHint: false` is deliberate and is the one value here that
+			// reads wrong at first glance. An update is live to every share holder the
+			// moment it lands, which invites calling it destructive — but the hint asks
+			// whether the tool destroys what is already there, not how far the change
+			// reaches. It does not: a version is appended, every earlier one is kept
+			// (SPEC §5), and `rollback` puts any of them back. `rm` is the destructive
+			// one. Do not flip this because the blast radius is wide.
+			annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
 			description:
 				"Replace a document's contents with a new version, keeping the same /d/{id} and the same share links. This is how a document that has already been sent gets revised: nothing is re-issued and nothing is re-sent, and the recipient sees the new content the next time they open the link they already have. Pass the edited SOURCE you wrote — never the output of `cat`, which is the rendered HTML and would overwrite the document with its own rendering. The title is kept unless one is given, and the kind may change between versions. Every live share holder sees the change immediately and there is no per-recipient version pinning, so never use `update` to add content one recipient should not see.",
 			inputSchema: {
@@ -452,6 +491,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 	server.registerTool(
 		"versions",
 		{
+			annotations: { openWorldHint: false, readOnlyHint: true },
 			description:
 				"List a document's versions, newest first, with '*' on the current one — the numbers to feed `rollback`. Owner-side only: recipients never see a version number or that a history exists.",
 			inputSchema: { id: z.string().describe("Document id to inspect.") },

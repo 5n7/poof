@@ -9,6 +9,13 @@ const BASE = "https://poof.5n7.me";
 /** The nine tools, named after the CLI subcommands (SPEC §10). */
 const TOOL_NAMES = ["cat", "ls", "push", "revoke", "rm", "rollback", "share", "update", "versions"];
 
+interface ToolAnnotations {
+	destructiveHint?: boolean;
+	idempotentHint?: boolean;
+	openWorldHint?: boolean;
+	readOnlyHint?: boolean;
+}
+
 interface ToolResult {
 	content: { text: string; type: string }[];
 	isError?: boolean;
@@ -116,6 +123,43 @@ describe("MCP endpoint", () => {
 		const { result } = await rpc<{ tools: { description: string; name: string }[] }>("tools/list");
 		expect(result.tools.map((t) => t.name).sort()).toEqual(TOOL_NAMES);
 		for (const tool of result.tools) expect(tool.description.length).toBeGreaterThan(0);
+	});
+
+	// The hints a client reads to label a tool "read-only" or to ask before running
+	// a destructive one. Pinned per tool because the two ways of getting it wrong
+	// cost in opposite directions: a destructive tool that claims to be read-only
+	// runs with no prompt at all, and a reading tool that claims to be destructive
+	// trains the caller to click through the prompts that do matter.
+	it("annotates every tool with its behavior hints", async () => {
+		const { result } = await rpc<{ tools: { annotations?: ToolAnnotations; name: string }[] }>("tools/list");
+		const annotationsOf = (name: string) => result.tools.find((t) => t.name === name)!.annotations;
+
+		// The other two hints are defined only when readOnlyHint is false, so these
+		// must not state them: an absent hint is not the same claim as a false one.
+		for (const name of ["cat", "ls", "versions"]) {
+			expect(annotationsOf(name), name).toMatchObject({ readOnlyHint: true });
+			expect(annotationsOf(name), name).not.toHaveProperty("destructiveHint");
+			expect(annotationsOf(name), name).not.toHaveProperty("idempotentHint");
+		}
+
+		// The writing tools, one row each. `revoke` and `rm` are the only two that may
+		// carry destructiveHint: true — `update` appends a version and `rollback` moves
+		// a pointer, neither of which destroys anything.
+		const writes: [name: string, destructiveHint: boolean, idempotentHint: boolean][] = [
+			["push", false, false],
+			["revoke", true, true],
+			["rm", true, true],
+			["rollback", false, true],
+			["share", false, false],
+			["update", false, false],
+		];
+		for (const [name, destructiveHint, idempotentHint] of writes) {
+			expect(annotationsOf(name), name).toMatchObject({ destructiveHint, idempotentHint, readOnlyHint: false });
+		}
+
+		// Every tool acts on the owner's own library and nothing outside it, which the
+		// hint's default of true would deny.
+		for (const name of TOOL_NAMES) expect(annotationsOf(name), name).toMatchObject({ openWorldHint: false });
 	});
 
 	// The asymmetry is load-bearing, so it is pinned in the schema rather than
