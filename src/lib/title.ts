@@ -24,8 +24,10 @@ const AI_TITLE_MAX_LENGTH = 80;
  */
 const TERMINAL_TITLE = "untitled";
 
-// "in the same language as the document" is the whole of our JA/EN handling —
-// the model detects the language far better than anything we could ship here.
+// The default prompt, and byte-for-byte the one that has been naming English
+// documents in production. "The same language as the document" stays in it
+// because it works there, and because a document reaching this branch may be in
+// neither English nor Japanese, where an implicit instruction is all we have.
 // The 60-character cap is characters, not words (a word count is meaningless
 // for Japanese), and sits below AI_TITLE_MAX_LENGTH so a slightly-over answer
 // still passes acceptance instead of being thrown away.
@@ -33,6 +35,102 @@ const SYSTEM_PROMPT =
 	"You generate titles for documents. Reply with the title and nothing else — a single line, at most 60 characters, " +
 	"written in the same language as the document. No quotation marks, no Markdown, no trailing period, no preamble, " +
 	"no explanation.";
+
+// Japanese, where that implicit instruction measurably fails: asked to match the
+// document's language, the model answered two of three real Japanese documents
+// in English. So the language stops being something for the model to infer — it
+// is stated flatly here and demonstrated once in JA_ONE_SHOT below. IBM's model
+// card prescribes exactly this for non-English work, since "its performance
+// might not be similar to English tasks. In such case, introducing a small
+// number of examples (few-shot) can help the model in generating more accurate
+// outputs." The rest of the line is left where it was, so the only difference
+// from the proven prompt is the one clause that had to change.
+const SYSTEM_PROMPT_JA =
+	"You generate titles for documents. Reply with the title and nothing else — a single line, at most 60 characters. " +
+	"Reply in Japanese. No quotation marks, no Markdown, no trailing period, no preamble, no explanation.";
+
+/**
+ * The user turn, built in one place so the one-shot and the real request are
+ * shaped identically — an example the model cannot tell apart from the thing
+ * being asked is the whole point of showing one.
+ *
+ * The <document> delimiter is prompt-injection hygiene, NOT a security boundary
+ * — do not mistake it for a control. Worst case a malicious document names
+ * itself, which is harmless: the title is HTML-escaped by lib/render.ts and
+ * hono/jsx and stored in a TEXT column.
+ */
+function documentTurn(excerpt: string) {
+	return { role: "user", content: `Title this document:\n\n<document>\n${excerpt}\n</document>` };
+}
+
+/**
+ * A prior turn pair rather than a block pasted into the system prompt: a chat
+ * model reads an example in the same slots it will generate in, so a
+ * user/assistant pair *demonstrates* the answer where a system prompt can only
+ * describe it — and a Japanese passage sitting inside the instructions is one
+ * more thing for a 3B model to mistake for the document it was handed.
+ *
+ * The subject is deliberately far from anything this library holds — no
+ * software, no incidents, no meetings — so the example teaches the language and
+ * the shape (one line, a short noun phrase, no punctuation) without dragging the
+ * next title toward its own topic. For the same reason the title is not a
+ * document-type noun like メモ or 記録, which would be easy to copy. The excerpt
+ * carries no `# ` heading either: an example whose title is its own heading
+ * teaches copying, and the heading is a separate rung of the chain.
+ */
+const JA_ONE_SHOT = [
+	documentTurn(
+		"ベランダのプランターで育てているミニトマトが、五月の植え付けからようやく色づきはじめた。" +
+			"水やりは朝と夕方の二回で、土が湿っている日は控える。葉の裏に虫がつきやすいため、週末にまとめて確認している。",
+	),
+	{ role: "assistant", content: "ミニトマトの水やりと虫よけ" },
+];
+
+/**
+ * Kana: hiragana, katakana — halfwidth included, those are Script=Katakana — and
+ * U+30FC, the prolonged sound mark, which is Script=Common and so falls outside
+ * both while appearing in nearly every katakana loan word. Spelled as an escape
+ * because ー is indistinguishable from 一, ‐ and - in a source file.
+ *
+ * Kanji is absent on purpose, and from both sides of the ratio below: it cannot
+ * tell Japanese from Chinese, so counting it as evidence would fire on Chinese,
+ * and counting it as ballast would starve exactly the kanji-heavy Japanese
+ * documents this exists to catch.
+ */
+const KANA = /[\p{Script=Hiragana}\p{Script=Katakana}\u30FC]/gu;
+
+/** The other side of the ratio. Fullwidth romaji is Script=Latin and counts. */
+const LATIN = /\p{Script=Latin}/gu;
+
+/**
+ * A contest between the two scripts, ignoring digits, punctuation, Markdown and
+ * whitespace, so a Japanese document that is mostly a table of numbers or a page
+ * of URLs is not diluted into English.
+ *
+ * 10% is a moat, not a line, and it sits between two clusters rather than beside
+ * either. Japanese prose with no English in it is 100%; Japanese technical
+ * writing thick with English identifiers, URLs and product names — the shape
+ * most of this library is in — measures around 40%, and even a source file whose
+ * only Japanese is its user-facing strings measures around 19%. On the other
+ * side an English page quoting a Japanese sentence and naming a Japanese company
+ * measures around 5%, and the full 2000-character excerpt of an English document
+ * holds roughly 1500 Latin letters, so clearing 10% there would take some 170
+ * kana: eight solid lines of Japanese, not a phrase.
+ *
+ * Which side to err towards is not symmetric. A missed Japanese document merely
+ * gets the prompt that shipped before this, while a misfire puts a Japanese
+ * instruction and a Japanese example on an English document — a regression on
+ * the one path already proven in production.
+ */
+const MIN_KANA_RATIO = 0.1;
+
+/**
+ * An absolute floor, because a ratio on its own lets a two-character document
+ * decide. Three kana is the shortest run that cannot be a stray — one katakana
+ * loan word, or a particle with its okurigana — and below it the excerpt has
+ * not really said anything yet.
+ */
+const MIN_KANA_CHARS = 3;
 
 /**
  * Openers that mean the model answered the request instead of performing it.
@@ -237,6 +335,37 @@ export function firstMarkdownHeading(content: string): string | null {
 }
 
 /**
+ * Whether to ask for a Japanese title. A heuristic, and deliberately a blunt
+ * one: all it picks is which of two prompts to send, so a wrong answer costs a
+ * badly-named document and nothing else.
+ *
+ * The language is decided here instead of by the model on purpose.
+ * granite-4.0-h-micro is a 3B model with English-heavy instruct tuning, and in
+ * production it answered two of three Japanese documents in English while being
+ * told to write "in the same language as the document" — an implicit
+ * instruction is a whole inference task of its own, and it is one we can settle
+ * exactly, for free, with two regexes.
+ *
+ * `match` on a /g regex resets `lastIndex` itself, unlike `test`, so KANA and
+ * LATIN are safe to share at module scope. Nothing here can throw: the input is
+ * arbitrary user text and the only operation on it is a scan.
+ *
+ * Pure kanji comes out NOT Japanese, and that is the decision rather than an
+ * oversight: with no kana at all there is nothing to separate 第3四半期売上報告
+ * from Chinese, and the default prompt is the safer place to land. Japanese
+ * prose reaches for kana within a sentence or two, so this only ever bites on
+ * headline-shaped fragments.
+ *
+ * Exported for tests.
+ */
+export function looksJapanese(excerpt: string): boolean {
+	const kana = excerpt.match(KANA)?.length ?? 0;
+	if (kana < MIN_KANA_CHARS) return false;
+	const latin = excerpt.match(LATIN)?.length ?? 0;
+	return kana / (kana + latin) >= MIN_KANA_RATIO;
+}
+
+/**
  * A one-line description of a thrown value, which cannot itself throw.
  *
  * Both of the obvious spellings can: `err.message` may be a getter that throws,
@@ -283,19 +412,22 @@ async function generateAiTitle(env: Env, source: string): Promise<string | null>
 			}, AI_TITLE_TIMEOUT_MS);
 		});
 
+		// Detected on the same slice the model is shown, never on the whole
+		// document: the decision has to be made on the evidence the model gets,
+		// or a Japanese preface to an English report would ask for one language
+		// while showing the other.
+		const excerpt = source.slice(0, AI_TITLE_MAX_CHARS);
+		const japanese = looksJapanese(excerpt);
+
 		const call = env.AI.run(
 			AI_TITLE_MODEL,
 			{
 				messages: [
-					{ role: "system", content: SYSTEM_PROMPT },
-					// The <document> delimiter is prompt-injection hygiene, NOT a security
-					// boundary — do not mistake it for a control. Worst case a malicious
-					// document names itself, which is harmless: the title is HTML-escaped
-					// by lib/render.ts and hono/jsx and stored in a TEXT column.
-					{
-						role: "user",
-						content: `Title this document:\n\n<document>\n${source.slice(0, AI_TITLE_MAX_CHARS)}\n</document>`,
-					},
+					{ role: "system", content: japanese ? SYSTEM_PROMPT_JA : SYSTEM_PROMPT },
+					// One-shot on the Japanese branch only. The English path is proven in
+					// production and gets exactly the messages it always got.
+					...(japanese ? JA_ONE_SHOT : []),
+					documentTurn(excerpt),
 				],
 				max_tokens: 32,
 				temperature: 0,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { firstMarkdownHeading, sanitizeAiTitle } from "../src/lib/title";
+import { firstMarkdownHeading, looksJapanese, sanitizeAiTitle } from "../src/lib/title";
 
 /**
  * Spelled as escapes on purpose. These are the characters the sanitizer exists
@@ -292,5 +292,174 @@ describe("firstMarkdownHeading", () => {
 
 	it("takes the first of several h1 headings", () => {
 		expect(firstMarkdownHeading("# First\n\n# Second")).toBe("First");
+	});
+});
+
+/**
+ * The one part of the AI path that can be tested here: `env.AI.run()` rejects
+ * under the test pool by design (`remoteBindings: false`), so the prompt itself
+ * is left to inspection, but which prompt gets sent is a pure function of the
+ * excerpt and is pinned in full below.
+ *
+ * A false positive is the expensive direction — it puts a Japanese instruction
+ * and a Japanese example on an English document, regressing the one path proven
+ * in production — so most of what follows guards that side.
+ */
+describe("looksJapanese", () => {
+	/** Japanese prose with no Latin in it at all. */
+	const JA_PROSE = `# 内部研修メモ：テスト戦略
+
+今期の研修では、単体テストと結合テストの役割分担をあらためて整理した。
+これまでは網羅率だけを指標にしていたが、壊れやすい箇所を見極めることのほうが重要だという結論になった。
+次回までに、各チームで代表的な不具合を三件ずつ持ち寄ることにした。`;
+
+	/** Japanese prose carrying the English identifiers this library is full of. */
+	const JA_MIXED = `# デプロイ手順
+
+\`wrangler deploy\` を実行すると Worker が Cloudflare にアップロードされる。
+D1 のマイグレーションは \`bun run migrate:remote\` で適用する。
+本番の URL は https://poof.5n7.me で、Access のポリシーは変更しないこと。`;
+
+	const EN_PROSE = `# Incident Review: Backoff Fix
+
+The queue consumer retried without a ceiling, so a single poisoned message
+saturated the worker pool for eleven minutes. We shipped an exponential backoff
+with a dead letter queue behind it, and the same message now lands in the DLQ
+after five attempts instead of spinning forever.`;
+
+	/** One English sentence, repeated to the length of a real document. */
+	const EN_FILLER = "The deploy pipeline runs on every merge to main and publishes the worker. ".repeat(20);
+
+	it("calls Japanese prose Japanese", () => {
+		expect(looksJapanese(JA_PROSE)).toBe(true);
+	});
+
+	it("calls English prose not Japanese", () => {
+		expect(looksJapanese(EN_PROSE)).toBe(false);
+		expect(looksJapanese(EN_FILLER)).toBe(false);
+	});
+
+	it("does not call an English document Japanese for a quote or a proper noun", () => {
+		// The false positive that matters. Both of these are English documents that
+		// happen to contain Japanese, and both must take the English prompt.
+		const quoted = `The vendor's error page reads 「エラーが発生しました」 and nothing else, which
+tells the operator nothing at all. We asked them to include the request id. The
+Tokyo office (東京オフィス) has escalated this twice already and the ticket is
+still open after three weeks of back and forth with their support team.`;
+		expect(looksJapanese(quoted)).toBe(false);
+		expect(looksJapanese(`${EN_FILLER}The account manager is トヨタ, contract renewed in April.`)).toBe(false);
+	});
+
+	it("judges by proportion, not by presence", () => {
+		// The same Japanese fragment, alone and then dropped into a document of
+		// English. A contains-check would call both of them Japanese.
+		const fragment = "「これは日本語の引用です」と書いてある。";
+		expect(looksJapanese(fragment)).toBe(true);
+		expect(looksJapanese(EN_FILLER + fragment)).toBe(false);
+	});
+
+	it("calls a short Japanese note Japanese, but not a lone stray kana", () => {
+		// Both bounds have to hold at once. A demand for volume would throw away
+		// notes as short as these two, and a ratio with no floor under it would let
+		// a one-character document decide.
+		expect(looksJapanese("明日の会議は十時から、資料は前日までに共有すること。")).toBe(true);
+		expect(looksJapanese("メモ: 明日の会議")).toBe(true); // exactly at the floor
+		expect(looksJapanese("ん")).toBe(false);
+	});
+
+	it("calls Japanese written around English identifiers Japanese", () => {
+		// The commonest shape in this library, and the one a naive ratio over the
+		// whole excerpt would lose: the English runs are long, the Japanese is not.
+		expect(looksJapanese(JA_MIXED)).toBe(true);
+		// A source file whose only Japanese is its user-facing strings counts as a
+		// Japanese document, deliberately: those strings are what a reader reads.
+		const source = `function notify(kind) {
+  const messages = {
+    done: "処理が完了しました",
+    fail: "エラーが発生しました",
+  };
+  return messages[kind];
+}`;
+		expect(looksJapanese(source)).toBe(true);
+	});
+
+	it("is not diluted by digits, punctuation or Markdown", () => {
+		// The ratio is a contest between the two scripts, not kana against the length
+		// of the excerpt: a Japanese table is mostly figures and pipes, and measuring
+		// against the whole string would file it under English on that alone.
+		const table = `| 月 | 売上 | 前年比 |
+| --- | --- | --- |
+| 1月 | 12,345,678 | 103.2% |
+| 2月 | 11,987,654 | 98.7% |
+| 3月 | 13,456,789 | 110.4% |
+合計は 37,790,121 円で、前年比は 104.1% となった。`;
+		expect(looksJapanese(table)).toBe(true);
+	});
+
+	it("does not let kanji weigh against the kana beside it", () => {
+		// Kanji is on neither side of the ratio. As evidence it would fire on Chinese;
+		// as ballast it would starve exactly this — a Japanese document written almost
+		// entirely in compounds, where the handful of kana is the whole signal and
+		// nothing about it suggests English.
+		const outline = `# 年次報告書 目次
+
+第一章 序論
+第二章 先行研究の整理
+第三章 実験手法
+第四章 結果と考察
+第五章 結論と今後の展望
+付録 参考文献一覧`;
+		expect(looksJapanese(outline)).toBe(true);
+	});
+
+	it("calls katakana-heavy text Japanese, U+30FC included", () => {
+		expect(looksJapanese("サーバーのメモリーリークをモニタリングツールでチェックする")).toBe(true);
+		// U+30FC, the prolonged sound mark, is Script=Common and falls outside both
+		// kana scripts, so it has to be listed by hand. Without it `データ` counts
+		// two kana instead of three and drops under the floor — and a loan word with
+		// a long vowel in it is most of written katakana.
+		expect(looksJapanese("データ")).toBe(true);
+	});
+
+	it("counts halfwidth katakana, which is Script=Katakana", () => {
+		expect(looksJapanese("ｼｽﾃﾑ ﾒﾝﾃﾅﾝｽ")).toBe(true);
+	});
+
+	it("calls kanji with no kana NOT Japanese — the decision, not an oversight", () => {
+		// With no kana there is nothing to tell 第3四半期売上報告書 from Chinese, so
+		// the default prompt is where this lands. Real Japanese prose reaches for
+		// kana within a sentence, so it only bites on headline-shaped fragments.
+		expect(looksJapanese("第3四半期売上報告書")).toBe(false);
+		expect(looksJapanese("本季度销售报告显示，华东地区的增长速度超过预期，主要来自新客户的持续投入。")).toBe(false);
+		// One kanji away from that fragment, a sentence of Japanese is Japanese.
+		expect(looksJapanese("第3四半期の売上を報告します。")).toBe(true);
+	});
+
+	it("returns false, and does not throw, on degenerate input", () => {
+		// This runs on arbitrary uploaded text, and the caller's contract is that a
+		// document must never fail to be created because of the AI path.
+		for (const input of [
+			"",
+			"   ",
+			"\n\t\r\n",
+			"　　　", // ideographic spaces
+			"SELECT * FROM documents WHERE id = ?;",
+			"🎉🎉🎉 ✅ 🚀",
+			"---***---",
+			"2026-08-24 12:00:00",
+			`${BOM}${RLO}${ZWSP}`,
+		]) {
+			expect(looksJapanese(input), JSON.stringify(input)).toBe(false);
+		}
+	});
+
+	it("gives the same answer twice for the same input", () => {
+		// KANA and LATIN are module-level /g regexes. `String.match` resets
+		// `lastIndex`, but `RegExp.test` does not — swapping one in would make the
+		// second call on a document disagree with the first.
+		expect(looksJapanese(JA_MIXED)).toBe(true);
+		expect(looksJapanese(JA_MIXED)).toBe(true);
+		expect(looksJapanese(EN_PROSE)).toBe(false);
+		expect(looksJapanese(EN_PROSE)).toBe(false);
 	});
 });
