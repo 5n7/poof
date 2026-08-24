@@ -165,20 +165,28 @@ apiRoutes.post("/documents/:id/versions/:version/rollback", async (c) => {
 	return c.json(result);
 });
 
-apiRoutes.post("/documents/:id/shares", async (c) => {
+// The `Promise<Response>` annotation is what makes the switch below exhaustive:
+// without it Hono widens the handler's return to `Response | undefined`, and a
+// refusal nobody phrased would fall out of the switch as a silent 200-less
+// nothing instead of a type error.
+apiRoutes.post("/documents/:id/shares", async (c): Promise<Response> => {
 	const id = c.req.param("id");
-	const now = nowSeconds();
-	// getLiveDocument, not getDocument: no shares for owner-expired documents.
-	const doc = await getLiveDocument(c.env.DB, id, now);
-	if (!doc) return uniform404(c);
-
 	const body = await c.req.json<{ ttl?: string }>().catch(() => ({}) as { ttl?: string });
 	const ttl = (typeof body.ttl === "string" && body.ttl) || "1d";
-	const secs = parseTtl(ttl);
-	if (secs === null) return c.json({ error: "invalid ttl" }, 400);
 
-	const row = await issueShare(c.env, id, now, secs);
-	return c.json({ token: row.token, expires_at: row.expires_at, url: `/v/${row.token}` }, 201);
+	const issued = await issueShare(c.env, id, nowSeconds(), ttl);
+	if (issued.ok) {
+		const { share } = issued;
+		return c.json({ token: share.token, expires_at: share.expires_at, url: `/v/${share.token}` }, 201);
+	}
+	// Wording only. Which refusal wins when both apply is the core's call, and it
+	// has to stay there: a 400 for an unknown id would say the id exists.
+	switch (issued.reason) {
+		case "invalid-ttl":
+			return c.json({ error: "invalid ttl" }, 400);
+		case "not-found":
+			return uniform404(c);
+	}
 });
 
 apiRoutes.get("/documents/:id/shares", async (c) => {

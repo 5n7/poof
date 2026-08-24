@@ -5,6 +5,7 @@ import {
 	applyNewVersion,
 	deleteDocument,
 	deleteVersion,
+	getLiveDocument,
 	getLiveDocumentAt,
 	getVersion,
 	insertDocument,
@@ -16,7 +17,7 @@ import {
 	versionR2Key,
 } from "./db";
 import { renderMarkdown, wrapViewerHtml } from "./render";
-import { newShareToken, randomToken } from "./tokens";
+import { newShareToken, parseTtl, randomToken } from "./tokens";
 
 /**
  * The write-side core of the document library — everything the JSON API and the
@@ -24,6 +25,16 @@ import { newShareToken, randomToken } from "./tokens";
  * their own input parsing and response shapes (multipart + status codes for
  * `/api`, JSON-RPC tool results for `/mcp`), and nothing else re-implements the
  * render/blob/row sequencing that SPEC §9 pins down.
+ *
+ * Two calling conventions live here and the split is deliberate. A function that
+ * reads a document's fields takes an already-resolved `ResolvedDocument`
+ * (`addVersion`, `rollbackDocument`), so an adapter can reject a missing
+ * document before it spends anything on parsing the request body. One that only
+ * needs the document to exist takes an id and establishes that itself — by
+ * resolving it (`issueShare`, `readVersionBlob`) or by reading it off the write
+ * (`deleteDocumentWithBlobs`, whose DELETE already reports whether a row was
+ * there) — so no adapter can forget the check. The rule is the core's, not
+ * whoever remembers to copy it.
  */
 
 /** Upload size cap (SPEC §9). */
@@ -222,17 +233,39 @@ export async function rollbackDocument(
 	return { current_version: version, updated_at: now };
 }
 
-/** Issue a share token for a document. `ttlSeconds` is already parsed (SPEC §7). */
-export async function issueShare(env: Env, documentId: string, now: number, ttlSeconds: number): Promise<ShareRow> {
-	const row: ShareRow = {
+/** The issued share, or which precondition refused it. */
+export type IssueShareResult = { ok: true; share: ShareRow } | { ok: false; reason: "invalid-ttl" | "not-found" };
+
+/**
+ * Issue a share token for a live document (SPEC §7).
+ *
+ * Both preconditions live here rather than in the adapters, and the ORDER
+ * between them is part of the contract: liveness is checked before the TTL is
+ * parsed, so a request naming an unknown document with a bad TTL is answered
+ * "not there", never "bad TTL". That precedence is what keeps an id's existence
+ * out of the reply (SPEC §6.3), and it is the same one
+ * `POST /documents/:id/versions` keeps by resolving the document before it reads
+ * the body. Split across two adapters it would only hold until one of them
+ * parsed its TTL first.
+ *
+ * `not-found` covers an owner-expired document too: a share for one would 404
+ * for the recipient while looking issued to the owner (SPEC §11.5).
+ */
+export async function issueShare(env: Env, id: string, now: number, ttl: string): Promise<IssueShareResult> {
+	if (!(await getLiveDocument(env.DB, id, now))) return { ok: false, reason: "not-found" };
+
+	const ttlSeconds = parseTtl(ttl);
+	if (ttlSeconds === null) return { ok: false, reason: "invalid-ttl" };
+
+	const share: ShareRow = {
 		token: newShareToken(),
-		document_id: documentId,
+		document_id: id,
 		created_at: now,
 		expires_at: now + ttlSeconds,
 		revoked: 0,
 	};
-	await insertShare(env.DB, row);
-	return row;
+	await insertShare(env.DB, share);
+	return { ok: true, share };
 }
 
 /**

@@ -1,7 +1,9 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { seedShare } from "./helpers";
+import { getLiveShare } from "../src/lib/db";
+import { issueShare } from "../src/lib/documents";
+import { seedDoc, seedShare } from "./helpers";
 
 const BASE = "https://poof.5n7.me";
 
@@ -14,7 +16,8 @@ async function upload(source: string, kind = "md", title?: string, ttl?: string)
 	return SELF.fetch(`${BASE}/api/documents`, { method: "POST", body: fd });
 }
 
-async function issueShare(id: string, ttl?: string) {
+/** The API adapter — named apart from the core `issueShare` this file also exercises. */
+async function postShare(id: string, ttl?: string) {
 	return SELF.fetch(`${BASE}/api/documents/${id}/shares`, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
@@ -32,7 +35,7 @@ describe("share lifecycle through the API", () => {
 
 		// Issue a share with the default TTL (1 day).
 		const before = (Date.now() / 1000) | 0;
-		const shRes = await issueShare(doc.id);
+		const shRes = await postShare(doc.id);
 		expect(shRes.status).toBe(201);
 		const share = await shRes.json<{ token: string; expires_at: number; url: string }>();
 		expect(share.token.startsWith("s_")).toBe(true);
@@ -66,7 +69,7 @@ describe("share lifecycle through the API", () => {
 		expect(rawAfter.status).toBe(404);
 
 		// Re-issuing a new share for the same document works.
-		const reRes = await issueShare(doc.id, "1h");
+		const reRes = await postShare(doc.id, "1h");
 		expect(reRes.status).toBe(201);
 		const reShare = await reRes.json<{ token: string }>();
 		const reView = await SELF.fetch(`${BASE}/raw/${reShare.token}`);
@@ -77,8 +80,8 @@ describe("share lifecycle through the API", () => {
 		const up = await upload("# List test", "md");
 		const doc = await up.json<{ id: string }>();
 
-		const active = await (await issueShare(doc.id, "1d")).json<{ token: string }>();
-		const revoked = await (await issueShare(doc.id, "1d")).json<{ token: string }>();
+		const active = await (await postShare(doc.id, "1d")).json<{ token: string }>();
+		const revoked = await (await postShare(doc.id, "1d")).json<{ token: string }>();
 		await SELF.fetch(`${BASE}/api/shares/${revoked.token}`, { method: "DELETE" });
 
 		// Seed an already-expired share directly.
@@ -96,7 +99,7 @@ describe("share lifecycle through the API", () => {
 	it("cascades deletion: share token 404s and R2 blob is gone", async () => {
 		const up = await upload("# Cascade", "md");
 		const doc = await up.json<{ id: string }>();
-		const share = await (await issueShare(doc.id)).json<{ token: string }>();
+		const share = await (await postShare(doc.id)).json<{ token: string }>();
 		const r2Key = `doc/${doc.id}/v1.html`;
 
 		expect(await env.BLOBS.get(r2Key)).not.toBeNull();
@@ -140,5 +143,79 @@ describe("share lifecycle through the API", () => {
 		const rawRes = await SELF.fetch(`${BASE}/raw/${oToken}`);
 		expect(rawRes.status).toBe(200);
 		expect(await rawRes.text()).toContain("<h1>Owner view</h1>");
+	});
+});
+
+// Precedence, not merely outcome. When both preconditions fail the 404 has to
+// win, or a 400 becomes a way for anyone to ask whether an id exists. The order
+// lives in the core now (see `issueShare`); this pins what it looks like from
+// outside, so the next attempt to move it cannot pass silently.
+describe("refusing to issue a share through the API", () => {
+	it("answers 404 for an unknown id even when the ttl is invalid too", async () => {
+		const res = await postShare("no_such_document", "1y");
+		expect(res.status).toBe(404);
+		expect(await res.text()).toBe("Not Found");
+	});
+
+	it("answers 404 for an unknown id with a valid ttl", async () => {
+		expect((await postShare("no_such_document", "1d")).status).toBe(404);
+	});
+
+	it("answers 400 for an invalid ttl on a live document", async () => {
+		const doc = await (await upload("# Bad ttl", "md")).json<{ id: string }>();
+
+		const res = await postShare(doc.id, "1y");
+		expect(res.status).toBe(400);
+		expect(await res.json()).toEqual({ error: "invalid ttl" });
+	});
+
+	it("treats a body that is not JSON as no ttl at all, i.e. the 1d default", async () => {
+		const doc = await (await upload("# No body", "md")).json<{ id: string }>();
+
+		const before = (Date.now() / 1000) | 0;
+		const res = await SELF.fetch(`${BASE}/api/documents/${doc.id}/shares`, { method: "POST" });
+		expect(res.status).toBe(201);
+		const share = await res.json<{ expires_at: number }>();
+		expect(share.expires_at).toBeGreaterThanOrEqual(before + 86400);
+		expect(share.expires_at).toBeLessThanOrEqual(before + 86400 + 5);
+	});
+});
+
+// Straight at the core, not through an adapter. "Live documents only" is the
+// core's rule (SPEC §11.5), and verifying it only via `/api` and `/mcp` is what
+// let it be a comment copied into two route files in the first place.
+describe("issueShare", () => {
+	const now = (Date.now() / 1000) | 0;
+
+	it("refuses an owner-expired document and inserts nothing", async () => {
+		await seedDoc("core_share_expired", { createdAt: now - 7200, expiresAt: now - 3600 });
+
+		expect(await issueShare(env, "core_share_expired", now, "1d")).toEqual({ ok: false, reason: "not-found" });
+
+		const rows = await env.DB.prepare("SELECT COUNT(*) AS n FROM share WHERE document_id = ?")
+			.bind("core_share_expired")
+			.first<{ n: number }>();
+		expect(rows!.n).toBe(0);
+	});
+
+	it("resolves the document before it parses the ttl", async () => {
+		await seedDoc("core_share_live", { createdAt: now });
+
+		// Unknown id + bad ttl is "not there", never "bad ttl" — the order the API's
+		// 404-over-400 comes from. The second call is what makes that a real choice
+		// rather than a function that only ever says not-found.
+		expect(await issueShare(env, "core_share_missing", now, "1y")).toEqual({ ok: false, reason: "not-found" });
+		expect(await issueShare(env, "core_share_live", now, "1y")).toEqual({ ok: false, reason: "invalid-ttl" });
+	});
+
+	it("inserts the row it hands back", async () => {
+		await seedDoc("core_share_ok", { createdAt: now });
+
+		const issued = await issueShare(env, "core_share_ok", now, "1h");
+		if (!issued.ok) throw new Error(`expected a share, got ${issued.reason}`);
+
+		expect(issued.share.document_id).toBe("core_share_ok");
+		expect(issued.share.expires_at).toBe(now + 3600);
+		expect(await getLiveShare(env.DB, issued.share.token, now)).toEqual(issued.share);
 	});
 });

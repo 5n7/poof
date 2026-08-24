@@ -298,7 +298,16 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 				ownerLine(origin, id),
 			];
 			if (share) {
-				lines.push(...shareLines(origin, await issueShare(c.env, id, now, ttlToSeconds(share_ttl))));
+				// Neither refusal is reachable — the document was created three lines up
+				// and `share_ttl` came through the TTL enum — but the core owns them now,
+				// so say what happened rather than drop the line and read as "no share
+				// was asked for".
+				const issued = await issueShare(c.env, id, now, share_ttl);
+				lines.push(
+					issued.ok
+						? shareLines(origin, issued.share).join("\n")
+						: `No share link was issued (${issued.reason}); call \`share\` with this id to retry.`,
+				);
 			} else {
 				lines.push("No share link yet: call `share` with this id when there is someone to send it to.");
 			}
@@ -357,20 +366,35 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 		"share",
 		{
 			description:
-				"Issue a public share link for an existing document and return its /v/{token} URL. That URL, and only that URL, is what a recipient gets — /d/{id} is Access-protected and will not work for them. Anyone holding the /v/ URL can read the document until it expires or is revoked, so treat the URL itself as the secret: prefer a short ttl, and `revoke` when access should end early.",
+				"Issue a public share link for an existing document and return its /v/{token} URL. That URL, and only that URL, is what a recipient gets — /d/{id} is Access-protected and will not work for them. Anyone holding the /v/ URL can read the document until it expires or is revoked, so treat the URL itself as the secret: prefer a short share_ttl, and `revoke` when access should end early.",
 			inputSchema: {
 				id: z.string().describe("Document id to share."),
-				ttl: TTL.default("1d").describe("Share link lifetime. There is no forever share."),
+				// `share_ttl`, not `ttl`, to match `push` and both CLI subcommands'
+				// `--share-ttl` (SPEC §11.3). A lone `ttl` reads better here — this tool
+				// has no other lifetime to disambiguate from — but the cost of the third
+				// spelling is not a caller having to look it up: zod objects drop unknown
+				// keys silently, so a caller who knows the CLI passes `share_ttl`, it is
+				// thrown away, and the default 1d is issued instead of the hour they
+				// asked for. A wrong-looking success is worse than a rejection.
+				share_ttl: TTL.default("1d").describe(
+					"Share link lifetime. Shares always expire; there is no forever share. Prefer the shortest that works.",
+				),
 			},
 		},
-		async ({ id, ttl }) => {
-			const now = nowSeconds();
-			// getLiveDocument, not getDocument: no shares for owner-expired documents.
-			const doc = await getLiveDocument(c.env.DB, id, now);
-			if (!doc) return missing(id);
-
-			const row = await issueShare(c.env, id, now, ttlToSeconds(ttl));
-			return text(shareLines(origin, row).join("\n"));
+		// Annotated, like the `/api` share handler, so the switch below is exhaustive:
+		// an unphrased refusal has to be a type error, not a dropped branch.
+		async ({ id, share_ttl }): Promise<CallToolResult> => {
+			const issued = await issueShare(c.env, id, nowSeconds(), share_ttl);
+			if (issued.ok) return text(shareLines(origin, issued.share).join("\n"));
+			switch (issued.reason) {
+				// Unreachable: `share_ttl` came through the TTL enum. Answered anyway,
+				// because the core is what enumerates the refusals and the type is what
+				// keeps this branch from being quietly dropped.
+				case "invalid-ttl":
+					return failure(`Invalid share ttl ${JSON.stringify(share_ttl)}.`);
+				case "not-found":
+					return missing(id);
+			}
 		},
 	);
 

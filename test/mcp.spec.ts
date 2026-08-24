@@ -372,13 +372,32 @@ describe("MCP endpoint", () => {
 	it("share issues an extra link and revoke kills it immediately", async () => {
 		const { id } = await pushDoc({ content: "# Shareable\n\nbody" });
 
-		const shared = await callTool("share", { id, ttl: "1d" });
+		const shared = await callTool("share", { id, share_ttl: "1d" });
 		const token = shareToken(shared);
 		expect(shared).toContain(`${BASE}/v/${token}`);
 		expect((await SELF.fetch(`${BASE}/raw/${token}`)).status).toBe(200);
 
 		expect(await callTool("revoke", { token })).toContain(`Revoked ${token}`);
 		expect((await SELF.fetch(`${BASE}/raw/${token}`)).status).toBe(404);
+	});
+
+	// The lifetime is spelled `share_ttl` on both `share` and `push`, matching the
+	// CLI's `--share-ttl` on both subcommands (SPEC §11.3). Asserted against the
+	// stored row and with a value that is NOT the 1d default, because the failure
+	// mode of a third spelling is silent: zod drops an unrecognized key without an
+	// error, so a caller's `1h` would come back as a day-long link and any test
+	// that only checks "a link was issued" would still pass.
+	it("share honors an explicit share_ttl", async () => {
+		const { id } = await pushDoc({ content: "# Timed\n\nbody" });
+
+		const before = (Date.now() / 1000) | 0;
+		const token = shareToken(await callTool("share", { id, share_ttl: "1h" }));
+
+		const share = await env.DB.prepare("SELECT expires_at FROM share WHERE token = ?")
+			.bind(token)
+			.first<{ expires_at: number }>();
+		expect(share!.expires_at).toBeGreaterThanOrEqual(before + 3600);
+		expect(share!.expires_at).toBeLessThanOrEqual(before + 3600 + 5);
 	});
 
 	it("rm deletes the document and cascades its shares", async () => {
