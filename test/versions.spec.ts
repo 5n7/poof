@@ -95,7 +95,7 @@ async function issueShare(id: string): Promise<string> {
 	return (await res.json<{ token: string }>()).token;
 }
 
-/** Body served for a token, asserting a 200 first (a 404 body would silently match nothing). */
+/** Body served for a token, asserting a 200 before checking its contents. */
 async function rawText(token: string, query = ""): Promise<string> {
 	const res = await SELF.fetch(`${BASE}/raw/${token}${query}`);
 	expect(res.status).toBe(200);
@@ -145,7 +145,7 @@ describe("share links follow the latest version", () => {
 		const v2 = await addVersion(doc.id, "# v2 content");
 		expect(v2.version).toBe(2);
 
-		// Same token, no re-issue: the recipient now gets v2 and cannot see v1.
+		// The original token now returns v2 and no longer returns v1.
 		const after = await rawText(token);
 		expect(after).toContain("<h1>v2 content</h1>");
 		expect(after).not.toContain("v1 content");
@@ -155,7 +155,7 @@ describe("share links follow the latest version", () => {
 		expect(vRes.status).toBe(200);
 		expect(await vRes.text()).toContain(`/raw/${token}`);
 
-		// No second share was minted behind the scenes — it really is the same row.
+		// The update did not create another share row.
 		const sharesRes = await SELF.fetch(`${BASE}/api/documents/${doc.id}/shares`);
 		const { shares } = await sharesRes.json<{ shares: { token: string }[] }>();
 		expect(shares.map((s) => s.token)).toEqual([token]);
@@ -166,8 +166,8 @@ describe("share links follow the latest version", () => {
 		const token = await issueShare(doc.id);
 		await addVersion(doc.id, "# second");
 
-		// The pin lives in the signed o_ payload only: a share holder must not be
-		// able to enumerate history through the URL.
+		// Only signed o_ payloads can select a version. Share holders cannot select
+		// past versions through the query string.
 		const pinned = await rawText(token, "?v=1");
 		expect(pinned).toContain("<h1>second</h1>");
 		expect(pinned).not.toContain("first");
@@ -244,8 +244,7 @@ describe("GET /api/documents/:id/content", () => {
 		expect((await rollback(doc.id, 1)).status).toBe(200);
 
 		expect(await contentText(doc.id)).toContain("<h1>first</h1>");
-		// A rollback moves the pointer and nothing else, so history above it stays
-		// readable — v2 is not "in the future", it is just not current.
+		// A rollback moves only the pointer, so versions above it remain readable.
 		expect(await contentText(doc.id, "?v=2")).toContain("<h1>second</h1>");
 	});
 
@@ -301,7 +300,7 @@ describe("GET /api/documents/:id/content", () => {
 		const res = await contentRes(id, "?v=2");
 		expect(res.status).toBe(404);
 		expect(await res.text()).toBe("Not Found");
-		// Not over-broad: the current version still serves, byte for byte.
+		// The current version still returns its original bytes.
 		expect(await contentText(id)).toBe("<html><body>doc</body></html>");
 	});
 
@@ -310,8 +309,7 @@ describe("GET /api/documents/:id/content", () => {
 		const doc = await createDoc(source, { kind: "html", title: "Cat headers" });
 		const res = await contentRes(doc.id);
 		expect(res.status).toBe(200);
-		// Verbatim: nothing is escaped or rewritten on the way out — the headers
-		// below, not the body, are what keep the script from ever running.
+		// The response body stays unchanged. Its headers make the script inert.
 		expect(await res.text()).toBe(source);
 		expect(res.headers.get("Content-Type")).toBe("text/plain; charset=utf-8");
 		expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
@@ -334,7 +332,7 @@ describe("GET /api/documents/:id/content", () => {
 	});
 });
 
-describe("GET /d/:id?v=N — the pinned read-only viewer", () => {
+describe("GET /d/:id?v=N read-only viewer", () => {
 	it("serves the past version through a minted o_ token, read-only", async () => {
 		const doc = await createDoc("# one", { title: "Pinned" });
 		await addVersion(doc.id, "# two");
@@ -419,7 +417,7 @@ describe("rollback", () => {
 		expect(await res.text()).toBe("Not Found");
 		expect((await getVersions(id)).current_version).toBe(1);
 
-		// Not over-broad: a version that does have its blob still restores.
+		// A version with a stored blob can still be restored.
 		await seedVersion(id, 3);
 		expect((await rollback(id, 1)).status).toBe(200);
 		expect((await getVersions(id)).current_version).toBe(1);
@@ -457,7 +455,7 @@ describe("rollback", () => {
 });
 
 describe("kind across versions", () => {
-	it("switches md → html → md, serving raw html byte-identically", async () => {
+	it("switches from md to html and back while preserving raw html bytes", async () => {
 		const doc = await createDoc("# md one", { title: "Kind" });
 		const token = await issueShare(doc.id);
 		const first = await rawText(token);
@@ -465,7 +463,7 @@ describe("kind across versions", () => {
 		expect(first).toContain("markdown-body");
 		expect((await listRow(doc.id)).kind).toBe("md");
 
-		// An html version is stored verbatim — no wrapViewerHtml wrapper.
+		// Store an HTML version without a wrapViewerHtml wrapper.
 		const v2 = await addVersion(doc.id, "<p>raw</p>", { kind: "html" });
 		expect(v2.kind).toBe("html");
 		expect(await rawText(token)).toBe("<p>raw</p>");

@@ -74,7 +74,7 @@ function field(body: string, prefix: string): string {
 	return line!.slice(prefix.length).trim();
 }
 
-/** The id out of a `push` result — the first word of its "Created document …" line. */
+/** Read the id from the first word after "Created document". */
 function createdId(body: string): string {
 	return field(body, "Created document ").split(" ")[0];
 }
@@ -84,7 +84,7 @@ function shareToken(body: string): string {
 	return field(body, "Share token (for the `revoke` tool): ");
 }
 
-/** Push a document and hand back both its result text and its id — the run-up to most tests here. */
+/** Push a document and return its result text and id. */
 async function pushDoc(args: object = {}): Promise<{ body: string; id: string }> {
 	const body = await callTool("push", { content: "# Doc\n\nbody", ...args });
 	return { body, id: createdId(body) };
@@ -125,11 +125,8 @@ describe("MCP endpoint", () => {
 		for (const tool of result.tools) expect(tool.description.length).toBeGreaterThan(0);
 	});
 
-	// The hints a client reads to label a tool "read-only" or to ask before running
-	// a destructive one. Pinned per tool because the two ways of getting it wrong
-	// cost in opposite directions: a destructive tool that claims to be read-only
-	// runs with no prompt at all, and a reading tool that claims to be destructive
-	// trains the caller to click through the prompts that do matter.
+	// Clients use these hints to label read-only tools and confirm destructive
+	// calls. Check every tool because a wrong value changes confirmation behavior.
 	it("annotates every tool with its behavior hints", async () => {
 		const { result } = await rpc<{ tools: { annotations?: ToolAnnotations; name: string }[] }>("tools/list");
 		const annotationsOf = (name: string) => result.tools.find((t) => t.name === name)!.annotations;
@@ -142,9 +139,8 @@ describe("MCP endpoint", () => {
 			expect(annotationsOf(name), name).not.toHaveProperty("idempotentHint");
 		}
 
-		// The writing tools, one row each. `revoke` and `rm` are the only two that may
-		// carry destructiveHint: true — `update` appends a version and `rollback` moves
-		// a pointer, neither of which destroys anything.
+		// `revoke` and `rm` are destructive. `update` appends a version and `rollback`
+		// moves a pointer, so neither is destructive.
 		const writes: [name: string, destructiveHint: boolean, idempotentHint: boolean][] = [
 			["push", false, false],
 			["revoke", true, true],
@@ -162,10 +158,8 @@ describe("MCP endpoint", () => {
 		for (const name of TOOL_NAMES) expect(annotationsOf(name), name).toMatchObject({ openWorldHint: false });
 	});
 
-	// The asymmetry is load-bearing, so it is pinned in the schema rather than
-	// left to prose: push has no prior kind and defaults to "md", while update
-	// must carry no default at all, because a default there is what silently
-	// re-renders an HTML document as Markdown for every share holder.
+	// `push` has no prior kind and defaults to "md". `update` must have no default,
+	// or omitting it would render an HTML document as Markdown for every share.
 	it("gives push's kind a default and update's none", async () => {
 		const { result } = await rpc<{
 			tools: { inputSchema: { properties: Record<string, { default?: string; description: string }> }; name: string }[];
@@ -179,17 +173,9 @@ describe("MCP endpoint", () => {
 		expect(update.description).toContain("Omit to keep the document's current kind");
 	});
 
-	// The test that actually pins per-request construction, and it does so without
-	// depending on two requests overlapping in time.
-	//
-	// Every tool closes over `origin`, read from the request being served. A
-	// server built once and reused would have captured whichever request built it,
-	// so a later caller arriving on a different host would be handed the *first*
-	// caller's origin — a wrong, and possibly foreign, URL to pass to a recipient.
-	// Rebuilding per request is what makes that impossible.
-	//
-	// Verified to discriminate: hoisting the server to module scope makes this
-	// fail, while the two tests below still pass.
+	// Each tool closes over the current request's origin. A reused server would
+	// return the first request's origin to later callers. Different origins verify
+	// per-request construction without requiring overlapping requests.
 	it("builds the server per request, so each caller gets its own origin", async () => {
 		const here = await rpcRaw<ToolResult>(pushMessage("Origin Default"));
 		expect(here.result.content[0].text).toContain(`${BASE}/d/`);
@@ -201,11 +187,8 @@ describe("MCP endpoint", () => {
 		expect(text).not.toContain(BASE);
 	});
 
-	// A weaker property than the origin test above, kept because a colliding id is
-	// the routine case (clients number their own ids from 1) and both callers must
-	// still be answered. Note this does NOT prove per-request construction on its
-	// own: this harness serializes the two fetches, so a module-level server
-	// passes it too.
+	// Clients commonly reuse numeric ids across connections. Both requests must be
+	// answered even though this test alone does not prove per-request construction.
 	it("answers two concurrent requests that share a JSON-RPC id", async () => {
 		const [a, b] = await Promise.all([
 			rpcRaw<ToolResult>(pushMessage("Concurrent A")),
@@ -227,9 +210,8 @@ describe("MCP endpoint", () => {
 		expect(ids[0]).not.toBe(ids[1]);
 	});
 
-	// The whole point of stateless mode: each request builds its own server and
-	// transport, so nothing may depend on an `initialize` having come first. A
-	// regression here breaks every client that does not reuse one HTTP exchange.
+	// Stateless requests build their own server and transport. Neither tools/list
+	// nor tools/call requires a preceding initialize request.
 	it("serves tools/list and tools/call with no preceding initialize", async () => {
 		const { result: list } = await rpc<{ tools: { name: string }[] }>("tools/list");
 		expect(list.tools).toHaveLength(TOOL_NAMES.length);
@@ -238,8 +220,7 @@ describe("MCP endpoint", () => {
 		expect(pushed).toContain("Created document ");
 	});
 
-	// Holds the whole result body on purpose: this is the test that pins the shape
-	// of what `push` prints, not just that it worked.
+	// Keep the full result body to check the output format from `push`.
 	it("push creates a document and returns an absolute owner URL", async () => {
 		const { body, id } = await pushDoc({ content: "# Inferred Title\n\nbody text" });
 
@@ -250,7 +231,7 @@ describe("MCP endpoint", () => {
 		// No share was asked for, so no /v/ URL may appear.
 		expect(body).not.toContain("/v/");
 
-		// The document really is in the library, at version 1.
+		// The library contains the document at version 1.
 		const listing = await callTool("ls");
 		expect(listing).toContain(id);
 
@@ -341,20 +322,19 @@ describe("MCP endpoint", () => {
 		// The true total, not the capped length, and where the whole thing lives.
 		expect(out).toContain(`${big.length} bytes`);
 		expect(out).toContain(`${BASE}/d/${id}`);
-		expect(out).toContain("do not send that URL to a recipient");
-		// The head survived and the cap actually bit.
+		expect(out).toContain("This URL is owner-only. Do not send it to a recipient.");
+		// The output keeps the prefix and remains shorter than the source.
 		expect(out.startsWith("<p>xxx")).toBe(true);
 		expect(out.length).toBeLessThan(big.length);
 
-		// The API content route is deliberately uncapped — it streams to a file
-		// descriptor, so `poof cat big > out.html` must stay byte-exact.
+		// The API content route has no cap because the CLI streams it to a file
+		// descriptor. `poof cat big > out.html` must preserve every byte.
 		const api = await SELF.fetch(`${BASE}/api/documents/${id}/content`);
 		expect((await api.text()).length).toBe(big.length);
 	});
 
-	// The cap counts bytes, so it can land mid-codepoint. The streaming decoder is
-	// never flushed, which drops the dangling bytes instead of emitting U+FFFD —
-	// asserted here because it is invisible until someone cats a CJK document.
+	// The cap counts bytes and may end inside a code point. The unflushed streaming
+	// decoder drops incomplete bytes instead of emitting U+FFFD.
 	it("cat cuts multibyte content on a character boundary", async () => {
 		// "あ" is 3 UTF-8 bytes, and 128 KiB is not a multiple of 3, so the cap
 		// necessarily falls inside a character.
@@ -365,7 +345,7 @@ describe("MCP endpoint", () => {
 		const head = out.slice(0, out.indexOf("\n\n[truncated:"));
 		expect(head).not.toContain("�");
 		expect(head).toBe("あ".repeat(head.length));
-		// 128 KiB / 3 bytes, rounded down — the last whole character that fits.
+		// Floor division gives the number of complete three-byte characters that fit.
 		expect(head.length).toBe(Math.floor((128 * 1024) / 3));
 	});
 
@@ -387,7 +367,7 @@ describe("MCP endpoint", () => {
 		expect(updated).toContain('title "Doc"');
 		expect(updated).toContain(`${BASE}/d/${id}`);
 
-		// Same token, new content — nothing was re-issued.
+		// The existing token returns the new content.
 		const raw = await SELF.fetch(`${BASE}/raw/${token}`);
 		expect(await raw.text()).toContain("second");
 
@@ -425,12 +405,9 @@ describe("MCP endpoint", () => {
 		expect((await SELF.fetch(`${BASE}/raw/${token}`)).status).toBe(404);
 	});
 
-	// The lifetime is spelled `share_ttl` on both `share` and `push`, matching the
-	// CLI's `--share-ttl` on both subcommands (SPEC §11.3). Asserted against the
-	// stored row and with a value that is NOT the 1d default, because the failure
-	// mode of a third spelling is silent: zod drops an unrecognized key without an
-	// error, so a caller's `1h` would come back as a day-long link and any test
-	// that only checks "a link was issued" would still pass.
+	// Both `share` and `push` use `share_ttl`, matching the CLI's `--share-ttl`
+	// option from SPEC §11.3. Check a nondefault value in the stored row because
+	// Zod drops unknown keys and would otherwise use the one-day default.
 	it("share honors an explicit share_ttl", async () => {
 		const { id } = await pushDoc({ content: "# Timed\n\nbody" });
 
@@ -469,9 +446,8 @@ describe("MCP endpoint", () => {
 		expect(row[5]).not.toBe("never");
 	});
 
-	// Titles are arbitrary user input, and the listing is tab-separated: an
-	// embedded tab or newline would split the row and shift every later column,
-	// so a model would read this document's kind or expiry off the wrong one.
+	// Titles are user input in a tab-separated listing. Embedded tabs or newlines
+	// must not split rows or shift columns.
 	it("flattens control characters in a title so ls columns cannot shift", async () => {
 		const title = "tab\there\nand newline";
 		const { id } = await pushDoc({ content: "<p>x</p>", kind: "html", title });
@@ -486,27 +462,23 @@ describe("MCP endpoint", () => {
 	});
 });
 
-// `push` runs the same naming chain as the API create route (SPEC §8), with the
-// one difference this adapter has to supply: an MCP client pushes content, not a
-// file, so there is no file name to end on and the terminal is "untitled". Under
-// the test pool Workers AI is unreachable, so what these pin is the heading rung
-// and that terminal — test/titles.spec.ts explains why the AI rung is not tested
-// here and asserts the binding really is unreachable.
+// `push` uses the API create route's title selection from SPEC §8. MCP receives
+// content without a file name, so its final fallback is "untitled". Workers AI
+// is unavailable in the test pool. test/titles.spec.ts covers that configuration.
 describe("MCP automatic titling", () => {
 	it("names an untitled document from its own first heading", async () => {
 		const { body, id } = await pushDoc({ content: "# Design Review\n\nbody text" });
 		expect(body).toContain('title "Design Review"');
-		// Baked into the stored blob, not merely reported back in the tool result.
+		// The stored blob contains the selected title.
 		expect(await callTool("cat", { id })).toContain("<title>Design Review</title>");
 	});
 
 	it("falls back to untitled when the document has no heading to take", async () => {
-		// Every other rung declines: no AI under the pool, no heading in the content,
-		// and no file name to end on — so this is the terminal and nothing else.
+		// With no AI, heading, or file name, the title is "untitled".
 		const { body, id } = await pushDoc({ content: "just some prose, no heading anywhere" });
 		expect(body).toContain('title "untitled"');
 
-		// And it is what the library actually files it under, not just what push said.
+		// The library stores the same title reported by `push`.
 		const row = (await callTool("ls"))
 			.split("\n")
 			.find((l) => l.startsWith(id))!
@@ -524,19 +496,16 @@ describe("MCP automatic titling", () => {
 	});
 
 	it("treats a whitespace-only title as absent and runs the chain", async () => {
-		// `||`, not `??`: a blank title has to count as absent here exactly as a blank
-		// multipart field does in readUpload, or the two surfaces name documents
-		// differently.
+		// `||` treats a blank title as absent, matching readUpload's handling of a
+		// blank multipart field.
 		const { body } = await pushDoc({ content: "# Blank Title Heading\n\nbody", title: "   " });
 		expect(body).toContain('title "Blank Title Heading"');
 		expect(body).not.toContain('title "   "');
 	});
 });
 
-// The owner-TTL split is deliberate and was previously untested: the five tools
-// that act on a document resolve it with getLiveDocument/getLiveDocumentAt and
-// refuse an expired one, while `rm` uses getDocument so the owner can still
-// clean up before the weekly sweep reaches it.
+// Document tools use getLiveDocument/getLiveDocumentAt and reject expired
+// documents. `rm` uses getDocument so the owner can delete one before cleanup.
 describe("MCP owner-TTL gating", () => {
 	/** Seed a document whose owner TTL has already passed. */
 	async function expiredDoc(): Promise<string> {
@@ -549,9 +518,8 @@ describe("MCP owner-TTL gating", () => {
 	it("refuses cat, rollback, share, update and versions on an expired document", async () => {
 		const id = await expiredDoc();
 
-		// `share` is the one with teeth: resolving with getDocument here would mint
-		// a live token for a dead document, so the owner hands out a URL that 404s
-		// for the recipient while looking successful on this side.
+		// If `share` used getDocument, it could mint a live token for an expired
+		// document. The resulting recipient URL would return 404.
 		const calls: [string, object][] = [
 			["cat", { id }],
 			["rollback", { id, version: 1 }],
@@ -574,7 +542,7 @@ describe("MCP owner-TTL gating", () => {
 	it("still lets rm delete an expired document", async () => {
 		const id = await expiredDoc();
 		expect(await callTool("rm", { id })).toContain(`Deleted document ${id}`);
-		// Gone for real, not merely hidden behind the TTL filter.
+		// Confirm that `rm` deleted the row instead of hiding it behind the TTL filter.
 		const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM document WHERE id = ?").bind(id).first<{ n: number }>();
 		expect(row!.n).toBe(0);
 	});
@@ -616,10 +584,8 @@ describe("MCP tool errors", () => {
 	});
 });
 
-// POST is the whole surface (SPEC §9). A stateless server has no SSE stream to
-// offer on GET and no session for DELETE to terminate, so both get the 405 the
-// MCP spec permits — with Allow, so a client is told what the endpoint takes
-// rather than left to guess at a 404.
+// POST is the only supported method in SPEC §9. A stateless server has no SSE
+// stream for GET and no session for DELETE. Both return 405 with Allow: POST.
 describe("MCP method handling", () => {
 	for (const method of ["GET", "DELETE"]) {
 		it(`answers ${method} /mcp with 405 and Allow: POST`, async () => {

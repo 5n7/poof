@@ -2,8 +2,8 @@ import type { Context, Next } from "hono";
 import { verifyWithJwks } from "hono/jwt";
 
 /**
- * Cloudflare Access JWT verification (defense in depth — Access is also in
- * front of these routes in production). Validates `Cf-Access-Jwt-Assertion`
+ * Verify Cloudflare Access JWTs as a second check. Access also runs in front of
+ * these routes in production. Validate `Cf-Access-Jwt-Assertion`
  * against the team's JWKS; service-token auth issues the same JWT shape, so no
  * extra branch is needed. Skipped entirely for local dev (`DEV_DISABLE_ACCESS`).
  */

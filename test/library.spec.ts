@@ -6,7 +6,7 @@ import { seedDoc, seedShare } from "./helpers";
 const BASE = "https://poof.5n7.me";
 const GITHUB = "https://github.com/5n7/poof";
 
-describe("GET / — library chrome", () => {
+describe("GET / library chrome", () => {
 	it("includes a GitHub mark linking to the source repo", async () => {
 		const res = await SELF.fetch(`${BASE}/`);
 		expect(res.status).toBe(200);

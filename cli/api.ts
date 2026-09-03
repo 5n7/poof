@@ -17,7 +17,7 @@ export interface DocumentRow {
 	expires_at: number | null;
 }
 
-/** One history entry as the API projects it — r2_key stays server-side. */
+/** One history entry returned by the API. `r2_key` stays on the server. */
 export interface VersionRow {
 	version: number;
 	kind: "md" | "html";
@@ -81,11 +81,9 @@ export function loadConfig(): PoofConfig {
 }
 
 /**
- * Tagged template for API paths: every interpolated value is
- * percent-encoded. Path segments are user input (ids, tokens): left raw,
- * `poof cat 'id?v=99' --version 1` would smuggle in its own query and silently
- * override the pin. Making the encoding part of how a path is *built* means no
- * call site can forget it.
+ * Build an API path and percent-encode each interpolated value. IDs and tokens
+ * are user input. If left raw, `poof cat 'id?v=99' --version 1` could override
+ * the requested version.
  */
 export function p(strings: TemplateStringsArray, ...values: string[]): string {
 	return strings.reduce((acc, part, i) => acc + (i > 0 ? encodeURIComponent(values[i - 1]) : "") + part, "");
@@ -110,11 +108,9 @@ async function request(cfg: PoofConfig, method: string, path: string, body?: For
 		payload = JSON.stringify(body);
 	}
 
-	// redirect: "manual" — Cloudflare Access answers an unauthenticated request
-	// with a 302 to its sign-in page. Following it would turn an auth failure into
-	// a 200 carrying login HTML: `poof cat` would print it and exit 0, `poof ls`
-	// would parse it into an undefined `documents`. Kept manual, a 3xx stays a
-	// non-2xx and fails like anything else.
+	// Cloudflare Access redirects unauthenticated requests to its sign-in page.
+	// Do not follow that redirect. Otherwise `poof cat` could print login HTML and
+	// exit 0, while `poof ls` could parse that HTML as an API response.
 	const res = await fetch(`${cfg.url}${path}`, { method, headers, body: payload, redirect: "manual" });
 
 	if (!res.ok) {
@@ -135,9 +131,9 @@ export async function api<T>(cfg: PoofConfig, method: string, path: string, body
 }
 
 /**
- * Same request, but hands back the undecoded body stream — documents run to
- * 10 MiB, so `poof cat big > out.html` must not buffer the whole thing as a JS
- * string before writing its first byte. Null only if the server sent no body.
+ * Perform the same request and return the undecoded body stream. Documents can
+ * reach 10 MiB, so `poof cat big > out.html` must not buffer the full response.
+ * Returns null when the server sends no body.
  */
 export async function apiStream(cfg: PoofConfig, method: string, path: string): Promise<ReadableStream | null> {
 	const res = await request(cfg, method, path);

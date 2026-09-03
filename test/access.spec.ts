@@ -65,8 +65,8 @@ describe("Access enforcement (DEV_DISABLE_ACCESS unset)", () => {
 			["/api/documents/doc_someid/versions", { method: "POST", body: versionBody() }],
 			["/api/documents/doc_someid/versions", undefined],
 			["/api/documents/doc_someid/versions/1/rollback", { method: "POST" }],
-			// The content route hands out raw document HTML, and its ?v= pin is the
-			// only place a version may come from the URL — both stay behind Access.
+			// The content route returns raw document HTML. Its ?v= pin is the only
+			// version selector in the URL. Access protects both forms.
 			["/api/documents/doc_someid/content", undefined],
 			["/api/documents/doc_someid/content?v=1", undefined],
 		];
@@ -103,8 +103,8 @@ describe("Access enforcement (DEV_DISABLE_ACCESS unset)", () => {
 	});
 });
 
-// CSRF guard runs under the default test env (DEV_DISABLE_ACCESS="1"), so auth
-// is not the thing being exercised here — only the Sec-Fetch-Site check.
+// The default test env sets DEV_DISABLE_ACCESS="1". These tests cover only the
+// Sec-Fetch-Site check.
 describe("CSRF protection on state-changing API routes", () => {
 	async function seededDoc() {
 		const id = `csrf_${crypto.randomUUID().slice(0, 8)}`;

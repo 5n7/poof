@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// poof CLI — headless upload/share against the poof JSON API.
+// Headless upload and sharing client for the poof JSON API.
 
 import { defineCommand, runMain } from "citty";
 import { readFile } from "node:fs/promises";
@@ -39,25 +39,20 @@ function kindFromExtension(file: string): "md" | "html" {
 }
 
 /**
- * Reject a malformed version before the network: the server answers 400 for
- * this, but there is no reason to spend a round-trip on a local typo.
+ * Reject a malformed version before making a request.
  */
 function requireVersion(version: string): void {
 	if (!/^[1-9][0-9]*$/.test(version)) fail(`invalid version '${version}' (expected a positive integer)`);
 }
 
 /**
- * Mirror of `firstMarkdownHeading` in src/lib/title.ts, the only other copy —
- * keep the two in sync. Duplicated rather than imported because this tsconfig
- * narrows `types` and `include`, so the Worker's `Env`/`Ai` globals would fall
- * outside the CLI's program.
+ * Mirror `firstMarkdownHeading` in src/lib/title.ts. Keep both copies in sync.
+ * Importing the Worker version would pull `Env` and `Ai` globals outside this
+ * tsconfig's `types` and `include` settings.
  *
- * The two are spelled differently and must still agree exactly, or the CLI and
- * the server would title the same file differently: this scans lines, while the
- * Worker's copy is one regex (it may be handed a 10 MiB push and cannot afford
- * an array of every line). That regex is written around this `split(/\r?\n/)`,
- * down to how a lone `\r` is treated — see the comment on `MD_HEADING` before
- * changing either.
+ * This copy scans lines. The Worker uses one regex to avoid allocating an array
+ * for a document that may be 10 MiB. Both must treat line breaks, including a
+ * lone `\r`, the same way. See `MD_HEADING` before changing either copy.
  */
 function firstMarkdownHeading(content: string): string | null {
 	for (const line of content.split(/\r?\n/)) {
@@ -67,7 +62,7 @@ function firstMarkdownHeading(content: string): string | null {
 	return null;
 }
 
-/** epoch seconds → "YYYY-MM-DD HH:mm" in the machine's local timezone. */
+/** Format epoch seconds as local `YYYY-MM-DD HH:mm`. */
 function formatTime(seconds: number | null): string {
 	if (seconds == null) return "-";
 	const d = new Date(seconds * 1000);
@@ -87,8 +82,7 @@ function printTable(header: string[], rows: string[][]): void {
 const cat = defineCommand({
 	meta: {
 		name: "cat",
-		description:
-			"Print a document's stored HTML — the rendered blob share links serve, not the Markdown source it came from.",
+		description: "Print the stored HTML served by share links. Poof does not keep the original Markdown.",
 	},
 	args: {
 		"doc-id": {
@@ -111,10 +105,9 @@ const cat = defineCommand({
 			const query = args.version === undefined ? "" : `?v=${args.version}`;
 			const body = await apiStream(cfg, "GET", p`/api/documents/${args["doc-id"]}/content` + query);
 			if (!body) return;
-			// Streamed verbatim, with no trailing newline added: `poof cat id > out.html`
-			// has to be byte-identical to what /raw serves. `end: false` leaves stdout
-			// open for whatever citty does after us; a reader that hangs up (`| head`)
-			// surfaces as EPIPE, which is a clean stop, not an error to report.
+			// Stream without adding a newline so redirected output matches `/raw` byte
+			// for byte. Keep stdout open for citty. Treat EPIPE from `| head` as a
+			// normal stop.
 			await pipeline(Readable.fromWeb(body), process.stdout, { end: false }).catch((err: NodeJS.ErrnoException) => {
 				if (err.code !== "EPIPE") throw err;
 			});
@@ -136,9 +129,8 @@ const ls = defineCommand({
 				return;
 			}
 
-			// UPDATED rather than CREATED, to keep six columns: an un-updated document
-			// has updated_at === created_at, and the true creation time is version 1's
-			// created_at, visible in `poof versions`.
+			// Show UPDATED to keep the table to six columns. For an unchanged document,
+			// updated_at equals created_at. `poof versions` shows version 1's timestamp.
 			printTable(
 				["ID", "TITLE", "KIND", "VER", "UPDATED", "EXPIRES"],
 				documents.map((d) => [
@@ -361,10 +353,8 @@ const update = defineCommand({
 			const form = new FormData();
 			form.append("file", new Blob([content]), basename(args.file));
 			form.append("kind", kind);
-			// Deliberately no firstMarkdownHeading fallback here: push infers a title
-			// because a new document has none, but silently renaming an existing
-			// document on every content fix would be a surprise. Omitting the field
-			// tells the server to keep the current title; --title is the explicit opt-in.
+			// Do not infer a title during updates. Omitting the field keeps the current
+			// title. The user must pass --title to rename the document.
 			if (args.title) form.append("title", args.title);
 
 			const result = await api<UpdateResult>(cfg, "POST", p`/api/documents/${args["doc-id"]}/versions`, form);
@@ -406,7 +396,7 @@ const main = defineCommand({
 	meta: {
 		name: "poof",
 		description:
-			"Ephemeral document viewer & sharing CLI. " +
+			"CLI for viewing and sharing temporary documents. " +
 			"Reads POOF_URL, POOF_ACCESS_CLIENT_ID, and POOF_ACCESS_CLIENT_SECRET from the environment.",
 	},
 	subCommands: { cat, ls, push, revoke, rm, rollback, share, update, versions },

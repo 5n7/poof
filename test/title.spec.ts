@@ -4,9 +4,8 @@ import { firstMarkdownHeading, looksJapanese, sanitizeAiTitle } from "../src/lib
 
 /**
  * Spelled as escapes on purpose. These are the characters the sanitizer exists
- * to handle, and every one of them is invisible or indistinguishable in a source
- * file — pasted literally, a reader could not tell this test from a broken one,
- * and an editor that normalizes on save could silently rewrite the input.
+ * to handle. Every one is invisible or ambiguous in source. Literal characters
+ * would make the test hard to review, and editor normalization could change them.
  */
 const ZWNJ = "\u200C"; // zero-width non-joiner, orthographically required in Persian
 const ZWJ = "\u200D"; // zero-width joiner, what holds an emoji sequence together
@@ -32,7 +31,7 @@ describe("sanitizeAiTitle", () => {
 
 	it("leaves a string that merely begins and ends with a quote mark alone", () => {
 		// Regression: with only the ends checked, `「設計」と「実装」` came out as
-		// `設計」と「実装` — a mangled Japanese title with stray quotes mid-string.
+		// `設計」と「実装`, a mangled Japanese title with stray quotes mid-string.
 		// The guard has to hold for an asymmetric pair and for `"`, where the open
 		// and close marks are the same character.
 		expect(sanitizeAiTitle("「設計」と「実装」")).toBe("「設計」と「実装」");
@@ -79,22 +78,19 @@ describe("sanitizeAiTitle", () => {
 		expect(sanitizeAiTitle("**Quarterly Roadmap**")).toBe("Quarterly Roadmap");
 	});
 
-	it("unwraps __init__ to init — an accepted loss, on the record, not an oversight", () => {
-		// Under CommonMark `__init__` really is <strong>init</strong>: the delimiters
-		// sit at the string's edges, so the intraword rule does not save it, which
-		// makes it indistinguishable from `__Roadmap__` — a model bolding its answer
-		// against instructions. No rule keeps one without losing the other, and this
-		// was the side chosen. Pinned so a future reader meets a decision, not a bug.
+	it("accepts that unwrapping emphasis changes __init__ to init", () => {
+		// CommonMark parses `__init__` as <strong>init</strong> because the delimiters
+		// are at the string edges. The sanitizer cannot distinguish it from a model
+		// wrapping `__Roadmap__` in bold, so it unwraps both forms.
 		expect(sanitizeAiTitle("__init__")).toBe("init");
-		// The blast radius, and why the loss was acceptable: unwrapping needs the
-		// marker at BOTH ends, so a dunder anywhere but alone survives intact.
+		// Unwrapping requires markers at both ends, so embedded dunder names remain.
 		expect(sanitizeAiTitle("Understanding __init__")).toBe("Understanding __init__");
 		expect(sanitizeAiTitle("__init__ explained")).toBe("__init__ explained");
 	});
 
 	it("keeps only the first non-empty line when the model rambles on afterwards", () => {
 		expect(sanitizeAiTitle("Roadmap\n\nThis title summarizes…")).toBe("Roadmap");
-		// The explanation is dropped, not the title — and not the whole answer.
+		// Keep the title and drop the following explanation.
 		expect(sanitizeAiTitle("Design Notes\nThis document describes...")).toBe("Design Notes");
 	});
 
@@ -104,12 +100,11 @@ describe("sanitizeAiTitle", () => {
 	});
 
 	it("rejects an unclosed <think> instead of titling the model's scratchpad", () => {
-		// At max_tokens: 32 an answer cut off mid-thought is the likelier shape by
-		// far, and there is nothing after the block to keep. "Okay, the user wants a
-		// title for…" must never become the document's name.
+		// With max_tokens set to 32, a response may end inside the reasoning block.
+		// There is no title to keep after an unclosed block.
 		expect(sanitizeAiTitle("<think>Okay, the user wants a title for this")).toBeNull();
 		expect(sanitizeAiTitle("<THINK>Okay, the user wants a title")).toBeNull();
-		// Not over-broad: a word that merely starts with "think" is not a tag.
+		// A word starting with "think" is not a tag.
 		expect(sanitizeAiTitle("Thinking About Types")).toBe("Thinking About Types");
 	});
 
@@ -118,10 +113,9 @@ describe("sanitizeAiTitle", () => {
 	});
 
 	it("preserves U+3000, the ideographic space, inside the title", () => {
-		// It is a deliberate part of a Japanese title, not padding: collapsing it to
-		// an ASCII space silently rewrites what the model wrote.
+		// U+3000 may be part of a Japanese title. Do not convert it to an ASCII space.
 		expect(sanitizeAiTitle("設計　メモ")).toBe("設計　メモ");
-		// Still only *inside*: a line of nothing but ideographic spaces is blank.
+		// A line containing only ideographic spaces is still blank.
 		expect(sanitizeAiTitle("　　")).toBeNull();
 	});
 
@@ -131,14 +125,13 @@ describe("sanitizeAiTitle", () => {
 		expect(sanitizeAiTitle("The End...")).toBe("The End");
 	});
 
-	it("keeps a trailing question mark: a question is a perfectly good title", () => {
+	it("keeps a trailing question mark in a title", () => {
 		expect(sanitizeAiTitle("How do I deploy poof?")).toBe("How do I deploy poof?");
 		expect(sanitizeAiTitle("poof とは？")).toBe("poof とは？");
 	});
 
 	it("leaves a Japanese title completely untouched", () => {
-		// The whole point of picking a model that handles Japanese: nothing in the
-		// sanitizer may mangle, transliterate or reject a JA answer.
+		// The sanitizer must not alter, transliterate, or reject a Japanese answer.
 		expect(sanitizeAiTitle("四半期ロードマップ")).toBe("四半期ロードマップ");
 	});
 
@@ -163,9 +156,8 @@ describe("sanitizeAiTitle", () => {
 	});
 
 	it("keeps ZWNJ and ZWJ, the two format characters a legitimate title needs", () => {
-		// The exceptions to the strip above. Dropping either mangles a real title
-		// rather than cleaning it: ZWNJ is orthographic in Persian and Devanagari,
-		// and ZWJ is what makes an emoji sequence one glyph instead of two.
+		// ZWNJ is orthographic in Persian and Devanagari. ZWJ joins an emoji sequence
+		// into one glyph, so both are exceptions to the format-character removal.
 		const persian = `نرم${ZWNJ}افزار`;
 		expect(sanitizeAiTitle(persian)).toBe(persian);
 		const withSequence = `Dev Notes 👨${ZWJ}💻`;
@@ -173,9 +165,8 @@ describe("sanitizeAiTitle", () => {
 	});
 
 	it("rejects a title with no letter or digit anywhere in it", () => {
-		// Debris from an answer the model never really gave. Rejecting sends the chain
-		// on to the document's own heading, which labels a library row far better than
-		// `---` does. An emoji-only title fails this too, which is the safe direction.
+		// These values contain no usable title. Rejecting them lets the caller use the
+		// document heading instead. Emoji-only titles follow the same rule.
 		for (const debris of ["---", "***", "…", "、", ZWSP, SHY, "🎉🎉"]) {
 			expect(sanitizeAiTitle(debris), JSON.stringify(debris)).toBeNull();
 		}
@@ -191,8 +182,7 @@ describe("sanitizeAiTitle", () => {
 	it("counts the length in code points, not UTF-16 units", () => {
 		// 40 astral emoji (2 UTF-16 units each) + 39 ASCII: .length is 119, well over
 		// the bound, while the code-point count is 79 and therefore acceptable. A
-		// regression to `title.length` would throw this away — and with it every
-		// emoji or astral-plane title.
+		// using `title.length` would reject this and other astral-plane titles.
 		const title = "🎉".repeat(40) + "a".repeat(39);
 		expect(title.length).toBeGreaterThan(80);
 		expect([...title].length).toBe(79);
@@ -214,17 +204,15 @@ describe("sanitizeAiTitle", () => {
 	it("rejects an answer that talks about the request instead of performing it", () => {
 		expect(sanitizeAiTitle("Sure! Here is a title: Roadmap")).toBeNull();
 		expect(sanitizeAiTitle("Here's the title: Design Notes")).toBeNull();
-		// The same preamble typed with a curly apostrophe, which is how most models
-		// actually write it.
+		// The same preamble typed with the curly apostrophe common in model output.
 		expect(sanitizeAiTitle("Here’s the title: Design Notes")).toBeNull();
 		expect(sanitizeAiTitle("I cannot title this")).toBeNull();
 		expect(sanitizeAiTitle("I can’t title this")).toBeNull();
 	});
 
 	it("does not mistake an ordinary title that opens with those words for a preamble", () => {
-		// A false positive throws a good title away, so the guard is deliberately
-		// narrow: "Sure"/"Of course" only count when their punctuation follows
-		// immediately, and a bare "I can" is not a refusal.
+		// "Sure" and "Of course" count as preambles only when punctuation follows
+		// immediately. A bare "I can" is not a refusal.
 		expect(sanitizeAiTitle("Sure Thing Inc Annual Report")).toBe("Sure Thing Inc Annual Report");
 		expect(sanitizeAiTitle("I Can Fly")).toBe("I Can Fly");
 		expect(sanitizeAiTitle("Of Course Correction")).toBe("Of Course Correction");
@@ -259,7 +247,7 @@ describe("firstMarkdownHeading", () => {
 		// `\s`, which matches newlines, a `#` alone on its own line would title the
 		// document with whatever happens to follow it.
 		expect(firstMarkdownHeading("#\nActual Body Text")).toBeNull();
-		// Not over-broad: a real heading further down is still found.
+		// A valid heading later in the document is still found.
 		expect(firstMarkdownHeading("#\n# Real Heading")).toBe("Real Heading");
 	});
 
@@ -282,11 +270,10 @@ describe("firstMarkdownHeading", () => {
 		expect(firstMarkdownHeading("# Trailing   \n")).toBe("Trailing");
 	});
 
-	it("captures a blank heading rather than rejecting it — the caller does that", () => {
+	it("returns a blank heading for the caller to reject", () => {
 		// `#` and nothing but spaces is still a heading as far as this scan goes. The
-		// contract is deliberately split: `resolveNewTitle` is what refuses to file a
-		// document under a blank one (see test/titles.spec.ts), and this pins the half
-		// that makes that guard necessary.
+		// scan returns it. `resolveNewTitle` rejects the blank result before naming a
+		// document. See test/titles.spec.ts.
 		expect(firstMarkdownHeading("#   \n\nbody")).toBe(" ");
 	});
 
@@ -296,14 +283,12 @@ describe("firstMarkdownHeading", () => {
 });
 
 /**
- * The one part of the AI path that can be tested here: `env.AI.run()` rejects
- * under the test pool by design (`remoteBindings: false`), so the prompt itself
- * is left to inspection, but which prompt gets sent is a pure function of the
- * excerpt and is pinned in full below.
+ * `env.AI.run()` rejects under the test pool because `remoteBindings` is false.
+ * The prompt cannot run here, but these tests cover how the excerpt selects a
+ * prompt.
  *
- * A false positive is the expensive direction — it puts a Japanese instruction
- * and a Japanese example on an English document, regressing the one path proven
- * in production — so most of what follows guards that side.
+ * A false positive sends a Japanese instruction and example for an English
+ * document, so the tests emphasize English inputs containing Japanese text.
  */
 describe("looksJapanese", () => {
 	/** Japanese prose with no Latin in it at all. */
@@ -340,8 +325,7 @@ after five attempts instead of spinning forever.`;
 	});
 
 	it("does not call an English document Japanese for a quote or a proper noun", () => {
-		// The false positive that matters. Both of these are English documents that
-		// happen to contain Japanese, and both must take the English prompt.
+		// Both documents are English despite containing Japanese text.
 		const quoted = `The vendor's error page reads 「エラーが発生しました」 and nothing else, which
 tells the operator nothing at all. We asked them to include the request id. The
 Tokyo office (東京オフィス) has escalated this twice already and the ticket is
@@ -368,11 +352,11 @@ still open after three weeks of back and forth with their support team.`;
 	});
 
 	it("calls Japanese written around English identifiers Japanese", () => {
-		// The commonest shape in this library, and the one a naive ratio over the
-		// whole excerpt would lose: the English runs are long, the Japanese is not.
+		// Japanese prose often contains long English identifiers. Counting all
+		// characters would misclassify it.
 		expect(looksJapanese(JA_MIXED)).toBe(true);
-		// A source file whose only Japanese is its user-facing strings counts as a
-		// Japanese document, deliberately: those strings are what a reader reads.
+		// User-facing Japanese strings make this a Japanese document even though the
+		// surrounding source is English.
 		const source = `function notify(kind) {
   const messages = {
     done: "処理が完了しました",
@@ -384,9 +368,8 @@ still open after three weeks of back and forth with their support team.`;
 	});
 
 	it("is not diluted by digits, punctuation or Markdown", () => {
-		// The ratio is a contest between the two scripts, not kana against the length
-		// of the excerpt: a Japanese table is mostly figures and pipes, and measuring
-		// against the whole string would file it under English on that alone.
+		// The ratio compares scripts. Digits and Markdown punctuation in a Japanese
+		// table must not dilute the kana count.
 		const table = `| 月 | 売上 | 前年比 |
 | --- | --- | --- |
 | 1月 | 12,345,678 | 103.2% |
@@ -397,10 +380,9 @@ still open after three weeks of back and forth with their support team.`;
 	});
 
 	it("does not let kanji weigh against the kana beside it", () => {
-		// Kanji is on neither side of the ratio. As evidence it would fire on Chinese;
-		// as ballast it would starve exactly this — a Japanese document written almost
-		// entirely in compounds, where the handful of kana is the whole signal and
-		// nothing about it suggests English.
+		// Kanji does not count toward either side of the ratio because it also appears
+		// in Chinese. A small kana count can therefore identify compound-heavy
+		// Japanese text without misclassifying Chinese text.
 		const outline = `# 年次報告書 目次
 
 第一章 序論
@@ -416,8 +398,7 @@ still open after three weeks of back and forth with their support team.`;
 		expect(looksJapanese("サーバーのメモリーリークをモニタリングツールでチェックする")).toBe(true);
 		// U+30FC, the prolonged sound mark, is Script=Common and falls outside both
 		// kana scripts, so it has to be listed by hand. Without it `データ` counts
-		// two kana instead of three and drops under the floor — and a loan word with
-		// a long vowel in it is most of written katakana.
+		// two kana instead of three and falls below the minimum.
 		expect(looksJapanese("データ")).toBe(true);
 	});
 
@@ -425,7 +406,7 @@ still open after three weeks of back and forth with their support team.`;
 		expect(looksJapanese("ｼｽﾃﾑ ﾒﾝﾃﾅﾝｽ")).toBe(true);
 	});
 
-	it("calls kanji with no kana NOT Japanese — the decision, not an oversight", () => {
+	it("does not classify kanji without kana as Japanese", () => {
 		// With no kana there is nothing to tell 第3四半期売上報告書 from Chinese, so
 		// the default prompt is where this lands. Real Japanese prose reaches for
 		// kana within a sentence, so it only bites on headline-shaped fragments.
@@ -455,7 +436,7 @@ still open after three weeks of back and forth with their support team.`;
 
 	it("gives the same answer twice for the same input", () => {
 		// KANA and LATIN are module-level /g regexes. `String.match` resets
-		// `lastIndex`, but `RegExp.test` does not — swapping one in would make the
+		// `lastIndex`, but `RegExp.test` does not. Swapping one in would make the
 		// second call on a document disagree with the first.
 		expect(looksJapanese(JA_MIXED)).toBe(true);
 		expect(looksJapanese(JA_MIXED)).toBe(true);

@@ -3,41 +3,38 @@ name: poof
 description: Share Markdown/HTML documents via disposable links, through the poof MCP tools or the poof CLI. Use when asked to share a document, report, or generated doc with someone as a URL, or to manage previously shared poof documents (list, re-share, revoke, delete).
 ---
 
-# poof — disposable document sharing
+# poof document sharing
 
 poof stores a Markdown or HTML document in a private library and mints
-short-lived public share links. It is built for AI-generated documents: write a
-doc, push it, hand the recipient a URL that later expires or can be revoked
-instantly.
+short-lived public share links. Write a document, push it, and send the
+recipient a URL. The URL expires on schedule or stops working when revoked.
 
 Two URL kinds come back:
 
-- `/d/{id}` — owner view, protected by Cloudflare Access. Only the owner can
+- `/d/{id}` is the owner view protected by Cloudflare Access. Only the owner can
   open it. Never give this URL to someone else; it will not work for them.
-- `/v/{token}` — public share view. Works for anyone who has the URL, no
-  login, until the share expires or is revoked.
+- `/v/{token}` is the public share view. Anyone with the URL can open it without
+  logging in until the share expires or is revoked.
 
 ## Two routes, one poof
 
-- **MCP tools** — if the tool list has `mcp__poof__*`, use those. They talk to
-  the deployment directly: nothing to install, no PATH entry, no environment
-  variables, no shell. Prefer them whenever they are there.
-- **The `poof` CLI** — the route when the MCP tools are not available.
+- Use the **MCP tools** when the tool list contains `mcp__poof__*`. They call
+  the deployment directly and need no local installation or environment
+  variables.
+- Use the **`poof` CLI** when the MCP tools are unavailable.
 
-The tools are named exactly after the CLI subcommands, so everything in
-_Commands_ below reads the same either way. Only the argument shapes differ,
-and only for a few tools — see _MCP differences_. Everything about how poof
-behaves (the two URL kinds, TTLs, an update being live for every share holder)
-is a property of poof, not of the route.
+The tools use the CLI subcommand names. The commands below therefore apply to
+both clients. A few argument shapes differ; see _MCP differences_. URL types,
+TTLs, and update behavior remain the same.
 
 ## Prerequisites (CLI route only)
 
 The `poof` command must be on PATH (or run `bun <repo>/cli/index.ts`), with
 these environment variables set:
 
-- `POOF_URL` — base URL of the deployment (e.g. `https://poof.5n7.me`)
-- `POOF_ACCESS_CLIENT_ID` / `POOF_ACCESS_CLIENT_SECRET` — Cloudflare Access
-  service token credentials
+- `POOF_URL` sets the deployment base URL, such as `https://poof.5n7.me`.
+- `POOF_ACCESS_CLIENT_ID` and `POOF_ACCESS_CLIENT_SECRET` hold the Cloudflare
+  Access service token credentials.
 
 Verify with `poof --help`. If a command fails with a config error, ask the
 user to set these rather than guessing values.
@@ -59,9 +56,9 @@ poof update <doc-id> <file> [--title <t>]
 poof versions <doc-id>
 ```
 
-- `cat` prints a document's stored HTML to stdout (`--version <n>` for a past
-  one). ⚠️ The output is the **rendered** HTML, not the Markdown that produced
-  it — poof keeps only the rendering. Use it to verify what a recipient sees.
+- `cat` prints a document's stored HTML to stdout. Pass `--version <n>` for a
+  past version. The output is **rendered** HTML, not the Markdown that produced
+  it. poof keeps only the rendering. Use it to verify what a recipient sees.
   Never `cat` a document and feed the result back through `update`: that
   replaces the document with its own rendering and destroys the Markdown. To
   change a document, revise the source you wrote and `update` from that.
@@ -85,17 +82,17 @@ poof versions <doc-id>
   `v{n}` on a second line. The title is kept unless `--title` is given; the
   kind may change between versions (`.md` → `.html` is fine).
 - `versions` lists a document's versions, newest first, with `*` on the
-  current one — the numbers to feed `rollback`.
+  current one. Pass one of its version numbers to `rollback`.
 
 ## MCP differences
 
 - `push` and `update` take the document **content as a string**, not a file
-  path: the server runs on the Worker and cannot see your filesystem. The
+  path. The server runs on the Worker and cannot see your filesystem. The
   content you just wrote is what you pass; no file has to exist.
 - With no path there is no extension to infer `kind` from, so it is an
   explicit `md` | `html` argument. `push` defaults to `md`. On `update`,
-  omitting it **keeps the document's current kind** — pass `kind` only when
-  the document should genuinely switch between Markdown and HTML.
+  omitting it **keeps the document's current kind**. Pass `kind` only when
+  the document should switch between Markdown and HTML.
 - `push` without a `title` lets the server name the document from its own
   content, so writing one out and pushing it needs no title argument. It
   falls back to the first `#` heading and then to `untitled`; the CLI, which
@@ -120,7 +117,7 @@ Give the recipient the `/v/...` line only. A title argument is rarely needed:
 the server names an untitled document from its content, and the CLI falls back
 to the file name.
 
-Iterating after feedback — revise the source you wrote, then:
+To revise a shared document, edit its source and run:
 
 ```sh
 poof update <doc-id> report.md
@@ -133,10 +130,10 @@ already have. Do not push a second document and do not re-send a URL.
 
 ## Cautions
 
-These hold on both routes — they are how poof works, not how a client calls
-it. The MCP tools repeat them in their own descriptions.
+These cautions apply to both clients. The MCP tools repeat them in their own
+descriptions.
 
-- Anyone holding a `/v/` URL can read the document until it expires — treat
+- Anyone holding a `/v/` URL can read the document until it expires. Treat
   the URL itself as the secret. Prefer short share TTLs, and `revoke` when
   access should end early.
 - Do not push secrets, credentials, or private data that must not leak
@@ -144,10 +141,10 @@ it. The MCP tools repeat them in their own descriptions.
 - An `update` (or `rollback`) is visible immediately to everyone holding a
   live share link, and there is no way to pin a recipient to an older
   version. Do not update a document to add content one recipient should not
-  see — issue a separate document instead.
+  see. Issue a separate document instead.
 - `versions` and `rollback` are owner-side only. Recipients never see the
   version number or that a history exists.
 - Fixing a document means revising the source and running `update` on the same
-  document id — the same URL keeps working, so nothing has to be re-issued or
+  document id. The same URL keeps working, so nothing has to be reissued or
   re-sent. Use `push` only when it should genuinely be a separate document,
   and `rm` when the old one should disappear.

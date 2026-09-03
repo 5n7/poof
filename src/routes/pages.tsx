@@ -122,14 +122,14 @@ function el(tag, cls, text) {
 	return e;
 }
 function nowSec() { return Math.floor(Date.now() / 1000); }
-// Mirror of server-side formatRemaining (pages.tsx) — keep the two in sync.
+// Mirror server-side formatRemaining in this file. Keep both copies in sync.
 function fmtRemaining(sec) {
 	if (sec >= 172800) return Math.floor(sec / 86400) + "d";
 	if (sec >= 3600) return Math.floor(sec / 3600) + "h";
 	return Math.max(0, Math.floor(sec / 60)) + "m";
 }
 // Local-timezone twin of the server-side fmtCreated (pages.tsx), which can only
-// render UTC — keep the two in sync. Used by the [data-created] rewrite on the
+// render UTC. Keep both copies in sync. Used by the [data-created] rewrite on the
 // library and by the version rows in the versions modal.
 const CREATED_FMT = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 function fmtCreated(sec) {
@@ -159,7 +159,7 @@ function updateShareCount() {
 	root.querySelector(".active-head").textContent = "Active links \\u00b7 " + n;
 	root.querySelector(".empty").style.display = n ? "none" : "";
 }
-// writeText can hang, not just reject: Chrome waits on document focus or a
+// writeText can hang instead of rejecting while Chrome waits for document focus or a
 // pending permission prompt. Race it with a timeout so callers always get an
 // answer, and never await it before an update that has to happen regardless.
 function copyToClipboard(text) {
@@ -206,7 +206,7 @@ async function createLink(docId) {
 	if (!res.ok) { toast("Could not create link"); return; }
 	const s = await res.json();
 	// The link is live server-side now, so render it before touching the
-	// clipboard — a stalled copy must not leave the list looking empty.
+	// clipboard. A stalled copy must not leave the list looking empty.
 	const row = shareRow(s, true);
 	document.getElementById("modal-root").querySelector(".share-list").prepend(row);
 	updateShareCount();
@@ -273,16 +273,15 @@ window.addEventListener("keydown", function (e) { if (e.key === "Escape") closeM
 // document after the file; a new version keeps the document's title). No `#drop`
 // = a read-only page, so nothing is wired at all.
 //
-// The `title` field is sent only when the file carries a name the user chose —
-// a dropped or picked file. Pasted text has no such name (it is synthesized as
-// `pasted.md`), so the field is deliberately omitted and the server names the
-// document instead (lib/title.ts).
+// Send `title` only for a dropped or selected file, which has a user-chosen
+// name. Pasted text uses the synthetic name `pasted.md`, so omit the field and
+// let the server choose a title (lib/title.ts).
 //
-// On the viewer the content sits in a sandboxed iframe — a separate document on
-// an opaque origin — so its drag events never reach this document and a drop
-// only registers over the topbar, banner or margins. ⌘V still works whenever
-// focus is outside the iframe. The primary affordance there is therefore the
-// explicit "Upload new version" button in the versions modal, not the drop zone.
+// The viewer content sits in a sandboxed iframe on an opaque origin. Its drag
+// events never reach this document, so a drop only registers over the topbar,
+// banner, or margins. ⌘V still works whenever
+// focus is outside the iframe. Use the "Upload new version" button in the
+// versions modal instead.
 const UPLOAD_JS = `
 const dropEl = document.getElementById("drop");
 const fileInput = document.getElementById("file");
@@ -290,7 +289,7 @@ let dragDepth = 0;
 async function uploadFile(file, named) {
 	const name = file.name || "pasted.md";
 	// Extension → kind. Mirror of kindFromExtension (cli/index.ts) and the
-	// server's kind check (api.ts) — keep the three in sync.
+	// server's kind check (api.ts). Keep all three in sync.
 	const kind = /\\.html?$/i.test(name) ? "html" : "md";
 	const fd = new FormData();
 	fd.set("file", file, name);
@@ -298,7 +297,7 @@ async function uploadFile(file, named) {
 	if (named && dropEl.dataset.withTitle) fd.set("title", name);
 	const res = await fetch(dropEl.dataset.endpoint, { method: "POST", body: fd });
 	if (res.ok) {
-		// Report the title the server actually stored, not the name we sent: when no
+		// Report the stored title, not the submitted name. When no
 		// title was sent the server named the document itself (lib/title.ts), and that
 		// result is the one thing worth seeing before the redirect below.
 		const doc = await res.json().catch(function () { return {}; });
@@ -362,8 +361,8 @@ document.querySelectorAll(".row").forEach(function (row) {
 });`;
 
 // The versions modal: history list, "View" (pinned read-only page), "Restore"
-// (rollback) and, in the header, the viewer's primary upload affordance. Built
-// with el()/textContent only — no user data ever reaches innerHTML.
+// (rollback) and the viewer's upload button. Built
+// with el()/textContent only. User data never reaches innerHTML.
 const VERSIONS_JS = `
 async function restoreVersion(docId, n) {
 	const res = await fetch("/api/documents/" + docId + "/versions/" + n + "/rollback", { method: "POST" });
@@ -434,7 +433,6 @@ if (vb) vb.addEventListener("click", function () { openVersions(vb.dataset.id); 
 const vr = document.getElementById("ver-restore");
 if (vr) vr.addEventListener("click", function () { restoreVersion(vr.dataset.id, Number(vr.dataset.version)); });`;
 
-// Per-page bundles, concatenated once at module load rather than per request.
 const LIBRARY_SCRIPT = CORE_JS + UPLOAD_JS + LIBRARY_JS;
 const VIEWER_SCRIPT = CORE_JS + UPLOAD_JS + VERSIONS_JS + VIEWER_JS;
 
@@ -453,8 +451,8 @@ const Layout: FC<PropsWithChildren<{ title: string }>> = ({ title, children }) =
 );
 
 // Shared viewer scaffold: topbar (contents vary per page) above the sandboxed
-// iframe. The sandbox attribute is security-load-bearing (SPEC §6.1) and lives
-// here once — never add `allow-same-origin`.
+// iframe. The sandbox attribute enforces the security boundary (SPEC §6.1).
+// Never add `allow-same-origin`.
 const ViewerShell: FC<PropsWithChildren<{ src: string; banner?: Child }>> = ({ src, banner, children }) => (
 	<div class="viewer">
 		<div class="topbar">{children}</div>
@@ -479,7 +477,7 @@ function fmtCreated(sec: number): string {
 
 /**
  * seconds-until → "Nd" (>=48h), "Nh" (>=1h), else "Nm" (floored, min 0m).
- * Mirror of the client-side `fmtRemaining` in CORE_JS — keep the two in sync.
+ * Mirror the client-side `fmtRemaining` in CORE_JS. Keep both copies in sync.
  */
 function formatRemaining(secondsUntil: number): string {
 	if (secondsUntil >= 172800) return `${Math.floor(secondsUntil / 86400)}d`;
@@ -487,7 +485,7 @@ function formatRemaining(secondsUntil: number): string {
 	return `${Math.max(0, Math.floor(secondsUntil / 60))}m`;
 }
 
-/** GET / — library list, drag/drop/paste upload, per-row menu + share modal. */
+/** Render the library page for `GET /`. */
 export async function libraryPage(c: Ctx) {
 	const now = nowSeconds();
 	const docs = await listDocumentsWithShares(c.env.DB, now);
@@ -551,7 +549,7 @@ export async function libraryPage(c: Ctx) {
 						<div class="line" />
 					</div>
 					<div class="hint" id="hint">
-						Drop a file anywhere, paste with ⌘V — or click here
+						Drop a file anywhere, paste with ⌘V, or click here
 					</div>
 				</div>
 			</div>
@@ -559,7 +557,7 @@ export async function libraryPage(c: Ctx) {
 			<div class="drop" id="drop" style="display:none" data-endpoint="/api/documents" data-with-title="1">
 				<div style="text-align:center">
 					<div class="drop-icon">↓</div>
-					<div class="drop-title">Drop it — poof</div>
+					<div class="drop-title">Drop it into poof</div>
 					<div class="drop-sub">.md / .html · up to 10 MB · dropped files keep their filename</div>
 				</div>
 			</div>
@@ -572,26 +570,25 @@ export async function libraryPage(c: Ctx) {
 }
 
 /**
- * GET /d/:id (+ optional `?v=N`) — private owner viewer; mints a short-lived o_
- * token (SPEC §6.2), pinned to the version when one is asked for.
+ * Render the private owner viewer for GET /d/:id with an optional `?v=N`. Mint
+ * a short-lived o_ token pinned to the requested version (SPEC §6.2).
  */
 export async function ownerViewerPage(c: Ctx<"/d/:id">) {
 	const id = c.req.param("id");
 	const now = nowSeconds();
 
-	// This is a page, not the API: a malformed `?v=` is not a 400, it is simply
-	// not a page. Unknown versions fold into the same uniform 404 downstream.
+	// A malformed `?v=` is a missing page, not an API error. Unknown versions use
+	// the same uniform 404 below.
 	const rawVersion = c.req.query("v");
 	if (rawVersion !== undefined && !isVersionString(rawVersion)) return uniform404(c);
 	const asked = rawVersion === undefined ? null : Number(rawVersion);
 
 	const doc = await getLiveDocumentAt(c.env.DB, id, asked, now);
 	if (!doc) return uniform404(c);
-	// `?v=` naming the live version is the normal page — never render the current
+	// `?v=` naming the live version is the normal page. Never render the current
 	// content as a read-only dead end.
 	if (asked !== null && asked !== doc.current_version) return pinnedViewerPage(c, doc);
 
-	// Independent of each other once the document is known — run concurrently.
 	const [shares, oToken] = await Promise.all([
 		listShares(c.env.DB, id, now),
 		mintOwnerToken(id, c.env.OWNER_TOKEN_SECRET),
@@ -623,7 +620,7 @@ export async function ownerViewerPage(c: Ctx<"/d/:id">) {
 			<div class="drop" id="drop" style="display:none" data-endpoint={`/api/documents/${id}/versions`}>
 				<div style="text-align:center">
 					<div class="drop-icon">↓</div>
-					<div class="drop-title">Drop it — new version</div>
+					<div class="drop-title">Drop a new version</div>
 					<div class="drop-sub">.md / .html · up to 10 MB · replaces the live content</div>
 				</div>
 			</div>
@@ -679,7 +676,7 @@ async function pinnedViewerPage(c: Ctx<"/d/:id">, doc: ResolvedDocument) {
 	);
 }
 
-/** GET /v/:token — public shared viewer; validates the share (SPEC §12.4). */
+/** Render the public shared viewer for `GET /v/:token` (SPEC §12.4). */
 export async function publicViewerPage(c: Ctx<"/v/:token">) {
 	const token = c.req.param("token");
 	const now = nowSeconds();

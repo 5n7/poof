@@ -21,57 +21,50 @@ import { resolveNewTitle } from "../lib/title";
 import { TTL_KEYS, ttlToSeconds } from "../lib/tokens";
 
 /**
- * `/mcp` — the library the CLI drives (SPEC §10), exposed as MCP tools over
- * Streamable HTTP. The tools are named after the CLI subcommands, so a client
- * namespaces them as `mcp__poof__push` and friends. Sits behind `accessAuth`
- * and `csrfProtection` (both wired in index.ts): an MCP client authenticates
- * exactly like the CLI, with a Cloudflare Access service token.
+ * Expose the document library as MCP tools over Streamable HTTP (SPEC §10).
+ * Tool names match the CLI subcommands. `accessAuth` and `csrfProtection` in
+ * index.ts protect this route, and MCP clients use a Cloudflare Access service
+ * token.
  *
  * The server runs here, on the Worker, so it cannot read the caller's
- * filesystem — `push`/`update` take content as a string, not a path.
+ * filesystem. `push` and `update` take content, not a path.
  */
 export const mcpRoutes = new Hono<{ Bindings: Env }>();
 
 const KIND = z.enum(["md", "html"]);
-// Built from the same table `parseTtl` reads, never hand-copied: two lists that
-// must agree only agree until someone adds a TTL to one of them, and the failure
-// mode is a silent NaN expiry rather than a rejection.
+// Build this enum from the same table as `parseTtl` to keep them in sync.
 const TTL = z.enum(TTL_KEYS);
 
 /**
- * Handed to the model once, ahead of any tool call — the things that are
- * expensive to get wrong (leaking the owner URL, re-pushing instead of
- * updating) and that no single tool description is guaranteed to be read for.
+ * Give the model the safety rules that apply across tools.
  */
 const INSTRUCTIONS = `poof stores Markdown/HTML documents and mints short-lived public share links.
 
-Two URL kinds come back and they are NOT interchangeable:
+Poof returns two URL types. Do not mix them up:
 - /d/{id} is the owner view, behind Cloudflare Access. Only the owner can open it. Never hand this URL to a recipient; it will not work for them.
 - /v/{token} is the public share view. Anyone holding it can read the document, with no login, until it expires or is revoked. Treat the URL itself as the secret: prefer short share TTLs, and revoke when access should end early.
 
-To share a document you just wrote, call push with share: true and give out the /v/ line only. To revise it afterwards, call update on the SAME id: the /d/ URL and every live share link keep working, so nothing has to be re-issued or re-sent. Do not push a second document and send out a new URL.
+To share a new document, call push with share: true and send only the /v/ line. To revise it, call update with the same id. Existing /d/ and /v/ URLs will keep working. Do not create a second document for a revision.
 
 An update or rollback is visible immediately to everyone holding a live share link, and there is no way to pin a recipient to an older version. Never update a document to add content one recipient should not see; issue a separate document instead.
 
 Do not push secrets, credentials, or private data that must not leak through a copied link.`;
 
-/** A tool result carrying one text block — the only success shape these tools return. */
+/** Return one text block. */
 function text(body: string): CallToolResult {
 	return { content: [{ type: "text", text: body }] };
 }
 
 /**
- * A readable tool-level failure. Every foreseeable miss (unknown id, expired
- * document, oversized content) comes back through here rather than as a thrown
- * exception, so the model gets a sentence it can act on.
+ * Return an expected tool error without throwing.
  */
 function failure(message: string): CallToolResult {
 	return { content: [{ type: "text", text: message }], isError: true };
 }
 
-/** The uniform "isn't there", matching the API's undifferentiated 404 (SPEC §6.3). */
+/** Match the API's uniform 404 response (SPEC §6.3). */
 function missing(id: string): CallToolResult {
-	return failure(`No live document with id ${id} — it may never have existed, or its TTL has passed.`);
+	return failure(`No live document with id ${id}. It may never have existed, or its TTL has passed.`);
 }
 
 /** Reject an oversized source with a readable message, before the core throws. */
@@ -80,36 +73,30 @@ function tooLarge(source: string): CallToolResult | null {
 }
 
 /**
- * The two result lines that name a URL. Built here rather than written out at
- * each call site: the warning attached to each one is the whole defense against
- * handing a recipient a URL that will not work for them (or that works for far
- * too long), and three copies of it drift — they already had, with `push` and
- * `share` disagreeing on the wording.
+ * Format owner and share URLs consistently across tools.
  */
 function ownerLine(origin: string, id: string): string {
-	return `Owner URL — Cloudflare Access only, never send this to a recipient: ${origin}/d/${id}`;
+	return `Owner URL. Cloudflare Access only. Never send this URL to a recipient: ${origin}/d/${id}`;
 }
 
 function shareLines(origin: string, row: ShareRow): string[] {
 	return [
-		`Share URL — hand out this one only, expires ${formatTime(row.expires_at)}: ${origin}/v/${row.token}`,
+		`Share URL. Hand out this URL only. It expires ${formatTime(row.expires_at)}: ${origin}/v/${row.token}`,
 		`Share token (for the \`revoke\` tool): ${row.token}`,
 	];
 }
 
-/** epoch seconds → ISO-8601 UTC; "never" for a document with no TTL. */
+/** Format epoch seconds as ISO-8601 UTC, or "never" when no TTL is set. */
 function formatTime(seconds: number | null): string {
 	return seconds === null ? "never" : new Date(seconds * 1000).toISOString();
 }
 
 /**
- * Tab-separated listing with a header row — one shape for both `ls` and
- * `versions`.
+ * Build a tab-separated table for `ls` and `versions`.
  *
  * Cells are flattened to single-space-separated text first. Titles are arbitrary
  * user input (only `.trim()`ed on the way in), so a tab or newline in one would
- * otherwise split a row and silently shift every later column — a model reading
- * the output would attribute a document's kind or expiry to the wrong row.
+ * otherwise split a row and shift later columns.
  */
 function table(header: string[], rows: string[][]): string {
 	const cell = (s: string) => s.replace(/[\p{Cc}\p{Cf}]/gu, " ");
@@ -117,27 +104,19 @@ function table(header: string[], rows: string[][]): string {
 }
 
 /**
- * Cap on what `cat` hands back, well under the MAX_BYTES a document may reach.
- * Deliberately adapter-level and not in `lib/documents`: the limit exists
- * because this output lands in a model's context window, which is a property of
- * this surface alone. `GET /api/documents/:id/content` streams the same blob to
- * a file descriptor and is right not to cap it.
+ * Limit `cat` output because it enters a model's context. The API endpoint
+ * streams the same blob to a file and does not need this limit.
  *
- * Truncating the tail is safe here rather than merely tolerable, because of how
- * `wrapViewerHtml` lays a document out: the stylesheet, `<title>` and opening
- * content sit at the head, and the mermaid/highlight.js loader `<script>` sits
- * at the very end. A cut tail therefore costs machinery, not reader-visible
- * content — and `cat` exists to answer "what does the recipient see".
+ * `wrapViewerHtml` puts styles, the title, and content first. Its loader script
+ * comes last, so truncation preserves the start of the visible document.
  */
 const CAT_MAX_BYTES = 128 * 1024; // 128 KiB
 
 /**
- * Decode at most `cap` bytes off a stream, then stop pulling — so an oversized
- * document is never buffered whole just to be thrown away. Cancelling the reader
- * also stops the transfer, which is why this beats fetching everything and
- * slicing.
+ * Decode at most `cap` bytes and stop the transfer without buffering the full
+ * document.
  *
- * The decoder runs in streaming mode and is never flushed: a cap can land
+ * Do not flush the streaming decoder because a cap can land
  * mid-codepoint, and flushing would turn the dangling bytes into a U+FFFD at the
  * tail. Not flushing drops the incomplete sequence instead.
  */
@@ -162,31 +141,27 @@ async function readCapped(stream: ReadableStream, cap: number): Promise<string> 
 }
 
 /**
- * Every tool below carries `annotations` — the MCP hints a client may surface as
- * a "read-only" or "destructive" label, or read to decide what to confirm before
- * running. They are advisory by specification: a client is told to treat them as
- * untrusted input, so nothing here is enforced by them. The enforcement is in the
- * handlers, and these only describe it.
+ * Tool annotations tell clients whether an operation reads or destroys data.
+ * They are advisory. Handlers enforce access and data changes.
  *
  * Only the hints that carry information are written, because the defaults are not
  * neutral. `destructiveHint` and `idempotentHint` are defined solely when
- * `readOnlyHint` is false, so the reading tools state neither — a value there is
+ * `readOnlyHint` is false, so the reading tools state neither. A value there is
  * noise a reader has to decide whether to believe.
  *
  * `openWorldHint: false` on all nine. Its default is true, meaning the tool may
- * reach into an open-ended world of external entities; poof's world is closed —
- * every tool acts on the owner's own library and nothing beyond it.
+ * reach external entities. Every poof tool acts only on the owner's library.
  */
 
 /**
- * Build the server for one request. Nothing is held across requests on purpose:
- * a Workers isolate serves many requests concurrently, so a module-level
- * `McpServer` would let one caller's transport answer another caller's request.
+ * Build a new server for each request. A Workers isolate handles concurrent
+ * requests. A module-level `McpServer` could send a response through another
+ * caller's transport.
  */
 function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 	const server = new McpServer({ name: "poof", version: "1.0.0" }, { instructions: INSTRUCTIONS });
-	// Absolute, from the request: what comes back has to be a URL the caller can
-	// paste into a message, not the relative /d/{id} the JSON API returns.
+	// Build an absolute URL from the request so the caller can paste it into a
+	// message. The JSON API returns a relative /d/{id} path.
 	const origin = new URL(c.req.url).origin;
 
 	server.registerTool(
@@ -194,7 +169,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 		{
 			annotations: { openWorldHint: false, readOnlyHint: true },
 			description:
-				"Print a document's stored HTML. This is the RENDERED blob that share links serve, not the Markdown source it came from — poof keeps only the rendering. Use it to check what a recipient actually sees. Never feed this output back into `update`: that replaces the document with its own rendering and destroys the source. To change a document, edit the source you wrote and `update` from that.",
+				"Print the stored HTML served by share links. Poof does not keep the original Markdown. Use this to inspect what recipients see. Do not pass this output to `update`, or the rendered HTML will replace the source. Edit your source and pass that to `update` instead.",
 			inputSchema: {
 				id: z.string().describe("Document id."),
 				version: z
@@ -218,7 +193,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 					head,
 					"",
 					`[truncated: this document is ${obj.size} bytes and only the first ${CAT_MAX_BYTES} are shown.`,
-					`The whole thing is at ${origin}/d/${id} — owner-only, do not send that URL to a recipient.]`,
+					`The whole thing is at ${origin}/d/${id}. This URL is owner-only. Do not send it to a recipient.]`,
 				].join("\n"),
 			);
 		},
@@ -256,7 +231,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 		{
 			annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
 			description:
-				"Create a document from Markdown/HTML content and return its owner URL. With share: true it also issues a public share link and returns the /v/{token} URL — give the recipient that line and only that line; the /d/{id} owner URL is behind Cloudflare Access and will not work for anyone else. Anyone holding the /v/ URL can read the document until the share expires or is revoked, so treat it as the secret it is. To revise a document you have already shared, call `update` on its id; do not push a second document and send out a new URL.",
+				"Create a document from Markdown or HTML and return its owner URL. With share: true, also create a public /v/{token} URL. Send recipients only the /v/ URL. The /d/{id} URL requires Cloudflare Access. Anyone with the /v/ URL can read the document until expiry or revocation. Treat the /v/ URL itself as a secret. Revise a shared document with `update`; do not create a replacement.",
 			inputSchema: {
 				content: z.string().describe("The document source: Markdown, or HTML when kind is 'html'."),
 				kind: KIND.default("md").describe("How to treat the content: 'md' is rendered, 'html' is stored as-is."),
@@ -294,8 +269,8 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 				ownerLine(origin, id),
 			];
 			if (share) {
-				// Neither refusal is reachable — the document was created three lines up
-				// and `share_ttl` came through the TTL enum — but the core owns them now,
+				// Neither refusal is reachable. The document was just created and
+				// `share_ttl` came through the TTL enum, but the core owns them now,
 				// so say what happened rather than drop the line and read as "no share
 				// was asked for".
 				const issued = await issueShare(c.env, id, now, share_ttl);
@@ -333,7 +308,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 			// nothing left to delete. `revoke` is the same shape for the same reason.
 			annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
 			description:
-				"Delete a document, every version's stored blob, and all of its share links. Irreversible. Use `update` when a document merely needs fixing — its URL keeps working — and `rm` only when the old one should genuinely disappear.",
+				"Permanently delete a document, every stored version, and all share links. Use `update` to fix a document without changing its URL. Use `rm` only when the document should disappear.",
 			inputSchema: { id: z.string().describe("Document id to delete.") },
 		},
 		async ({ id }) => {
@@ -373,16 +348,12 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 		{
 			annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
 			description:
-				"Issue a public share link for an existing document and return its /v/{token} URL. That URL, and only that URL, is what a recipient gets — /d/{id} is Access-protected and will not work for them. Anyone holding the /v/ URL can read the document until it expires or is revoked, so treat the URL itself as the secret: prefer a short share_ttl, and `revoke` when access should end early.",
+				"Create a public /v/{token} URL for a document. Send recipients only that URL. The /d/{id} URL requires Cloudflare Access. Anyone with the /v/ URL can read the document until expiry or revocation. Treat the /v/ URL itself as a secret. Use a short share_ttl and call `revoke` when access should end early.",
 			inputSchema: {
 				id: z.string().describe("Document id to share."),
-				// `share_ttl`, not `ttl`, to match `push` and both CLI subcommands'
-				// `--share-ttl` (SPEC §11.3). A lone `ttl` reads better here — this tool
-				// has no other lifetime to disambiguate from — but the cost of the third
-				// spelling is not a caller having to look it up: zod objects drop unknown
-				// keys silently, so a caller who knows the CLI passes `share_ttl`, it is
-				// thrown away, and the default 1d is issued instead of the hour they
-				// asked for. A wrong-looking success is worse than a rejection.
+				// Match `push` and the CLI's `--share-ttl` spelling (SPEC §11.3). Zod
+				// silently drops unknown keys, so using `ttl` here could turn a requested
+				// one-hour share into the default one-day share.
 				share_ttl: TTL.default("1d").describe(
 					"Share link lifetime. Shares always expire; there is no forever share. Prefer the shortest that works.",
 				),
@@ -408,27 +379,18 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 	server.registerTool(
 		"update",
 		{
-			// `destructiveHint: false` is deliberate and is the one value here that
-			// reads wrong at first glance. An update is live to every share holder the
-			// moment it lands, which invites calling it destructive — but the hint asks
-			// whether the tool destroys what is already there, not how far the change
-			// reaches. It does not: a version is appended, every earlier one is kept
-			// (SPEC §5), and `rollback` puts any of them back. `rm` is the destructive
-			// one. Do not flip this because the blast radius is wide.
+			// Updates reach every share holder immediately, but they append a version
+			// and keep earlier versions (SPEC §5). MCP defines destructiveHint by data
+			// loss, so this remains false. `rm` is the destructive operation.
 			annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
 			description:
-				"Replace a document's contents with a new version, keeping the same /d/{id} and the same share links. This is how a document that has already been sent gets revised: nothing is re-issued and nothing is re-sent, and the recipient sees the new content the next time they open the link they already have. Pass the edited SOURCE you wrote — never the output of `cat`, which is the rendered HTML and would overwrite the document with its own rendering. The title is kept unless one is given, and the kind may change between versions. Every live share holder sees the change immediately and there is no per-recipient version pinning, so never use `update` to add content one recipient should not see.",
+				"Add a version while keeping the same /d/{id} and share links. Recipients see the new content on their next load. Pass your edited source, not the rendered HTML from `cat`. The current title and kind remain unless you provide replacements. All live share links update at once, with no per-recipient version pinning. Use a separate document for content that some recipients must not see.",
 			inputSchema: {
 				content: z.string().describe("The new document source: Markdown, or HTML when kind is 'html'."),
 				id: z.string().describe("Document id to update."),
-				// No default here, unlike push — the asymmetry is deliberate, do not
-				// "fix" it for consistency. kind is per version (SPEC §5), so an explicit
-				// value still changes it; the question is only what *silence* means. push
-				// has no prior kind to fall back on, so "md" is a harmless default there.
-				// update does, and defaulting to "md" would re-render an HTML document's
-				// markup as Markdown — live to every share holder, no error anywhere, and
-				// the one wrong value the enum cannot reject. Omission is precisely the
-				// case a describe() cannot reach, so the default has to be the document.
+				// Unlike push, update has no default. An omitted kind keeps the current
+				// value. Defaulting to "md" would render an HTML document as Markdown and
+				// publish the mistake to every share holder.
 				kind: KIND.optional().describe(
 					"How to treat the content: 'md' is rendered, 'html' is stored as-is. Omit to keep the document's current kind; pass it explicitly to change the kind for this and later versions.",
 				),
@@ -444,8 +406,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 			const doc = await getLiveDocument(c.env.DB, id, now);
 			if (!doc) return missing(id);
 
-			// doc.kind is the current version's kind (joined on current_version), which
-			// is exactly what "keep the document's kind" means.
+			// doc.kind comes from the version joined on current_version.
 			const resolved = kind ?? doc.kind;
 			const added = await addVersion(c.env, doc, now, {
 				kind: resolved,
@@ -469,7 +430,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 		{
 			annotations: { openWorldHint: false, readOnlyHint: true },
 			description:
-				"List a document's versions, newest first, with '*' on the current one — the numbers to feed `rollback`. Owner-side only: recipients never see a version number or that a history exists.",
+				"List a document's versions from newest to oldest. '*' marks the current version. Pass a version number to `rollback`. Only the owner can see this history.",
 			inputSchema: { id: z.string().describe("Document id to inspect.") },
 		},
 		async ({ id }) => {
@@ -510,14 +471,14 @@ mcpRoutes.post("/", async (c) => {
 });
 
 /**
- * POST is the whole surface (SPEC §9), so every other method is a 405 carrying
- * `Allow: POST` — the signal the MCP spec mandates, not a bare fall-through 404.
+ * POST is the only supported method (SPEC §9). Other methods return 405 with
+ * the `Allow: POST` header required by MCP.
  *
  * GET looks like a documented MCP method and answering it 405 looks like a bug
  * until you read why: the spec explicitly permits 405 for GET when a server
  * offers no SSE stream at the endpoint, and a stateless server offers none. With
  * no session there are no server-initiated messages, so the stream this would
- * open could never carry anything — it would just hold a Worker connection open
+ * open could never carry anything. It would hold a Worker connection open
  * on 30s keep-alive pings for zero capability. DELETE is the same story: it
  * terminates a session, and there is no session to terminate.
  */

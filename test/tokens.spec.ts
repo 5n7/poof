@@ -13,9 +13,8 @@ function payloadOf(token: string): Record<string, unknown> {
 }
 
 /**
- * Mint an o_ token over an arbitrary payload with a *correct* signature — the
- * only way to test that verification distrusts the payload's shape rather than
- * relying on the HMAC alone.
+ * Sign an arbitrary payload as an o_ token. This lets tests verify the payload
+ * shape independently of its valid HMAC.
  */
 async function forgeOwnerToken(payload: unknown, secret = SECRET): Promise<string> {
 	const payloadB64 = b64url(enc.encode(JSON.stringify(payload)));
@@ -105,8 +104,8 @@ describe("mintOwnerToken / verifyOwnerToken", () => {
 			const token = await forgeOwnerToken({ d: "doc123", v, exp });
 			expect(await verifyOwnerToken(token, SECRET)).toBeNull();
 		}
-		// Same forging path with a sane `v` verifies — so the rejections above are
-		// about the value, not about the forged token being malformed.
+		// A valid `v` passes through the same helper, proving the rejected values are
+		// the cause rather than the helper's token format.
 		const good = await forgeOwnerToken({ d: "doc123", v: 3, exp });
 		expect(await verifyOwnerToken(good, SECRET)).toEqual({ documentId: "doc123", version: 3 });
 	});

@@ -16,7 +16,7 @@ async function upload(source: string, kind = "md", title?: string, ttl?: string)
 	return SELF.fetch(`${BASE}/api/documents`, { method: "POST", body: fd });
 }
 
-/** The API adapter — named apart from the core `issueShare` this file also exercises. */
+/** Call the share API without conflicting with the core `issueShare` import. */
 async function postShare(id: string, ttl?: string) {
 	return SELF.fetch(`${BASE}/api/documents/${id}/shares`, {
 		method: "POST",
@@ -57,7 +57,7 @@ describe("share lifecycle through the API", () => {
 		expect(rawRes.status).toBe(200);
 		expect(await rawRes.text()).toContain("<h1>Hello</h1>");
 
-		// Revoke → both /v and /raw 404 immediately.
+		// Revocation makes both /v and /raw return 404 immediately.
 		const revRes = await SELF.fetch(`${BASE}/api/shares/${share.token}`, { method: "DELETE" });
 		expect(revRes.status).toBe(200);
 		expect(await revRes.json()).toEqual({ revoked: true });
@@ -79,7 +79,7 @@ describe("share lifecycle through the API", () => {
 	it("lists only active shares (excludes revoked and expired)", async () => {
 		const up = await upload("# List test", "md");
 		const doc = await up.json<{ id: string; title: string }>();
-		// Untitled: the naming chain fell back from AI to the document's own heading.
+		// With no supplied title, the document heading becomes the title.
 		expect(doc.title).toBe("List test");
 
 		const active = await (await postShare(doc.id, "1d")).json<{ token: string }>();
@@ -98,10 +98,10 @@ describe("share lifecycle through the API", () => {
 		expect(tokens).not.toContain("s_expiredlisttest0000000");
 	});
 
-	it("cascades deletion: share token 404s and R2 blob is gone", async () => {
+	it("deletes the R2 blob and invalidates the share token", async () => {
 		const up = await upload("# Cascade", "md");
 		const doc = await up.json<{ id: string; title: string }>();
-		// Untitled: the naming chain fell back from AI to the document's own heading.
+		// With no supplied title, the document heading becomes the title.
 		expect(doc.title).toBe("Cascade");
 		const share = await (await postShare(doc.id)).json<{ token: string }>();
 		const r2Key = `doc/${doc.id}/v1.html`;
@@ -150,10 +150,9 @@ describe("share lifecycle through the API", () => {
 	});
 });
 
-// Precedence, not merely outcome. When both preconditions fail the 404 has to
-// win, or a 400 becomes a way for anyone to ask whether an id exists. The order
-// lives in the core now (see `issueShare`); this pins what it looks like from
-// outside, so the next attempt to move it cannot pass silently.
+// When both checks fail, return 404 before validating the TTL. Returning 400
+// would reveal that the document id exists. Test the order through the API and
+// in `issueShare` below.
 describe("refusing to issue a share through the API", () => {
 	it("answers 404 for an unknown id even when the ttl is invalid too", async () => {
 		const res = await postShare("no_such_document", "1y");
@@ -185,9 +184,7 @@ describe("refusing to issue a share through the API", () => {
 	});
 });
 
-// Straight at the core, not through an adapter. "Live documents only" is the
-// core's rule (SPEC §11.5), and verifying it only via `/api` and `/mcp` is what
-// let it be a comment copied into two route files in the first place.
+// Test the core rule from SPEC §11.5 that shares require a live document.
 describe("issueShare", () => {
 	const now = (Date.now() / 1000) | 0;
 
@@ -205,9 +202,8 @@ describe("issueShare", () => {
 	it("resolves the document before it parses the ttl", async () => {
 		await seedDoc("core_share_live", { createdAt: now });
 
-		// Unknown id + bad ttl is "not there", never "bad ttl" — the order the API's
-		// 404-over-400 comes from. The second call is what makes that a real choice
-		// rather than a function that only ever says not-found.
+		// An unknown id with a bad TTL returns "not-found". A live id with the same
+		// TTL returns "invalid-ttl", proving the result depends on check order.
 		expect(await issueShare(env, "core_share_missing", now, "1y")).toEqual({ ok: false, reason: "not-found" });
 		expect(await issueShare(env, "core_share_live", now, "1y")).toEqual({ ok: false, reason: "invalid-ttl" });
 	});

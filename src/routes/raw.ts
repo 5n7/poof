@@ -6,7 +6,7 @@ import { nowSeconds } from "../lib/time";
 import { verifyOwnerToken } from "../lib/tokens";
 
 /**
- * `GET /raw/:token` — public raw document delivery (SPEC §6.2). Two token
+ * Serve public document HTML from `GET /raw/:token` (SPEC §6.2). Accept two token
  * kinds: `s_` share tokens (D1-backed) and `o_` owner tokens (stateless HMAC).
  * Every response carries the sandbox security headers; every failure is the
  * uniform 404 so probes cannot distinguish missing/expired/revoked.

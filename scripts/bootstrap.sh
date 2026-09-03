@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Idempotent provisioning of poof's Cloudflare resources (D1 + R2).
-# Safe to re-run: existing resources are detected via wrangler exit codes
-# (no jq dependency) and left untouched.
+# Create poof's D1 database and R2 bucket if they do not exist.
+# Wrangler exit codes identify existing resources, so reruns leave them untouched
+# without requiring jq.
 
 # D1
 if wrangler d1 info poof-db >/dev/null 2>&1; then

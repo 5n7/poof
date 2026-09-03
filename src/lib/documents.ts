@@ -20,21 +20,17 @@ import { renderMarkdown, wrapViewerHtml } from "./render";
 import { newShareToken, parseTtl, randomToken } from "./tokens";
 
 /**
- * The write-side core of the document library — everything the JSON API and the
- * MCP tools both do. The route files stay thin adapters over this: they own
- * their own input parsing and response shapes (multipart + status codes for
- * `/api`, JSON-RPC tool results for `/mcp`), and nothing else re-implements the
- * render/blob/row sequencing that SPEC §9 pins down.
+ * Shared write operations for the JSON API and MCP tools. Route files parse
+ * input and format responses. This module owns the render, blob, and row order
+ * defined in SPEC §9.
  *
  * Two calling conventions live here and the split is deliberate. A function that
  * reads a document's fields takes an already-resolved `ResolvedDocument`
  * (`addVersion`, `rollbackDocument`), so an adapter can reject a missing
  * document before it spends anything on parsing the request body. One that only
- * needs the document to exist takes an id and establishes that itself — by
+ * needs the document to exist takes an id and checks it by
  * resolving it (`issueShare`, `readVersionBlob`) or by reading it off the write
- * (`deleteDocumentWithBlobs`, whose DELETE already reports whether a row was
- * there) — so no adapter can forget the check. The rule is the core's, not
- * whoever remembers to copy it.
+ * (`deleteDocumentWithBlobs`, whose DELETE reports whether a row was there).
  */
 
 /** Upload size cap (SPEC §9). */
@@ -44,10 +40,8 @@ export const MAX_BYTES = 10 * 1024 * 1024; // 10 MiB
 const MAX_VERSION_ATTEMPTS = 3;
 
 /**
- * UTF-8 size of a document source — the one measure `MAX_BYTES` is counted in.
- * Exported so an adapter that wants to reject early reports the same number this
- * module enforces, rather than agreeing with it only by convention. (`/api` has
- * no need for it: `File.size` is already the byte count.)
+ * Return a document source's UTF-8 byte length. Adapters use this to enforce the
+ * same `MAX_BYTES` limit. `/api` can use `File.size` directly.
  */
 export function sourceBytes(source: string): number {
 	return new TextEncoder().encode(source).length;
@@ -56,18 +50,15 @@ export function sourceBytes(source: string): number {
 /**
  * Refuse an oversized source before anything is rendered or written.
  *
- * Both adapters check the size first, so this should never be what rejects a
- * real request — they can say it better (a 413 on `/api`, an `isError` result on
- * `/mcp`) than a thrown Error can. It is here so the invariant belongs to the
- * core rather than to whoever remembers: a third write adapter that forgets the
- * check gets an exception, not a 10 MiB blob in R2 (SPEC §11.5).
+ * Adapters check the size first so they can return their own error format. This
+ * guard keeps later adapters from writing an oversized blob (SPEC §11.5).
  */
 function enforceMaxBytes(source: string): void {
 	const bytes = sourceBytes(source);
 	if (bytes > MAX_BYTES) throw new Error(`document source is ${bytes} bytes, over the ${MAX_BYTES}-byte limit`);
 }
 
-/** Render one version's source to the HTML actually stored in R2 (SPEC §8). */
+/** Render one version's source to the HTML stored in R2 (SPEC §8). */
 function renderVersion(source: string, kind: "md" | "html", title: string): string {
 	return kind === "md" ? wrapViewerHtml(title, renderMarkdown(source)) : source;
 }
@@ -114,7 +105,7 @@ export async function createDocument(env: Env, now: number, input: NewDocumentIn
 export interface NewVersionInput {
 	kind: "md" | "html";
 	source: string;
-	/** null keeps the document's current title — "no title" means "don't retitle". */
+	/** null keeps the document's current title. */
 	title: string | null;
 }
 
@@ -125,10 +116,9 @@ export interface NewVersion {
 }
 
 /**
- * Add a version to a live document and make it live. Three phases, in this
- * order, because two hazards pull against each other: a blob with no row can be
- * swept mid-upload, and a current_version pointing at an unwritten blob 404s
- * live share links.
+ * Add a version to a live document in three phases. Stage the row before the
+ * blob so cleanup cannot remove it. Move current_version only after the blob
+ * exists so live links never point to a missing object.
  *
  * `doc` must already be resolved live by the caller, so that a missing document
  * is rejected before the caller spends anything on parsing its input. null here
@@ -145,13 +135,13 @@ export async function addVersion(
 	// An absent title keeps the current one: retitling a document on every content
 	// fix (down to the <title> on the recipient's page) would be a surprise. The
 	// asymmetry with `createDocument`, whose callers run the naming chain on an
-	// absent title (SPEC §8), is deliberate — auto-naming is create-only.
+	// absent title (SPEC §8), is deliberate. Auto-naming is create-only.
 	const title = input.title ?? doc.title;
 	const html = renderVersion(input.source, input.kind, title);
 
 	// Phase 1: stage the row. It precedes the blob, and since current_version has
 	// not moved yet every reader still sees the old version. The number is
-	// MAX(version) + 1 — after a rollback current_version + 1 would collide.
+	// MAX(version) + 1. After a rollback current_version + 1 would collide.
 	let version = 0;
 	let r2_key = "";
 	for (let attempt = 1; ; attempt++) {
@@ -159,7 +149,7 @@ export async function addVersion(
 		r2_key = versionR2Key(doc.id, version);
 		const row = { document_id: doc.id, version, kind: input.kind, r2_key, created_at: now };
 		if (await insertVersion(env.DB, row)) break;
-		// Lost the composite-PK race — reallocate rather than overwrite history.
+		// A competing request took this version number. Allocate another.
 		if (attempt >= MAX_VERSION_ATTEMPTS) throw new Error(`could not allocate a version for document ${doc.id}`);
 	}
 
@@ -179,8 +169,8 @@ export async function addVersion(
 		]);
 	};
 
-	// Phase 3: the cutover, last — one guarded UPDATE, only now that the blob
-	// exists. Readers therefore see either the old version or the new one, never
+	// Phase 3 moves the pointer with one guarded UPDATE after the blob
+	// exists. Readers see either the old version or the new one, never
 	// a pointer to a missing blob.
 	let applied: boolean;
 	try {
@@ -207,7 +197,7 @@ export interface RollbackResult {
 
 /**
  * Point a live document at an existing version. null when that version is not
- * there — the same answer as a missing document, so both fold into one 404.
+ * there. Missing documents and versions both return 404.
  * Rolling back to the version already live is an idempotent no-op that must not
  * bump updated_at (SPEC §9).
  */
@@ -222,14 +212,14 @@ export async function rollbackDocument(
 	}
 
 	// A staged row is committed before its blob (phase 1 → 2 above), so a crash in
-	// that window leaves a version row with nothing behind it — and it looks like
+	// that window leaves a version row without a blob, but it looks like
 	// any other version in the history. current_version must never land on one:
-	// that would 404 every live share link, not just this read. Confirming the
+	// that would break this read and every live share link. Confirming the
 	// blob costs one R2 round trip on a cold owner-only path.
 	const target = await getVersion(env.DB, doc.id, version);
 	if (!target || !(await env.BLOBS.head(target.r2_key))) return null;
 
-	// Pointer move only — no blob is copied, so there is nothing to unwind.
+	// Only move the pointer. No blob needs copying or cleanup.
 	const ok = await setCurrentVersion(env.DB, doc.id, version, now);
 	if (!ok) return null;
 	return { current_version: version, updated_at: now };
@@ -242,15 +232,15 @@ export type IssueShareResult = { ok: true; share: ShareRow } | { ok: false; reas
  * Issue a share token for a live document (SPEC §7).
  *
  * Both preconditions live here rather than in the adapters, and the ORDER
- * between them is part of the contract: liveness is checked before the TTL is
- * parsed, so a request naming an unknown document with a bad TTL is answered
+ * between them is part of the contract. Check liveness before parsing the TTL,
+ * so a request naming an unknown document with a bad TTL is answered
  * "not there", never "bad TTL". That precedence is what keeps an id's existence
  * out of the reply (SPEC §6.3), and it is the same one
  * `POST /documents/:id/versions` keeps by resolving the document before it reads
  * the body. Split across two adapters it would only hold until one of them
  * parsed its TTL first.
  *
- * `not-found` covers an owner-expired document too: a share for one would 404
+ * `not-found` also covers an owner-expired document. A share for one would 404
  * for the recipient while looking issued to the owner (SPEC §11.5).
  */
 export async function issueShare(env: Env, id: string, now: number, ttl: string): Promise<IssueShareResult> {
@@ -271,28 +261,25 @@ export async function issueShare(env: Env, id: string, now: number, ttl: string)
 }
 
 /**
- * Delete a document, every version's blob, and (by cascade) its shares. false
- * when it was not there — taken from the DELETE itself, which already reports
- * whether a row existed, so no separate existence check is needed. A miss costs
+ * Delete a document, every version's blob, and its shares. Return false when the
+ * document was absent. The DELETE reports whether a row existed, so no separate
+ * existence check is needed. A miss costs
  * nothing extra: `listVersionKeys` returns [] and `deleteBlobs` skips R2 on an
  * empty list.
  */
 export async function deleteDocumentWithBlobs(env: Env, id: string): Promise<boolean> {
 	// Read the keys before the row goes: the cascade wipes document_version.
 	const keys = await listVersionKeys(env.DB, id);
-	// Independent of each other — the blobs and the row (which cascades shares).
 	const [, existed] = await Promise.all([deleteBlobs(env.BLOBS, keys), deleteDocument(env.DB, id)]);
 	return existed;
 }
 
 /**
- * The stored HTML of one version — what `poof cat` and the MCP `cat` tool read.
+ * Return the stored HTML read by `poof cat` and the MCP `cat` tool.
  * `version` of null resolves to the current one. null when the document, the
  * version, or (for a version staged without its blob) the blob is not there.
  *
- * The body is handed back undecoded so the API route can stream it: documents
- * run to 10 MiB, and buffering one as a JS string to hand it straight to a
- * `Response` would be pure waste.
+ * Keep the body undecoded so the API can stream documents up to 10 MiB.
  */
 export async function readVersionBlob(
 	env: Env,

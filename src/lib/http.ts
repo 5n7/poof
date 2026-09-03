@@ -1,7 +1,7 @@
 import type { Context, MiddlewareHandler, Next } from "hono";
 
 /**
- * CSRF guard for state-changing requests, applied to `/api/*` and `/mcp` — the
+ * CSRF guard for state-changing requests on `/api/*` and `/mcp`, the
  * two Access-protected write surfaces. A cross-origin form/script can drive the
  * browser to POST/DELETE with the user's Access cookie attached, so we reject
  * any `Sec-Fetch-Site` the browser reports as cross-origin. The header is absent
@@ -26,13 +26,12 @@ export function uniform404(c: Context): Response {
 	return c.text("Not Found", 404);
 }
 
-/** A version asked for in a URL: a positive integer with no leading zero. */
+/** Match a positive integer without a leading zero. */
 const VERSION_PATTERN = /^[1-9][0-9]*$/;
 
 /**
- * Is `raw` a well-formed version number? Only the judgment is shared — what a
- * malformed one means is not: the API answers 400, the viewer pages answer the
- * uniform 404 (SPEC §12.4). Each caller keeps its own response.
+ * Check whether `raw` is a version number. The API answers malformed input with
+ * 400, while viewer pages use the uniform 404 (SPEC §12.4).
  */
 export function isVersionString(raw: string): boolean {
 	return VERSION_PATTERN.test(raw);
@@ -56,10 +55,10 @@ export const RAW_HEADERS: Record<string, string> = {
 
 /**
  * Security headers on every `GET /api/documents/:id/content` response (200s,
- * 400s and 404s alike) — the endpoint `poof cat` reads. It hands out untrusted
+ * 400s and 404s alike) for the endpoint `poof cat` reads. It returns untrusted
  * document HTML from the real `poof.5n7.me` origin, where SPEC §6.1 forbids
  * executing it, so a browser that navigates here carrying the Access cookie
- * must see text, never markup: a bare `sandbox` (never `allow-scripts`) plus
+ * must see text, never markup. Use a bare `sandbox` without `allow-scripts` plus
  * `nosniff`. The 200 body additionally carries `Content-Type: text/plain;
  * charset=utf-8`, which is what `nosniff` then pins it to; the 400/404 bodies
  * keep their own JSON / `uniform404` types.
@@ -72,7 +71,7 @@ export const API_CONTENT_HEADERS: Record<string, string> = {
 	"Cache-Control": "no-store",
 };
 
-/** Headers on viewer pages (`/d/*`, `/v/*`) — SPEC §9. */
+/** Headers on viewer pages (`/d/*`, `/v/*`). See SPEC §9. */
 export const VIEWER_HEADERS: Record<string, string> = {
 	"Referrer-Policy": "no-referrer",
 	"X-Robots-Tag": "noindex",
@@ -80,8 +79,8 @@ export const VIEWER_HEADERS: Record<string, string> = {
 
 /**
  * Middleware that stamps a fixed header set onto every response leaving a
- * route — 200s, 400s and 404s alike. Applied once at the route rather than per
- * exit path, so the invariant is structural: every exit path carries these.
+ * route, including 200s, 400s, and 404s. Applying them at the route ensures
+ * every exit path carries them.
  */
 export function withHeaders(headers: Record<string, string>): MiddlewareHandler {
 	const entries = Object.entries(headers);

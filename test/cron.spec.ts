@@ -37,7 +37,7 @@ describe("runCleanup", () => {
 		const expiredDocKey = await putDoc("cron_expired_doc", now - 100);
 		await putShare("s_cron_docshare000000000", "cron_expired_doc", now + 3600);
 
-		// Live document with a live share — must survive.
+		// Keep the live document and its live share.
 		const liveKey = await putDoc("cron_live_doc", now + 3600);
 		await putShare("s_cron_liveshare00000000", "cron_live_doc", now + 3600);
 
@@ -62,7 +62,7 @@ describe("runCleanup", () => {
 		expect(await shareExists("s_cron_liveshare00000000")).toBe(true);
 	});
 
-	it("is idempotent — a second run is a no-op", async () => {
+	it("does nothing on a second run", async () => {
 		const now = (Date.now() / 1000) | 0;
 		await putDoc("cron_idem_expired", now - 100);
 		await putDoc("cron_idem_live", now + 3600);
@@ -102,8 +102,8 @@ describe("runCleanup", () => {
 		const v3 = await seedVersion("cron_exp_history", 3, { body: HTML });
 		expect(v1).toBe("doc/cron_exp_history.html");
 
-		// orphans stays 0: phase 2 must remove all three itself rather than leaving
-		// rowless blobs for the sweep to find.
+		// Phase 2 must remove all three blobs. It must not leave rowless blobs for
+		// the orphan sweep, so the orphan count stays at zero.
 		const counts = await runCleanup(env, now);
 		expect(counts).toEqual({ shares: 0, documents: 1, orphans: 0 });
 
@@ -125,7 +125,7 @@ describe("runCleanup", () => {
 	it("sweeps correctly when a listing page holds more than 100 keys", async () => {
 		const now = (Date.now() / 1000) | 0;
 		// A listing page carries up to 1000 keys but a statement binds at most 100,
-		// so an unchunked `r2_key IN (…)` probe would blow up right here.
+		// so one unchunked `r2_key IN (…)` query would exceed the binding limit.
 		const known = [await seedDoc("cron_bulk", { body: HTML })];
 		for (let v = 2; v <= 105; v++) {
 			known.push(await seedVersion("cron_bulk", v, { body: HTML, setCurrent: false }));

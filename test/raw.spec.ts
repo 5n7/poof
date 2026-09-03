@@ -25,7 +25,7 @@ async function seed(id: string, token: string, opts: SeedOpts = {}) {
 	});
 }
 
-describe("GET /raw/:token — valid delivery", () => {
+describe("GET /raw/:token with a valid token", () => {
 	it("serves the blob for a live share token", async () => {
 		const id = "doc_live_share";
 		const token = "s_liveshare000000000000";
@@ -61,7 +61,7 @@ describe("GET /raw/:token — valid delivery", () => {
 	});
 });
 
-describe("GET /raw/:token — 404 uniformity (§6.3)", () => {
+describe("GET /raw/:token 404 uniformity (§6.3)", () => {
 	// Every failure mode must return an identical status + body so a probe
 	// cannot distinguish "never existed" from "existed and expired/revoked".
 	it("returns identical 404 for all failure modes", async () => {

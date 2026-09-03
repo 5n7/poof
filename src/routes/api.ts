@@ -67,7 +67,7 @@ apiRoutes.post("/documents", async (c) => {
 	}
 
 	const source = await upload.file.text();
-	// An absent title means "name it for me" (blank counts as absent — readUpload).
+	// An absent or blank title means "name it for me". See readUpload.
 	// A present one is used verbatim, which is what keeps the CLI and every
 	// drag-dropped file naming itself. Ordering: after the TTL check above, so an
 	// `invalid ttl` 400 never spends a neuron; after readUpload's size guard, so
@@ -134,7 +134,7 @@ apiRoutes.get("/documents/:id/versions", async (c) => {
 apiRoutes.use("/documents/:id/content", withHeaders(API_CONTENT_HEADERS));
 
 /**
- * The stored HTML of one version — what `poof cat` prints. A `?v=N` pin is
+ * Return the stored HTML printed by `poof cat`. A `?v=N` pin is
  * accepted here and refused on `/raw` for the same reason: there the token *is*
  * the authorization, so a version in the URL would let anyone holding a share
  * link enumerate history, while this route sits behind Access, where the
@@ -149,7 +149,7 @@ apiRoutes.get("/documents/:id/content", async (c) => {
 	const asked = raw === undefined ? null : Number(raw);
 
 	// A staged version can exist without its blob (phase 1 → 2 of an upload), and
-	// documents run to 10 MiB — so stream the body straight through, as /raw does.
+	// documents can reach 10 MiB, so stream the body as /raw does.
 	const obj = await readVersionBlob(c.env, id, asked, nowSeconds());
 	if (!obj) return uniform404(c);
 

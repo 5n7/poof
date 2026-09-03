@@ -81,11 +81,9 @@ async function listRow(id: string): Promise<ListRow> {
 }
 
 /**
- * Every fallback case below leans on Workers AI being unreachable under the test
- * pool, so it is asserted directly rather than assumed. `remoteBindings: false`
- * in vitest.config.ts is what makes `run()` reject; if a toolchain bump ever
- * makes the binding live in-pool, this test fails loudly and says why, instead
- * of the whole suite quietly turning slow, non-deterministic and billable.
+ * Fallback tests require Workers AI to reject under the test pool.
+ * `remoteBindings: false` in vitest.config.ts causes that rejection. This test
+ * catches toolchain changes that would enable remote, billable calls.
  */
 describe("the AI binding under the test pool", () => {
 	it("exists but cannot be run", async () => {
@@ -98,20 +96,18 @@ describe("the AI binding under the test pool", () => {
 
 describe("automatic titling on POST /api/documents", () => {
 	it("tries Workers AI first, then falls back to the document's own heading", async () => {
-		// The spy is what makes this discriminate. Without it, an implementation that
-		// never calls Workers AI at all passes unchanged — the heading rung answers
-		// identically — and the feature would be silently absent. `generateAiTitle`'s
-		// catch is the only place the attempt leaves a trace.
+		// The warning proves that the code attempted Workers AI before using the
+		// heading. Without this assertion, skipping Workers AI would also pass.
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		try {
-			// File name and heading differ so the two fallback rungs stay distinguishable.
+			// Different heading and file names identify which fallback ran.
 			const doc = await createDoc(uploadBody("# Design Review\n\nbody", { name: "pasted.md" }));
 			expect(warn).toHaveBeenCalledWith("ai title failed", expect.any(String));
 
 			expect(doc.title).toBe("Design Review");
 			expect((await listRow(doc.id)).title).toBe("Design Review");
 
-			// The title is baked into the blob, so the recipient's tab reads it too.
+			// The rendered blob includes the title for the recipient's browser tab.
 			const token = await issueShare(doc.id);
 			expect(await rawText(token)).toContain("<title>Design Review</title>");
 		} finally {
@@ -129,18 +125,14 @@ describe("automatic titling on POST /api/documents", () => {
 	});
 
 	it("skips the naming chain entirely for kind=html and stores the source verbatim", async () => {
-		// The body carries a heading the chain WOULD find, and that is the whole point
-		// of the fixture: with a plain `<p>hi</p>` body this test passes even with the
-		// kind guard deleted, because the chain falls through the heading rung to the
-		// same file name. Here, a chain that ran would name the document
-		// "Not This Title" instead — no AI needed to tell the two apart.
+		// The heading differs from the file name. If HTML incorrectly used automatic
+		// titling, this fixture would produce "Not This Title" instead of report.html.
 		const source = "# Not This Title\n<p>hi</p>";
 		const doc = await createDoc(uploadBody(source, { kind: "html", name: "report.html" }));
 		expect(doc.title).toBe("report.html");
 		expect((await listRow(doc.id)).title).toBe("report.html");
 
-		// html is never wrapped, so nothing may be injected into the blob — least of
-		// all a <title>.
+		// HTML is stored without a wrapper or injected <title>.
 		const token = await issueShare(doc.id);
 		const stored = await rawText(token);
 		expect(stored).toBe(source);
@@ -160,8 +152,7 @@ describe("automatic titling on POST /api/documents", () => {
 	});
 
 	it("treats a blank title as absent and runs the naming chain", async () => {
-		// Set directly rather than through uploadBody: the point is that the server
-		// trims and discards a blank field, not that a client declined to send one.
+		// Set the field directly to test server-side trimming of a value that was sent.
 		const fd = uploadBody("# Blank Title Heading\n\nbody", { name: "untitled.md" });
 		fd.set("title", "   ");
 
@@ -172,33 +163,30 @@ describe("automatic titling on POST /api/documents", () => {
 });
 
 /**
- * The chain's terminal, driven directly rather than over HTTP. Every rung of it
- * can decline, so the one property that has to hold unconditionally is that what
- * comes out is never blank — an empty title is an empty library row and an empty
- * browser tab.
+ * Test the final fallback directly. `resolveNewTitle` must return a nonblank
+ * title when every earlier source is empty.
  *
  * Not reachable through `POST /api/documents`: a multipart part sent with
  * `filename=""` does not arrive as a `File` at all under workerd, so `readUpload`
  * answers 400 "file is required" and `upload.file.name` is never the empty
- * string the guard is written for. It is still the invariant the chain promises,
- * and the MCP adapter reaches it with its own literal fallback, so it is pinned
- * at the level where it can actually be exercised.
+ * string handled by this branch. The MCP adapter can reach it, so the function
+ * still needs direct coverage.
  */
-describe("the naming chain's terminal", () => {
+describe("the final title fallback", () => {
 	it("never yields a blank title, whatever the caller's fallback", async () => {
 		for (const fallback of ["", "   "]) {
 			expect(await resolveNewTitle(env, { fallback, kind: "md", source: "prose with no heading" })).toBe("untitled");
-			// html short-circuits straight to the fallback, so it needs the guard too.
+			// HTML uses the caller fallback directly and needs the same blank check.
 			expect(await resolveNewTitle(env, { fallback, kind: "html", source: "<p>x</p>" })).toBe("untitled");
 		}
 	});
 
-	it("refuses a blank heading and falls through to the caller's fallback", async () => {
+	it("refuses a blank heading and uses the caller's fallback", async () => {
 		// `#` followed by nothing but spaces is a heading as far as the scan goes (see
 		// test/title.spec.ts), and it labels a document no better than an empty file
 		// name does.
 		expect(await resolveNewTitle(env, { fallback: "notes.md", kind: "md", source: "#   \n\nbody" })).toBe("notes.md");
-		// With no usable fallback either, the chain still ends somewhere sayable.
+		// With no usable fallback, use the literal "untitled".
 		expect(await resolveNewTitle(env, { fallback: "", kind: "md", source: "#   \n\nbody" })).toBe("untitled");
 	});
 

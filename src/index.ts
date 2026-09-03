@@ -10,19 +10,18 @@ import { rawRoutes } from "./routes/raw";
 
 const app = new Hono<{ Bindings: Env }>();
 
-// Public paths first — these must NOT sit behind Access (SPEC §6.2): a
+// Register public paths before Access-protected paths (SPEC §6.2). A
 // sandboxed iframe has an opaque origin, so Access cookies are never sent.
 app.route("/raw", rawRoutes);
 app.get("/v/:token", publicViewerPage);
 
-// Access-protected surfaces. Exact-path middleware registration (not "*") keeps
-// /raw and /v public — see PLAN §3.1 route-ordering pitfall.
+// Exact-path middleware keeps /raw and /v public. See PLAN §3.1.
 //
 // The write surfaces list both guards here, together: "behind Access" and
 // "CSRF-guarded" are one decision about one surface, and splitting them across
 // two files is what lets a new route get half of them. Adding a write surface
-// without `csrfProtection` would fail silently — nothing tests a route that does
-// not exist yet — so the two are kept physically adjacent instead.
+// without `csrfProtection` would fail silently because no test can cover a route
+// that does not exist yet. Keep both guards together.
 app.use("/api/*", accessAuth, csrfProtection);
 app.use("/", accessAuth);
 app.use("/d/*", accessAuth);

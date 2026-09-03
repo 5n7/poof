@@ -1,13 +1,13 @@
 import { nowSeconds } from "./time";
 
-/** base64url-encode bytes with no padding. */
+/** Encode bytes as unpadded base64url. */
 export function b64url(bytes: Uint8Array): string {
 	let bin = "";
 	for (const b of bytes) bin += String.fromCharCode(b);
 	return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-/** base64url-decode (no padding required). */
+/** Decode base64url without requiring padding. */
 function b64urlDecode(s: string): Uint8Array {
 	const b64 = s.replace(/-/g, "+").replace(/_/g, "/");
 	const bin = atob(b64);
@@ -16,7 +16,7 @@ function b64urlDecode(s: string): Uint8Array {
 	return out;
 }
 
-/** 16 random bytes (128 bits) → base64url, ~22 chars, no padding (SPEC §5). */
+/** Return 16 random bytes as about 22 base64url characters (SPEC §5). */
 export function randomToken(): string {
 	const bytes = new Uint8Array(16);
 	crypto.getRandomValues(bytes);
@@ -47,7 +47,7 @@ function hmacKey(secret: string): Promise<CryptoKey> {
 }
 
 /**
- * Mint a stateless owner view token: `o_` + b64url(JSON {d, v?, exp}) +
+ * Mint a stateless owner view token as `o_` + b64url(JSON {d, v?, exp}) +
  * "." + b64url(HMAC-SHA256(payloadB64, secret)). Default TTL 600s (SPEC §6.2).
  *
  * `version` pins the token to one past version. When it is undefined the `v`
@@ -129,15 +129,14 @@ const TTL_SECONDS = {
 export type Ttl = keyof typeof TTL_SECONDS;
 
 /**
- * The accepted TTLs, for callers that need to state them as a list — the MCP
+ * The accepted TTLs for callers that need a list. The MCP
  * tool schemas build their enum from this. Derived from `TTL_SECONDS` rather
- * than written out again: a hand-copied list only stays correct until someone
- * adds a fourth TTL to one of them, and the failure is a silent NaN expiry.
+ * than writing another list that could drift and produce a NaN expiry.
  */
 export const TTL_KEYS = Object.keys(TTL_SECONDS) as [Ttl, ...Ttl[]];
 
 /**
- * Seconds for a TTL already known to be valid — no null branch to handle.
+ * Convert a valid TTL to seconds without a null branch.
  * Named `ttlToSeconds` rather than `ttlSeconds` because `mintOwnerToken` already
  * takes a parameter by that name.
  */
@@ -145,7 +144,7 @@ export function ttlToSeconds(ttl: Ttl): number {
 	return TTL_SECONDS[ttl];
 }
 
-/** "1h" | "1d" | "1w" → seconds; null otherwise. */
+/** Convert "1h", "1d", or "1w" to seconds. Return null for other values. */
 export function parseTtl(s: string): number | null {
 	return Object.hasOwn(TTL_SECONDS, s) ? TTL_SECONDS[s as Ttl] : null;
 }

@@ -26,7 +26,7 @@ describe("renderMarkdown", () => {
 	it('escapes mermaid fence content into <pre class="mermaid">', () => {
 		const html = renderMarkdown('```mermaid\ngraph TD; A["<b>"] --> B\n```');
 		expect(html).toContain('<pre class="mermaid">');
-		// Content is HTML-escaped: the angle brackets must not survive raw.
+		// HTML escaping must remove the raw angle brackets.
 		expect(html).toContain("&lt;b&gt;");
 		expect(html).not.toContain('A["<b>"]');
 	});

@@ -1,8 +1,7 @@
 /**
- * Naming a new document when the client did not name it. The chain is Workers
- * AI → the document's own first `# ` heading → a fallback the caller supplies
- * (the uploaded file name on `/api`, `untitled` on `/mcp`), and every link
- * degrades silently: a document must never fail to be created because of AI.
+ * Name a new document when the client omits the title. Try Workers AI, then the
+ * first `# ` heading, then the caller's fallback. AI failures never block an
+ * upload.
  */
 
 /** Cheapest text-generation model in the catalog that officially handles Japanese. */
@@ -18,65 +17,39 @@ const AI_TITLE_MAX_CHARS = 2000;
 const AI_TITLE_MAX_LENGTH = 80;
 
 /**
- * Last resort, when even the caller's own fallback turns out to be unusable —
- * see `resolveNewTitle`. The same word the MCP adapter passes as its fallback,
- * so the chain has exactly one terminal however it is entered.
+ * Last resort when the caller's fallback is blank. See `resolveNewTitle`.
  */
 const TERMINAL_TITLE = "untitled";
 
-// The default prompt, and byte-for-byte the one that has been naming English
-// documents in production. "The same language as the document" stays in it
-// because it works there, and because a document reaching this branch may be in
-// neither English nor Japanese, where an implicit instruction is all we have.
-// The 60-character cap is characters, not words (a word count is meaningless
-// for Japanese), and sits below AI_TITLE_MAX_LENGTH so a slightly-over answer
-// still passes acceptance instead of being thrown away.
+// Treat this prompt as production behavior. Change it only with a title-quality
+// review. Its 60-character limit leaves room below AI_TITLE_MAX_LENGTH for a
+// slightly long response.
 const SYSTEM_PROMPT =
-	"You generate titles for documents. Reply with the title and nothing else — a single line, at most 60 characters, " +
-	"written in the same language as the document. No quotation marks, no Markdown, no trailing period, no preamble, " +
-	"no explanation.";
+	"You generate titles for documents. Reply with the title and nothing else. Use one line of at most 60 characters, " +
+	"written in the same language as the document. Do not use quotation marks, Markdown, a trailing period, a preamble, " +
+	"or an explanation.";
 
-// Japanese, where that implicit instruction measurably fails: asked to match the
-// document's language, the model answered two of three real Japanese documents
-// in English. So the language stops being something for the model to infer — it
-// is stated flatly here and demonstrated once in JA_ONE_SHOT below. IBM's model
-// card prescribes exactly this for non-English work, since "its performance
-// might not be similar to English tasks. In such case, introducing a small
-// number of examples (few-shot) can help the model in generating more accurate
-// outputs." The rest of the line is left where it was, so the only difference
-// from the proven prompt is the one clause that had to change.
+// The model returned English titles for two of three Japanese documents when
+// asked to match the document's language. This prompt names Japanese directly
+// and JA_ONE_SHOT gives it one example.
 const SYSTEM_PROMPT_JA =
-	"You generate titles for documents. Reply with the title and nothing else — a single line, at most 60 characters. " +
-	"Reply in Japanese. No quotation marks, no Markdown, no trailing period, no preamble, no explanation.";
+	"You generate titles for documents. Reply with the title and nothing else. Use one line of at most 60 characters. " +
+	"Reply in Japanese. Do not use quotation marks, Markdown, a trailing period, a preamble, or an explanation.";
 
 /**
- * The user turn, built in one place so the one-shot and the real request are
- * shaped identically — an example the model cannot tell apart from the thing
- * being asked is the whole point of showing one.
+ * Build both the example request and the real request in the same format.
  *
- * The <document> delimiter is prompt-injection hygiene, NOT a security boundary
- * — do not mistake it for a control. Worst case a malicious document names
- * itself, which is harmless: the title is HTML-escaped by lib/render.ts and
- * hono/jsx and stored in a TEXT column.
+ * The <document> delimiter helps the model separate data from instructions. It
+ * is not a security boundary. lib/render.ts and hono/jsx escape the title.
  */
 function documentTurn(excerpt: string) {
 	return { role: "user", content: `Title this document:\n\n<document>\n${excerpt}\n</document>` };
 }
 
 /**
- * A prior turn pair rather than a block pasted into the system prompt: a chat
- * model reads an example in the same slots it will generate in, so a
- * user/assistant pair *demonstrates* the answer where a system prompt can only
- * describe it — and a Japanese passage sitting inside the instructions is one
- * more thing for a 3B model to mistake for the document it was handed.
- *
- * The subject is deliberately far from anything this library holds — no
- * software, no incidents, no meetings — so the example teaches the language and
- * the shape (one line, a short noun phrase, no punctuation) without dragging the
- * next title toward its own topic. For the same reason the title is not a
- * document-type noun like メモ or 記録, which would be easy to copy. The excerpt
- * carries no `# ` heading either: an example whose title is its own heading
- * teaches copying, and the heading is a separate rung of the chain.
+ * A user and assistant turn give the chat model an example in the same slots as
+ * the real request. The unrelated gardening example teaches output format and
+ * language without steering titles toward this app's usual subjects.
  */
 const JA_ONE_SHOT = [
 	documentTurn(
@@ -87,15 +60,10 @@ const JA_ONE_SHOT = [
 ];
 
 /**
- * Kana: hiragana, katakana — halfwidth included, those are Script=Katakana — and
- * U+30FC, the prolonged sound mark, which is Script=Common and so falls outside
- * both while appearing in nearly every katakana loan word. Spelled as an escape
- * because ー is indistinguishable from 一, ‐ and - in a source file.
+ * Match hiragana, katakana, halfwidth katakana, and U+30FC. Unicode classifies
+ * U+30FC as Script=Common, so it needs an explicit escape.
  *
- * Kanji is absent on purpose, and from both sides of the ratio below: it cannot
- * tell Japanese from Chinese, so counting it as evidence would fire on Chinese,
- * and counting it as ballast would starve exactly the kanji-heavy Japanese
- * documents this exists to catch.
+ * Kanji cannot distinguish Japanese from Chinese, so the ratio excludes it.
  */
 const KANA = /[\p{Script=Hiragana}\p{Script=Katakana}\u30FC]/gu;
 
@@ -103,32 +71,19 @@ const KANA = /[\p{Script=Hiragana}\p{Script=Katakana}\u30FC]/gu;
 const LATIN = /\p{Script=Latin}/gu;
 
 /**
- * A contest between the two scripts, ignoring digits, punctuation, Markdown and
- * whitespace, so a Japanese document that is mostly a table of numbers or a page
- * of URLs is not diluted into English.
- *
- * 10% is a moat, not a line, and it sits between two clusters rather than beside
- * either. Japanese prose with no English in it is 100%; Japanese technical
- * writing thick with English identifiers, URLs and product names — the shape
- * most of this library is in — measures around 40%, and even a source file whose
- * only Japanese is its user-facing strings measures around 19%. On the other
- * side an English page quoting a Japanese sentence and naming a Japanese company
- * measures around 5%, and the full 2000-character excerpt of an English document
- * holds roughly 1500 Latin letters, so clearing 10% there would take some 170
- * kana: eight solid lines of Japanese, not a phrase.
- *
- * Which side to err towards is not symmetric. A missed Japanese document merely
- * gets the prompt that shipped before this, while a misfire puts a Japanese
- * instruction and a Japanese example on an English document — a regression on
- * the one path already proven in production.
+ * Compare kana with Latin letters. Ignore digits, punctuation, Markdown, and
+ * whitespace so number-heavy documents and URL lists do not skew the result.
+ * Tests on representative documents put Japanese technical writing above 19%
+ * and English documents with short Japanese quotes near 5%.
+ * Bias toward false negatives. A false positive sends Japanese instructions and
+ * an example with an English document. A false negative uses the production
+ * default prompt.
  */
 const MIN_KANA_RATIO = 0.1;
 
 /**
- * An absolute floor, because a ratio on its own lets a two-character document
- * decide. Three kana is the shortest run that cannot be a stray — one katakana
- * loan word, or a particle with its okurigana — and below it the excerpt has
- * not really said anything yet.
+ * Require at least three kana so a two-character fragment cannot choose the
+ * prompt.
  */
 const MIN_KANA_CHARS = 3;
 
@@ -136,7 +91,7 @@ const MIN_KANA_CHARS = 3;
  * Openers that mean the model answered the request instead of performing it.
  * Such a string is never a title, so it is rejected rather than trimmed.
  *
- * Deliberately narrow. "Sure"/"Of course" only count as a preamble when the
+ * Keep this narrow. "Sure" and "Of course" only count as a preamble when the
  * punctuation of one follows immediately, so `Sure Thing Inc Annual Report`
  * stays a title; and only `cannot`/`can't` count, not a bare `I can`, which is
  * an ordinary way for a title to start. Missing a preamble merely means a poor
@@ -145,11 +100,8 @@ const MIN_KANA_CHARS = 3;
 const REFUSAL_PREFIX = /^(?:(?:sure|of course|certainly|okay)\s*[,!:]|here(?:['’]s| is)\b|i\s+(?:cannot|can['’]?t)\b)/i;
 
 /**
- * A title has to *say* something. A string of nothing but punctuation (`---`,
- * `***`, `…`, `、`) or of nothing but invisibles labels no document — it is
- * debris left over from an answer the model never gave. An emoji-only title
- * fails this too, which is the safe direction: the chain falls through to the
- * document's own heading, and only then to the caller's fallback.
+ * Reject titles made only of punctuation, invisible characters, or emoji. The
+ * naming chain then uses the document heading or caller fallback.
  */
 const HAS_CONTENT = /[\p{L}\p{N}]/u;
 
@@ -168,10 +120,8 @@ const QUOTE_PAIRS: [string, string][] = [
 ];
 
 /**
- * The model maps to `BaseAiTextGeneration`, whose output is `{ response?: string }`.
- * The newest catalog models answer with `ChatCompletionsOutput` instead, where
- * the text sits at `choices[0].message.content` — reading both keeps a model
- * swap a one-line change.
+ * Support both `BaseAiTextGeneration` and `ChatCompletionsOutput` response
+ * shapes.
  */
 interface TextOutput {
 	response?: unknown;
@@ -181,14 +131,10 @@ interface TextOutput {
 /**
  * `**bold**` → `bold`, but only when the run wraps the whole string.
  *
- * `__init__` comes out as `init`, and that is left alone deliberately. Under
- * CommonMark `__init__` really is `<strong>init</strong>` — the delimiters sit
- * at the string's edges, so the intraword rule does not save it — which makes
- * it indistinguishable from `__Roadmap__`, a model bolding its answer against
- * instructions. No rule keeps one without losing the other. The blast radius is
- * narrow: unwrapping needs the marker at *both* ends, so `Understanding
- * __init__` and `__init__ explained` both survive intact, and only a title that
- * is exactly one dunder token is touched.
+ * `__init__` comes out as `init`, and that tradeoff is accepted.
+ * CommonMark parses `__init__` as `<strong>init</strong>`, so it is
+ * indistinguishable from a model returning `__Roadmap__`. Only unwrap markers
+ * that surround the full title.
  */
 function unwrapEmphasis(text: string): string {
 	for (const marker of EMPHASIS_MARKERS) {
@@ -207,9 +153,7 @@ function unwrapQuotes(text: string): string {
 	for (const [open, close] of QUOTE_PAIRS) {
 		if (text.length <= 1 || !text.startsWith(open) || !text.endsWith(close)) continue;
 		const inner = text.slice(open.length, -close.length);
-		// Same guard as unwrapEmphasis: `「設計」と「実装」` and `"Alpha" vs "Beta"`
-		// merely begin and end with the pair, they are not wrapped in it, and
-		// unwrapping would leave a stray quote mid-string.
+		// Do not unwrap titles such as `「設計」と「実装」` or `"Alpha" vs "Beta"`.
 		if (inner.includes(open) || inner.includes(close)) continue;
 		return inner.trim();
 	}
@@ -219,26 +163,21 @@ function unwrapQuotes(text: string): string {
 /**
  * Turn a model's raw output into a usable title, or `null` when it is not one.
  *
- * Rejects rather than truncates: a rambling paragraph chopped at 80 characters
- * is a strictly worse library label than the file name or the document's own
- * heading. Only the first non-empty line is ever considered — a model that
- * appends an explanation loses the explanation, not the title. Exported for
- * tests — it is the only part of this module that is deterministic without a
- * network.
+ * Reject long output instead of truncating it. Use only the first non-empty
+ * line, so an added explanation does not become part of the title.
  *
- * Deliberately does NOT HTML-escape: `escapeHtml` in lib/render.ts and
- * `hono/jsx` both escape at render time, so escaping here would double-escape.
+ * Do not HTML-escape here. lib/render.ts and hono/jsx escape at render time.
  */
 export function sanitizeAiTitle(raw: unknown): string | null {
 	if (typeof raw !== "string" || !raw) return null;
 
-	// Reasoning models wrap their scratchpad in <think>…</think>; keep what
+	// Reasoning models may wrap scratch text in <think> tags. Keep what
 	// follows the last close tag.
 	let text = raw;
 	const thinkEnd = text.lastIndexOf("</think>");
 	if (thinkEnd !== -1) text = text.slice(thinkEnd + "</think>".length);
-	// An opener still standing here never closed, and at max_tokens: 32 that is
-	// the likelier shape by far — the answer was cut off mid-thought. There is
+	// An opener still standing here never closed. With max_tokens set to 32, this
+	// usually means the answer was cut off mid-thought. There is
 	// nothing after the block to keep, and the opening of a model thinking out
 	// loud ("Okay, the user wants a title for…") must not become the title.
 	if (/<think\b/i.test(text)) return null;
@@ -251,8 +190,8 @@ export function sanitizeAiTitle(raw: unknown): string | null {
 	//
 	// Cf is stripped rather than merely rejected, and for the same reason `table()`
 	// in routes/mcp.ts flattens it: it is invisible, so it cannot be judged by
-	// reading the title, and one of its members — RLO, U+202E — silently reverses
-	// the display direction of everything after it in a library row. U+200C and
+	// reading the title. RLO, U+202E, reverses the display direction of everything
+	// after it in a library row. U+200C and
 	// U+200D are the exceptions: ZWNJ is orthographically required in Persian and
 	// Devanagari, and ZWJ is what holds an emoji sequence together, so dropping
 	// either mangles a legitimate title instead of cleaning it.
@@ -275,9 +214,7 @@ export function sanitizeAiTitle(raw: unknown): string | null {
 	// have it (as `firstMarkdownHeading` below already insists), and without that
 	// `#hashtag`, `#1 Priority` and `######Deep` all lose their leading text.
 	title = title.replace(/^(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)/, "");
-	// A whole-string Markdown link — the same debris as the markers above, kept
-	// here rather than left in for symmetry. A string merely *containing* a link
-	// is left alone: `[^)]` cannot span the second link's `)`.
+	// Unwrap a Markdown link only when it spans the whole title.
 	title = title.replace(/^\[([^\]]+)\]\([^)]*\)$/, "$1");
 	title = unwrapEmphasis(title);
 	// Up to three layers, e.g. a quoted title inside a code span.
@@ -289,7 +226,7 @@ export function sanitizeAiTitle(raw: unknown): string | null {
 	// Sentence terminators only, and all of a run of them (`The End...`). `?` and
 	// `？` are NOT stripped: a question is a perfectly good title.
 	title = title.replace(/[.。!！]+$/, "");
-	// Collapse whitespace runs — except U+3000, the ideographic space, which is a
+	// Collapse whitespace runs except U+3000, the ideographic space. It is a
 	// deliberate part of a Japanese title and not padding to be normalized away.
 	title = title.replace(/[^\S\u3000]+/g, " ").trim();
 
@@ -305,19 +242,15 @@ export function sanitizeAiTitle(raw: unknown): string | null {
 /**
  * The document's own first `# ` heading.
  *
- * Scanned with one match rather than by splitting into lines: a 10 MiB document
- * would otherwise build an array of every line just to read the first heading,
- * before rendering has even started (~6 ms of a 10 ms budget, for nothing).
+ * Scan with one match instead of splitting a document that may be 10 MiB into
+ * an array of lines.
  *
- * Two details are load-bearing, both of them about what counts as a line break,
- * because this has to agree exactly with the `split(/\r?\n/)` scan in
- * `firstMarkdownHeading` in cli/index.ts (SPEC §10) — `poof push` and the server
- * must not title the same file differently:
+ * Keep the line-break rules aligned with `firstMarkdownHeading` in cli/index.ts.
  *
  * - Line breaks are spelled out as `(?:^|\n)` … `\r?(?=\n|$)` instead of using
  *   the `m` flag. Under `m`, `$` also matches before a lone `\r`, which `split`
- *   treats as ordinary in-line text — so `"# a\rb"` would infer "a" here and
- *   nothing in the CLI.
+ *   treats as ordinary in-line text. Without this rule, `"# a\rb"` would infer
+ *   "a" here and nothing in the CLI.
  * - `[^\S\n]` is "whitespace except a newline", and must not be relaxed to
  *   `\s`: `\s` matches newlines, so a bare `#` on its own line would reach
  *   forward and capture the *next* line as the title.
@@ -335,24 +268,20 @@ export function firstMarkdownHeading(content: string): string | null {
 }
 
 /**
- * Whether to ask for a Japanese title. A heuristic, and deliberately a blunt
- * one: all it picks is which of two prompts to send, so a wrong answer costs a
- * badly-named document and nothing else.
+ * Choose between the default and Japanese title prompts.
  *
- * The language is decided here instead of by the model on purpose.
+ * Choose the language here instead of asking the model.
  * granite-4.0-h-micro is a 3B model with English-heavy instruct tuning, and in
  * production it answered two of three Japanese documents in English while being
- * told to write "in the same language as the document" — an implicit
- * instruction is a whole inference task of its own, and it is one we can settle
- * exactly, for free, with two regexes.
+ * told to use the document's language. Two regexes make that choice before the
+ * request.
  *
  * `match` on a /g regex resets `lastIndex` itself, unlike `test`, so KANA and
  * LATIN are safe to share at module scope. Nothing here can throw: the input is
  * arbitrary user text and the only operation on it is a scan.
  *
- * Pure kanji comes out NOT Japanese, and that is the decision rather than an
- * oversight: with no kana at all there is nothing to separate 第3四半期売上報告
- * from Chinese, and the default prompt is the safer place to land. Japanese
+ * Pure kanji does not count as Japanese. With no kana there is nothing to
+ * separate 第3四半期売上報告 from Chinese, so use the default prompt. Japanese
  * prose reaches for kana within a sentence or two, so this only ever bites on
  * headline-shaped fragments.
  *
@@ -371,7 +300,7 @@ export function looksJapanese(excerpt: string): boolean {
  * Both of the obvious spellings can: `err.message` may be a getter that throws,
  * and `String(err)` throws `TypeError: No default value` on an object with a
  * null prototype. This is used from the one catch block that stands between a
- * failed inference and a failed upload, so nothing in it may throw — a lost log
+ * failed inference and a failed upload, so nothing in it may throw. A lost log
  * line is far cheaper than a document that could not be created.
  */
 function describeError(err: unknown): string {
@@ -383,8 +312,8 @@ function describeError(err: unknown): string {
 }
 
 /**
- * Ask Workers AI for a title. Returns `null` on absolutely anything going
- * wrong — no binding, timeout, a retired model ID, unusable output.
+ * Ask Workers AI for a title. Return `null` for a missing binding, timeout,
+ * retired model, or unusable output.
  */
 async function generateAiTitle(env: Env, source: string): Promise<string | null> {
 	const controller = new AbortController();
@@ -396,15 +325,15 @@ async function generateAiTitle(env: Env, source: string): Promise<string | null>
 		// DEV_DISABLE_AI_TITLES skips the call during local development (mirrors
 		// DEV_DISABLE_ACCESS). Read off an optional shape rather than through Env
 		// because `wrangler types` generates the key from whatever `.dev.vars` the
-		// machine that ran it happens to hold — which is how DEV_DISABLE_ACCESS got
-		// into worker-configuration.d.ts — so it is declared in some checkouts and
+		// machine that ran it happens to hold. This is how DEV_DISABLE_ACCESS got
+		// into worker-configuration.d.ts. It is declared in some checkouts and
 		// absent in others, and never set in production at all.
 		if ((env as { DEV_DISABLE_AI_TITLES?: string }).DEV_DISABLE_AI_TITLES === "1") return null;
 		if (!env.AI) return null;
 
 		// AbortController + setTimeout, not AbortSignal.timeout(): the latter can
 		// raise an uncatchable async DOMException under workerd (workerd#1020),
-		// which is exactly the "an upload must never fail" hazard being avoided.
+		// which could make an upload fail.
 		const timeout = new Promise<never>((_, reject) => {
 			timer = setTimeout(() => {
 				controller.abort();
@@ -413,7 +342,7 @@ async function generateAiTitle(env: Env, source: string): Promise<string | null>
 		});
 
 		// Detected on the same slice the model is shown, never on the whole
-		// document: the decision has to be made on the evidence the model gets,
+		// document. Decide from the same evidence the model gets,
 		// or a Japanese preface to an English report would ask for one language
 		// while showing the other.
 		const excerpt = source.slice(0, AI_TITLE_MAX_CHARS);
@@ -434,7 +363,7 @@ async function generateAiTitle(env: Env, source: string): Promise<string | null>
 			},
 			{ signal: controller.signal },
 		);
-		// The race is the authoritative bound; the signal is best-effort upstream
+		// The race enforces the bound. The signal requests upstream
 		// cancellation. A rejection arriving after the race must not surface as an
 		// unhandled rejection once the response has already been sent.
 		call.catch(() => {});
@@ -442,9 +371,8 @@ async function generateAiTitle(env: Env, source: string): Promise<string | null>
 		const out: TextOutput = await Promise.race([call, timeout]);
 		return sanitizeAiTitle(out?.response ?? out?.choices?.[0]?.message?.content);
 	} catch (err) {
-		// Logged, not swallowed: observability is on, and without this a retired
-		// model ID would silently degrade to heading-only titling with no signal.
-		// The message only, and through describeError — an error object can carry
+		// Log failures so a retired model does not go unnoticed. Log only the message
+		// through describeError because an error object can carry
 		// the request that produced it, and that request is the first 2000
 		// characters of a private document.
 		console.warn("ai title failed", describeError(err));
@@ -457,16 +385,14 @@ async function generateAiTitle(env: Env, source: string): Promise<string | null>
 /**
  * Title for a NEW document when the client sent no `title`.
  * Chain: Workers AI -> first `# ` heading -> `fallback`. Never throws;
- * every step degrades silently, because a document must never fail to
- * be created because of AI.
+ * AI failures fall through to the heading or fallback.
  *
  * `fallback` is the terminal, and it differs per caller because the callers have
  * different last resorts: the API create route passes the uploaded file name,
  * while an MCP `push` has no file and passes `untitled`.
  *
- * `html` skips the AI entirely: stripping tags correctly is a sanitizer-shaped
- * problem and poof carries no sanitizer by design (SPEC §6.4), and for `html`
- * the title only labels the library row — it is never baked into a blob.
+ * `html` skips AI. Poof has no HTML sanitizer by design (SPEC §6.4), and an HTML
+ * title only labels the library row.
  */
 export async function resolveNewTitle(
 	env: Env,
@@ -474,10 +400,9 @@ export async function resolveNewTitle(
 ): Promise<string> {
 	// A caller's fallback is not guaranteed usable, and an empty title is an empty
 	// library row and an empty browser tab. Neither adapter is known to pass a
-	// blank one today — workerd hands a `filename=""` multipart part to the create
-	// route as a string field, not a File, so readUpload 400s it before this runs —
-	// but the terminal belongs to the chain rather than to whichever caller
-	// remembers, so no rung of it can ever yield a blank.
+	// blank one today. workerd hands a `filename=""` multipart part to the create
+	// route as a string field, not a File, so readUpload returns 400 first. Keep the
+	// final fallback here so every caller gets a nonblank title.
 	const fallback = input.fallback.trim() || TERMINAL_TITLE;
 	if (input.kind !== "md") return fallback;
 	// `|| null`, not `??`: a `#` followed by nothing but spaces captures a blank

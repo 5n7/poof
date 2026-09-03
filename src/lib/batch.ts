@@ -1,7 +1,7 @@
 /** D1 binds at most 100 parameters per statement, so `IN (…)` lists must be chunked. */
 export const D1_MAX_BINDINGS = 100;
 
-/** R2 deletes at most 1000 keys per call — the same size as one `list()` page. */
+/** R2 deletes at most 1000 keys per call, the size of one `list()` page. */
 export const R2_MAX_DELETE = 1000;
 
 export function chunk<T>(items: T[], size: number): T[][] {

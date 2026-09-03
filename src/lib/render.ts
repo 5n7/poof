@@ -7,9 +7,9 @@ function escapeHtml(s: string): string {
 
 const md = new MarkdownIt({ html: true, linkify: true });
 
-// Custom fence rule: ```mermaid → <pre class="mermaid"> with escaped content
-// (rendered client-side inside the sandbox). Every other fence falls through
-// to the default renderer. No sanitizer (SPEC §6.4).
+// Render ```mermaid fences as escaped content inside <pre class="mermaid">.
+// The sandbox renders them in the browser. Other fences use the default
+// renderer. Poof does not sanitize HTML (SPEC §6.4).
 const defaultFence =
 	md.renderer.rules.fence ?? ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
 md.renderer.rules.fence = (tokens, idx, options, env, self) => {
@@ -24,11 +24,9 @@ export function renderMarkdown(source: string): string {
 	return md.render(source);
 }
 
-// Pinned CDN assets with SRI. mermaid uses the self-contained UMD build (a
-// single file SRI fully covers); the ESM entry dynamically imports ~40 chunks
-// that SRI cannot reach. highlight.js's browser-global build ships in the
-// official @highlightjs/cdn-assets package (the highlight.js npm package is
-// ESM-only). Both load lazily, only when the document needs them.
+// Pin CDN assets with SRI. Mermaid's UMD build is one file, while its ESM entry
+// imports chunks that SRI cannot cover. The browser-global highlight.js build
+// comes from @highlightjs/cdn-assets. Load both only when needed.
 const MERMAID_JS = "https://cdn.jsdelivr.net/npm/mermaid@11.16.0/dist/mermaid.min.js";
 const MERMAID_SRI = "sha384-T/0lMUdJpd2S1ZHtRiofG3htU3xPCrFVeAQ1UUE2TJwlEJSV5NUwn30kP28n238E";
 const HLJS_JS = "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.11.1/highlight.min.js";
@@ -76,8 +74,7 @@ body { margin: 0; }
   .markdown-body table tr:nth-child(2n) { background: #151b23; }
 }`;
 
-// Lazy loader: inject libraries only when the rendered document uses them,
-// keeping Worker CPU flat and the base page dependency-free.
+// Load libraries only when the rendered document uses them.
 const LOADER = `
 (function () {
   function load(src, integrity, cb) {

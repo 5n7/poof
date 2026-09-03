@@ -10,9 +10,9 @@ import {
 } from "../src/lib/db";
 
 /**
- * Seed a document row through the real insert path (so the column list lives in
- * one place — `src/lib/db`). Writes an R2 blob unless `body` is null; returns
- * the r2 key. Defaults keep existing per-spec behavior: one version numbered 1
+ * Seed a document row through the real insert path, keeping the column list in
+ * `src/lib/db`. Writes an R2 blob unless `body` is null and returns the R2 key.
+ * Defaults keep the specified behavior: one version numbered 1
  * under the legacy flat `doc/{id}.html` key that migration 0002 backfilled.
  * Pass `r2Key` for the nested shape, or `version` to start above 1 (for
  * MAX(version) + 1 numbering tests).
@@ -92,9 +92,8 @@ export async function seedShare(
 }
 
 /**
- * Every response header as one "name: value\n" blob — for the negative
- * assertions ("no `allow-*` anywhere in here") that have to cover headers the
- * spec does not name individually.
+ * Return every response header in one "name: value\n" string. Negative
+ * assertions can then check headers that the spec does not name individually.
  */
 export function headerDump(res: Response): string {
 	let all = "";

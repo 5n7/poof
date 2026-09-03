@@ -7,9 +7,8 @@ function placeholders(count: number): string {
 }
 
 /**
- * Weekly cleanup (SPEC §7 — housekeeping only; read-time checks are the real
- * enforcement). Deletes expired shares, expired documents (+ every version's R2
- * blob and their cascaded shares), and sweeps orphaned R2 objects under `doc/`.
+ * Weekly cleanup (SPEC §7). Read-time checks enforce expiry. This job deletes
+ * expired shares and documents, then removes orphaned R2 objects under `doc/`.
  */
 export async function runCleanup(
 	env: Env,
@@ -19,8 +18,8 @@ export async function runCleanup(
 	const sharesRes = await env.DB.prepare("DELETE FROM share WHERE expires_at < ?").bind(now).run();
 	const shares = sharesRes.meta.changes ?? 0;
 
-	// 2. Expired documents: drop blobs, then rows (cascade removes their versions
-	// and shares). The version keys must be read BEFORE the delete, since the
+	// 2. Expired documents. Drop blobs, then rows. The cascade removes their versions
+	// and shares. The version keys must be read BEFORE the delete, since the
 	// cascade takes document_version with the document. `documents` counts
 	// document rows, not blobs.
 	const { results: expiredDocs } = await env.DB.prepare(
@@ -51,8 +50,8 @@ export async function runCleanup(
 		}
 	}
 
-	// 3. Orphan sweep: R2 objects under doc/ with no document_version row. The
-	// reference set is document_version, not document — otherwise every blob of a
+	// 3. Orphan sweep for R2 objects under doc/ with no document_version row. The
+	// reference set is document_version, not document. Otherwise every blob of a
 	// non-current version would look orphaned and be deleted. Both key shapes
 	// arrive here (legacy flat `doc/{id}.html` from the backfill and nested
 	// `doc/{id}/v{n}.html`); R2 keys are flat strings, so one prefix covers both.

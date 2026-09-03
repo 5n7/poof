@@ -149,7 +149,7 @@ describe("version allocation and the current_version pointer", () => {
 		expect(await insertVersion(env.DB, row)).toBe(true);
 		expect(await insertVersion(env.DB, { ...row, r2_key: "doc/dbins_dup/other.html" })).toBe(false);
 
-		// The first write stands — the loser of the race must not clobber it.
+		// The first write remains. A competing insert must not overwrite it.
 		const stored = await getLiveDocumentAtVersion(env.DB, "dbins_dup", 2, 1_000_000);
 		expect(stored!.r2_key).toBe("doc/dbins_dup/v2.html");
 	});

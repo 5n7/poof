@@ -1,4 +1,4 @@
-# poof — Setup
+# poof setup
 
 One-time setup for deploying poof to `poof.5n7.me` on Cloudflare. Steps run
 top-to-bottom; later steps assume the earlier ones succeeded.
@@ -28,7 +28,7 @@ This opens a browser to authorize the CLI. Confirm the account with
 ## 3. Provision resources
 
 Create the D1 database (`poof-db`) and R2 bucket (`poof-blobs`). The script is
-idempotent — re-running it skips resources that already exist:
+idempotent. Re-running it skips resources that already exist.
 
 ```sh
 ./scripts/bootstrap.sh
@@ -47,9 +47,8 @@ placeholder in the `d1_databases` block:
 }]
 ```
 
-Workers AI (the `AI` binding, used to name untitled documents) needs no
-provisioning at all — there is nothing to create, only an account with Workers
-AI enabled, which every account has by default.
+Workers AI uses the `AI` binding to name untitled documents. It needs no
+separate resource because every account has Workers AI enabled by default.
 
 ## 4. Secrets
 
@@ -69,18 +68,19 @@ Note that Workers AI has **no local simulator**, so `wrangler dev` opens a
 remote proxy session for the `AI` binding and `bunx wrangler login` (step 2) is
 required either way.
 
-`.dev.vars` also carries `DEV_DISABLE_AI_TITLES=1`, which skips the inference
-call, so local uploads spend no neurons and wait on nothing; titles fall back to
-the document's first `#` heading, then to the file name (`untitled` over MCP,
-which has no file). Drop the line to exercise the real chain locally — creating
-an untitled Markdown document through the web UI, `POST /api/documents`, or the
-MCP `push` tool then makes a real, free-tier inference call against your
-account.
+`.dev.vars` also carries `DEV_DISABLE_AI_TITLES=1`, which skips inference.
+Local uploads then use the document's first `#` heading, followed by the file
+name. MCP uses `untitled` as its final fallback because it has no file. Remove
+the line to test the full naming process locally.
+Creating an untitled Markdown document through the web UI,
+`POST /api/documents`, or the MCP `push` tool then makes an inference call
+against your account.
 
-Neither setting gets you offline: wrangler classifies `ai` as a binding that can
-never run locally and proxies it remotely regardless of any flag, so dev still
-requires auth. To develop with no network at all, comment the `ai` binding out
-of `wrangler.jsonc` — the Worker handles an absent binding as one more fallback.
+Neither setting makes development offline. wrangler always proxies the `ai`
+binding remotely, so development still requires authentication. To work with
+no network, comment the `ai` binding out
+of `wrangler.jsonc`. If the binding is absent, the Worker uses the next title
+fallback.
 
 ## 5. Migrations
 
@@ -99,40 +99,38 @@ bun run migrate:local
 
 ## 6. Cloudflare Access (Zero Trust dashboard)
 
-poof relies on Cloudflare Access to protect the owner surface while leaving the
+poof relies on Cloudflare Access to protect the owner pages while leaving the
 public share/raw paths open. Configure three applications in the **Zero Trust**
 dashboard (Access → Applications).
 
-### App 1 — Owner surface (self-hosted)
+### App 1: owner pages
 
 - **Type**: Self-hosted.
 - **Path**: `poof.5n7.me/` (protects the library, viewer `/d/*`, `/api/*`, and
   the MCP endpoint `/mcp`).
 - **Policies**:
-  - **Allow** — your owner identity (Google account); add **One-Time PIN** as a
-    backup login method.
-  - **Service Auth** — a policy that accepts the CLI **service token** (created
-    below). This lets `poof push` and friends — and MCP clients, which use the
-    same token — authenticate headlessly.
+  - **Allow** your owner identity, such as a Google account. Add **One-Time
+    PIN** as a backup login method.
+  - **Service Auth** accepts the CLI **service token** created below. It lets the
+    CLI and MCP clients authenticate without an interactive login.
 
-### App 2 — Public shared viewer (bypass)
+### App 2: public shared viewer
 
 - **Type**: Self-hosted, **Bypass** policy for **everyone**.
 - **Path**: `poof.5n7.me/v/*`.
 
-### App 3 — Raw blob endpoint (bypass)
+### App 3: raw blob endpoint
 
 - **Type**: Self-hosted, **Bypass** policy for **everyone**.
 - **Path**: `poof.5n7.me/raw/*`.
 
-> The `/v/*` and `/raw/*` paths must bypass Access: a sandboxed iframe has an
-> opaque origin, so Access's `CF_Authorization` cookie is never sent with those
-> requests. The share/owner token in the URL is the authentication for these
-> paths.
+> The `/v/*` and `/raw/*` paths must bypass Access. A sandboxed iframe has an
+> opaque origin, so it does not send Access's `CF_Authorization` cookie with
+> these requests. The share or owner token in the URL authenticates them.
 
-> ⚠️ Keep the bypass applications to exactly those two paths — **`/api/*` and
-> `/mcp` must never be added to one**. Both are owner-only by session, not by
-> token: their operations list, mutate, and dump documents
+> Keep the bypass applications to exactly those two paths. **`/api/*` and
+> `/mcp` must never be added to one**. Cloudflare Access protects both routes. Their
+> operations list, change, and dump documents
 > (`GET /api/documents/:id/content` and the `cat` tool return the raw stored
 > HTML of any version) with no secret in the URL to stand in for
 > authentication. A bypass covering either one would make the whole library
@@ -141,7 +139,7 @@ dashboard (Access → Applications).
 ### Service token (for the CLI and MCP clients)
 
 Under **Access → Service Auth**, create a service token named **`poof-cli`**.
-Record the generated **Client ID** and **Client Secret** — they are shown only
+Record the generated **Client ID** and **Client Secret**. They are shown only
 once and become `POOF_ACCESS_CLIENT_ID` / `POOF_ACCESS_CLIENT_SECRET` in step 8.
 The MCP endpoint (step 9) takes the same pair; one token covers both clients.
 
@@ -158,7 +156,7 @@ From **App 1**'s overview, copy the **Application Audience (AUD) tag** and your
 }
 ```
 
-The Worker verifies the Access JWT against these values as defense in depth.
+The Worker also verifies the Access JWT against these values.
 
 ## 7. Deploy
 
@@ -191,9 +189,9 @@ Make the `poof` command available globally by linking this checkout:
 bun link
 ```
 
-This installs a `poof` executable into `~/.bun/bin` (make sure that directory
-is on your `PATH`); the command follows the checkout, so pulling updates is
-enough. If you prefer not to link, a shell alias works too:
+This installs a `poof` executable into `~/.bun/bin`. Make sure that directory
+is on your `PATH`. The command follows the checkout, so pulling updates is
+enough. If you prefer not to link, use a shell alias:
 `alias poof='bun <repo>/cli/index.ts'`.
 
 Run `poof --help` to confirm the wiring.
@@ -202,8 +200,8 @@ Run `poof --help` to confirm the wiring.
 
 The Worker serves an MCP endpoint at `POST /mcp` (SPEC §11) so an AI agent can
 use poof without the CLI. It sits behind **App 1** from step 6 and accepts the
-**same `poof-cli` service token** — there is nothing new to create in the Zero
-Trust dashboard, and nothing to install or keep running locally.
+**same `poof-cli` service token**. You do not need another Zero Trust resource
+or a local MCP process.
 
 Register it with Claude Code, passing the credentials as headers (the shell
 below reads them from the variables exported in step 8):
@@ -231,13 +229,13 @@ curl -sS https://poof.5n7.me/mcp \
 ```
 
 A healthy deployment answers with a JSON-RPC result naming the server and its
-tool capability. `403 Forbidden` means the service token was rejected — check
+tool capability. `403 Forbidden` means the service token was rejected. Check
 the **Service Auth** policy from step 6. An HTML login page instead of JSON
 means the request reached Access without usable credentials.
 
 The endpoint accepts **POST only**. Opening `https://poof.5n7.me/mcp` in a
 browser, or curling it without `-d`, returns `405 Method Not Allowed` with an
-`Allow: POST` header — that is the endpoint working, not a misconfiguration
+`Allow: POST` header. This response confirms that the endpoint is working
 (SPEC §11.1).
 
 For local development, `bun run dev` with `DEV_DISABLE_ACCESS=1` in `.dev.vars`

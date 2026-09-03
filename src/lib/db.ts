@@ -15,7 +15,7 @@ export interface VersionRow {
 	created_at: number;
 }
 
-/** A document resolved to one version — what every read path actually needs. */
+/** A document joined to one version. */
 export interface ResolvedDocument extends DocumentRow {
 	version: number;
 	kind: "md" | "html";
@@ -46,7 +46,7 @@ export interface ShareRow {
 	revoked: 0 | 1;
 }
 
-// Never `SELECT d.*, dv.*`: both tables have a `created_at` and D1 silently
+// Never `SELECT d.*, dv.*`. Both tables have a `created_at` and D1 silently
 // keeps one of them. Every joined read projects its columns explicitly.
 const RESOLVED_COLUMNS = `d.id, d.title, d.created_at, d.updated_at, d.current_version, d.expires_at,
 	dv.version AS version, dv.kind AS kind, dv.r2_key AS r2_key, dv.created_at AS version_created_at`;
@@ -58,8 +58,8 @@ const CURRENT_JOIN = `JOIN document_version dv
 	ON dv.document_id = d.id AND dv.version = d.current_version`;
 
 /**
- * R2 key for a newly written version. Keys are never derived on read — always
- * read `document_version.r2_key` — because version 1 rows that predate
+ * R2 key for a newly written version. Read paths use
+ * `document_version.r2_key` because version 1 rows that predate
  * versioning keep their flat `doc/{id}.html` key (zero-copy backfill).
  */
 export function versionR2Key(id: string, version: number): string {
@@ -134,7 +134,7 @@ export async function listDocumentsWithShares(db: D1Database, now: number): Prom
 	return results;
 }
 
-/** Identity only, no version resolved — enough to answer "does it exist?". */
+/** Read a document without joining a version. */
 export async function getDocument(db: D1Database, id: string): Promise<DocumentRow | null> {
 	return db.prepare("SELECT * FROM document WHERE id = ?").bind(id).first<DocumentRow>();
 }
@@ -156,7 +156,7 @@ export async function getLiveDocument(db: D1Database, id: string, now: number): 
 }
 
 /**
- * A live document pinned to one specific version — the owner-only history path.
+ * Read one version of a live document for the owner history path.
  * null for an unknown version, exactly like an unknown document, so both fold
  * into the same uniform 404.
  */
@@ -179,8 +179,8 @@ export async function getLiveDocumentAtVersion(
 
 /**
  * A live document resolved to `version`, or to its current version when
- * `version` is null — the one branch every versioned read path needs (the API
- * content route, `/raw` owner tokens, and the owner viewer page).
+ * `version` is null. This serves the API
+ * content route, `/raw` owner tokens, and the owner viewer page.
  */
 export function getLiveDocumentAt(
 	db: D1Database,
@@ -198,9 +198,9 @@ export async function deleteDocument(db: D1Database, id: string): Promise<boolea
 }
 
 /**
- * The number to give the next version: MAX(version) + 1, never
- * current_version + 1 — after a rollback the pointer trails the maximum, and
- * reusing a number would collide with (or overwrite) recorded history.
+ * Return MAX(version) + 1. Do not use current_version + 1 because after a
+ * rollback the pointer trails the maximum. Reusing a number would collide with
+ * recorded history.
  */
 export async function nextVersion(db: D1Database, id: string): Promise<number> {
 	const row = await db
@@ -211,8 +211,8 @@ export async function nextVersion(db: D1Database, id: string): Promise<number> {
 }
 
 /**
- * Stage a version row. false when (document_id, version) is already taken —
- * the composite PK makes a lost update impossible, so a racing writer loses
+ * Stage a version row. Return false when (document_id, version) is taken. The
+ * composite PK makes a lost update impossible, so a racing writer loses
  * here and can retry with a freshly allocated number.
  */
 export async function insertVersion(db: D1Database, row: VersionRow): Promise<boolean> {
@@ -244,7 +244,7 @@ export async function getVersion(db: D1Database, id: string, version: number): P
 		.first<VersionRow>();
 }
 
-/** Every blob key of a document. Call this BEFORE deleting the row — the FK cascade wipes the version rows. */
+/** List blob keys before deleting a row because the FK cascade removes its versions. */
 export async function listVersionKeys(db: D1Database, id: string): Promise<string[]> {
 	const { results } = await db
 		.prepare("SELECT r2_key FROM document_version WHERE document_id = ?")
@@ -254,11 +254,11 @@ export async function listVersionKeys(db: D1Database, id: string): Promise<strin
 }
 
 /**
- * Atomic cutover to a freshly uploaded version: one guarded UPDATE, so readers
+ * Switch to an uploaded version with one guarded UPDATE, so readers
  * see either the old version or the new one. `title` of null keeps the current
- * title. false when the version does not exist (the EXISTS guard is what keeps
- * current_version pointing at a real row — an invariant no FK can express,
- * since the two tables reference each other).
+ * title. Return false when the version does not exist. The EXISTS guard keeps
+ * current_version pointing at a real row, an invariant no FK can express
+ * because the two tables reference each other.
  */
 export async function applyNewVersion(
 	db: D1Database,
@@ -289,7 +289,7 @@ export async function setCurrentVersion(db: D1Database, id: string, version: num
 	return (res.meta.changes ?? 0) > 0;
 }
 
-/** Drop a staged version row — compensation for a failed blob write. */
+/** Drop a staged version row after a failed blob write. */
 export async function deleteVersion(db: D1Database, id: string, version: number): Promise<void> {
 	await db.prepare("DELETE FROM document_version WHERE document_id = ? AND version = ?").bind(id, version).run();
 }
@@ -312,9 +312,9 @@ export async function listShares(db: D1Database, documentId: string, now: number
 
 /**
  * The live document granted by a live share token, resolved to its current
- * version, in one JOIN — the `/raw/s_…` hot path. Live share = not revoked, not
- * expired; live document = no owner TTL or it hasn't passed. There is
- * deliberately no way to ask for another version here: shares always follow the
+ * version in one JOIN for the `/raw/s_…` hot path. A live share is not revoked
+ * or expired. A live document has no owner TTL or its TTL has not passed. Shares
+ * cannot request another version because they always follow the
  * current one (SPEC §6.2).
  */
 export async function getLiveDocumentByShareToken(
