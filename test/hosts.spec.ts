@@ -1,10 +1,8 @@
-import { SELF, createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
+import { SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import worker from "../src/index";
-import { MCP_BASE, MCP_CALL, envWith, seedDoc, seedShare } from "./helpers";
+import { MCP_BASE, MCP_CALL, OWNER_BASE, fetchWorker, seedDoc, seedShare } from "./helpers";
 
-const BASE = "https://poof.5n7.me";
 // Neither OWNER_HOST nor MCP_HOST, so the Worker should serve it nothing at all.
 const STRANGER = "https://poof-staging.example";
 
@@ -52,7 +50,7 @@ describe("the MCP host serves the MCP endpoint and nothing else", () => {
 describe("the owner host does not expose MCP", () => {
 	for (const method of ["POST", "GET", "DELETE"]) {
 		it(`answers ${method} /mcp with 404`, async () => {
-			const res = await SELF.fetch(`${BASE}/mcp`, method === "POST" ? MCP_CALL : { method });
+			const res = await SELF.fetch(`${OWNER_BASE}/mcp`, method === "POST" ? MCP_CALL : { method });
 			// 404, not the 405 the MCP host gives: there is no endpoint here to
 			// report a wrong method for.
 			expect(res.status).toBe(404);
@@ -61,12 +59,12 @@ describe("the owner host does not expose MCP", () => {
 	}
 
 	it("still serves the library, the API, and the public paths", async () => {
-		expect((await SELF.fetch(`${BASE}/`)).status).toBe(200);
-		expect((await SELF.fetch(`${BASE}/api/documents`)).status).toBe(200);
-		expect((await SELF.fetch(`${BASE}/d/${DOC_ID}`)).status).toBe(200);
-		expect((await SELF.fetch(`${BASE}/v/${SHARE_TOKEN}`)).status).toBe(200);
+		expect((await SELF.fetch(`${OWNER_BASE}/`)).status).toBe(200);
+		expect((await SELF.fetch(`${OWNER_BASE}/api/documents`)).status).toBe(200);
+		expect((await SELF.fetch(`${OWNER_BASE}/d/${DOC_ID}`)).status).toBe(200);
+		expect((await SELF.fetch(`${OWNER_BASE}/v/${SHARE_TOKEN}`)).status).toBe(200);
 
-		const raw = await SELF.fetch(`${BASE}/raw/${SHARE_TOKEN}`);
+		const raw = await SELF.fetch(`${OWNER_BASE}/raw/${SHARE_TOKEN}`);
 		expect(raw.status).toBe(200);
 		expect(await raw.text()).toContain("hosts doc");
 	});
@@ -135,10 +133,7 @@ describe("request hosts canonicalize", () => {
 
 /** Call the Worker directly so the env and the request scheme can both vary. */
 async function fetchWithHosts(url: string, hosts: { MCP_HOST?: string; OWNER_HOST?: string }, init?: RequestInit) {
-	const ctx = createExecutionContext();
-	const res = await worker.fetch!(new Request(url, init), envWith(hosts), ctx);
-	await waitOnExecutionContext(ctx);
-	return res;
+	return fetchWorker(url, hosts, init);
 }
 
 // The same canonicalization on the configured side. Two vars that name the same
@@ -150,7 +145,7 @@ describe("semantically equal host settings fail closed", () => {
 
 	for (const spelling of equivalents) {
 		it(`refuses MCP_HOST=${spelling} against OWNER_HOST=poof.5n7.me`, async () => {
-			const res = await fetchWithHosts(`${BASE}/`, { MCP_HOST: spelling });
+			const res = await fetchWithHosts(`${OWNER_BASE}/`, { MCP_HOST: spelling });
 
 			expect(res.status).toBe(503);
 			expect(await res.text()).toBe("Service Unavailable");
@@ -213,7 +208,7 @@ describe("configured authorities with delimiters fail closed", () => {
 
 	for (const value of malformed) {
 		it(`refuses OWNER_HOST=${JSON.stringify(value)}`, async () => {
-			const res = await fetchWithHosts(`${BASE}/`, { OWNER_HOST: value });
+			const res = await fetchWithHosts(`${OWNER_BASE}/`, { OWNER_HOST: value });
 			expect(res.status).toBe(503);
 			expect(await res.text()).toBe("Service Unavailable");
 		});
@@ -221,7 +216,7 @@ describe("configured authorities with delimiters fail closed", () => {
 
 	it("refuses the same values in MCP_HOST", async () => {
 		for (const value of malformed) {
-			expect((await fetchWithHosts(`${BASE}/`, { MCP_HOST: value })).status, value).toBe(503);
+			expect((await fetchWithHosts(`${OWNER_BASE}/`, { MCP_HOST: value })).status, value).toBe(503);
 		}
 	});
 });

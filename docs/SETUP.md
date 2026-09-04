@@ -239,14 +239,21 @@ MCP process.
 [MCP-OAUTH-RUNBOOK.md](MCP-OAUTH-RUNBOOK.md) is the whole setup: the Access
 application, the identity provider, the Managed OAuth settings, the
 `ACCESS_MCP_AUD` value, and the client registration. Work through it first.
-None of it is optional. Until it is done `ACCESS_MCP_AUD` is blank, `POST /mcp`
-answers `503 Service Unavailable`, and no other credential reaches the tools.
+None of it is optional. Keep `ACCESS_MCP_AUD` blank through step 5 of the
+runbook. Step 6 enables `/mcp` after the Access configuration has been checked.
 
 Register it with a client that speaks OAuth. Claude Code prompts for the
 Cloudflare login on first use:
 
 ```sh
 claude mcp add --transport http poof https://mcp.poof.5n7.me/mcp
+```
+
+Codex separates registration from login:
+
+```sh
+codex mcp add poof --url https://mcp.poof.5n7.me/mcp
+codex mcp login poof
 ```
 
 `claude mcp list` should then show `poof` as connected, and the nine tools

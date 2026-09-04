@@ -62,10 +62,10 @@ instead of carrying the CLI's service token. No local process is required.
 claude mcp add --transport http poof https://mcp.poof.5n7.me/mcp
 ```
 
-`ACCESS_MCP_AUD` ships blank, so `POST /mcp` answers `503 Service Unavailable`
-until the Zero Trust setup in
-[docs/MCP-OAUTH-RUNBOOK.md](docs/MCP-OAUTH-RUNBOOK.md) is done. The endpoint
-accepts a human OAuth login and nothing else, so there is no shortcut past it.
+Set `ACCESS_MCP_AUD` only after creating and checking the Access application in
+[docs/MCP-OAUTH-RUNBOOK.md](docs/MCP-OAUTH-RUNBOOK.md). A blank value makes
+`POST /mcp` answer `503 Service Unavailable`; once configured, the endpoint
+accepts a human OAuth login and nothing else.
 
 The tools match the nine CLI commands. `push` and `update` take document content
 instead of a file path because the server cannot access your filesystem.

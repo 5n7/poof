@@ -1,13 +1,11 @@
-import { SELF, createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
+import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import worker from "../src/index";
-import { MCP_BASE, MCP_CALL, envWith, seedDoc } from "./helpers";
+import { MCP_BASE, MCP_CALL, OWNER_BASE, fetchWorker, seedDoc } from "./helpers";
 
 // Two hosts, because the Worker serves two isolated surfaces (SPEC §6.5).
-// `MCP_BASE` is where the endpoint answers; `BASE` is the owner host whose
+// `MCP_BASE` is where the endpoint answers; `OWNER_BASE` is the owner host whose
 // `/d`, `/v`, and `/raw` paths the tool results point at.
-const BASE = "https://poof.5n7.me";
 
 /** The nine tools, named after the CLI subcommands (SPEC §10). */
 const TOOL_NAMES = ["cat", "ls", "push", "revoke", "rm", "rollback", "share", "update", "versions"];
@@ -181,8 +179,8 @@ describe("MCP endpoint", () => {
 	it("points tool results at the owner host, not at the MCP host", async () => {
 		const { body } = await pushDoc({ content: "# Owner Host\n\nbody", share: true });
 
-		expect(body).toContain(`${BASE}/d/`);
-		expect(body).toContain(`${BASE}/v/`);
+		expect(body).toContain(`${OWNER_BASE}/d/`);
+		expect(body).toContain(`${OWNER_BASE}/v/`);
 		expect(body).not.toContain(MCP_BASE);
 	});
 
@@ -191,26 +189,23 @@ describe("MCP endpoint", () => {
 	// request's configuration, so varying `OWNER_HOST` between two calls tests
 	// per-request construction without needing them to overlap.
 	it("builds the server per request, so each caller gets its own origin", async () => {
-		const ctx = createExecutionContext();
-		const alt = envWith({ OWNER_HOST: "alt.example" });
-		const res = await worker.fetch!(
-			new Request(`${MCP_BASE}/mcp`, {
+		const res = await fetchWorker(
+			`${MCP_BASE}/mcp`,
+			{ OWNER_HOST: "alt.example" },
+			{
 				...MCP_CALL,
 				body: JSON.stringify(pushMessage("Origin Alt")),
-			}),
-			alt,
-			ctx,
+			},
 		);
-		await waitOnExecutionContext(ctx);
 
 		const frame = (await res.text()).split("\n").find((line) => line.startsWith("data:"))!;
 		const text = (JSON.parse(frame.slice("data:".length)) as RpcResponse<ToolResult>).result.content[0].text;
 		expect(text).toContain("https://alt.example/d/");
-		expect(text).not.toContain(BASE);
+		expect(text).not.toContain(OWNER_BASE);
 
 		// The next request, back on the shared env, is unaffected by that one.
 		const here = await rpcRaw<ToolResult>(pushMessage("Origin Default"));
-		expect(here.result.content[0].text).toContain(`${BASE}/d/`);
+		expect(here.result.content[0].text).toContain(`${OWNER_BASE}/d/`);
 	});
 
 	// Clients commonly reuse numeric ids across connections. Both requests must be
@@ -250,7 +245,7 @@ describe("MCP endpoint", () => {
 	it("push creates a document and returns an absolute owner URL", async () => {
 		const { body, id } = await pushDoc({ content: "# Inferred Title\n\nbody text" });
 
-		expect(body).toContain(`${BASE}/d/${id}`);
+		expect(body).toContain(`${OWNER_BASE}/d/${id}`);
 		// Title inference matches `poof push`: the first '# ' heading.
 		expect(body).toContain('title "Inferred Title"');
 		expect(body).toContain("expires never");
@@ -276,11 +271,11 @@ describe("MCP endpoint", () => {
 
 		const token = shareToken(body);
 		expect(token.startsWith("s_")).toBe(true);
-		expect(body).toContain(`${BASE}/v/${token}`);
+		expect(body).toContain(`${OWNER_BASE}/v/${token}`);
 		expect(body).not.toContain("expires never");
 
 		// The link is live and serves the rendered document to an anonymous reader.
-		const raw = await SELF.fetch(`${BASE}/raw/${token}`);
+		const raw = await SELF.fetch(`${OWNER_BASE}/raw/${token}`);
 		expect(raw.status).toBe(200);
 		expect(await raw.text()).toContain("<h1>Shared</h1>");
 
@@ -347,7 +342,7 @@ describe("MCP endpoint", () => {
 		expect(out).toContain("[truncated:");
 		// The true total, not the capped length, and where the whole thing lives.
 		expect(out).toContain(`${big.length} bytes`);
-		expect(out).toContain(`${BASE}/d/${id}`);
+		expect(out).toContain(`${OWNER_BASE}/d/${id}`);
 		expect(out).toContain("This URL is owner-only. Do not send it to a recipient.");
 		// The output keeps the prefix and remains shorter than the source.
 		expect(out.startsWith("<p>xxx")).toBe(true);
@@ -355,7 +350,7 @@ describe("MCP endpoint", () => {
 
 		// The API content route has no cap because the CLI streams it to a file
 		// descriptor. `poof cat big > out.html` must preserve every byte.
-		const api = await SELF.fetch(`${BASE}/api/documents/${id}/content`);
+		const api = await SELF.fetch(`${OWNER_BASE}/api/documents/${id}/content`);
 		expect((await api.text()).length).toBe(big.length);
 	});
 
@@ -391,10 +386,10 @@ describe("MCP endpoint", () => {
 		expect(updated).toContain(`Updated ${id} to v2`);
 		// The title is kept when none is given.
 		expect(updated).toContain('title "Doc"');
-		expect(updated).toContain(`${BASE}/d/${id}`);
+		expect(updated).toContain(`${OWNER_BASE}/d/${id}`);
 
 		// The existing token returns the new content.
-		const raw = await SELF.fetch(`${BASE}/raw/${token}`);
+		const raw = await SELF.fetch(`${OWNER_BASE}/raw/${token}`);
 		expect(await raw.text()).toContain("second");
 
 		const versions = await callTool("versions", { id });
@@ -424,11 +419,11 @@ describe("MCP endpoint", () => {
 
 		const shared = await callTool("share", { id, share_ttl: "1d" });
 		const token = shareToken(shared);
-		expect(shared).toContain(`${BASE}/v/${token}`);
-		expect((await SELF.fetch(`${BASE}/raw/${token}`)).status).toBe(200);
+		expect(shared).toContain(`${OWNER_BASE}/v/${token}`);
+		expect((await SELF.fetch(`${OWNER_BASE}/raw/${token}`)).status).toBe(200);
 
 		expect(await callTool("revoke", { token })).toContain(`Revoked ${token}`);
-		expect((await SELF.fetch(`${BASE}/raw/${token}`)).status).toBe(404);
+		expect((await SELF.fetch(`${OWNER_BASE}/raw/${token}`)).status).toBe(404);
 	});
 
 	// Both `share` and `push` use `share_ttl`, matching the CLI's `--share-ttl`
@@ -452,7 +447,7 @@ describe("MCP endpoint", () => {
 		const token = shareToken(body);
 
 		expect(await callTool("rm", { id })).toContain(`Deleted document ${id}`);
-		expect((await SELF.fetch(`${BASE}/raw/${token}`)).status).toBe(404);
+		expect((await SELF.fetch(`${OWNER_BASE}/raw/${token}`)).status).toBe(404);
 		expect(await callTool("ls")).not.toContain(id);
 	});
 
@@ -614,12 +609,8 @@ describe("MCP tool errors", () => {
 // the real Access-enforcement path we call the worker directly with the flag
 // cleared, keeping the live DB/BLOBS bindings.
 describe("MCP behind Access (DEV_DISABLE_ACCESS unset)", () => {
-	const accessEnv = envWith({ DEV_DISABLE_ACCESS: "" });
-
 	it("rejects /mcp without the Cf-Access-Jwt-Assertion header (403)", async () => {
-		const ctx = createExecutionContext();
-		const res = await worker.fetch!(new Request(`${MCP_BASE}/mcp`, MCP_CALL), accessEnv, ctx);
-		await waitOnExecutionContext(ctx);
+		const res = await fetchWorker(`${MCP_BASE}/mcp`, { DEV_DISABLE_ACCESS: "" }, MCP_CALL);
 
 		expect(res.status).toBe(403);
 		expect(await res.text()).toBe("Forbidden");

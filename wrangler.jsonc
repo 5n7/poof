@@ -27,14 +27,14 @@
 	// port cannot disguise one host as two. Missing Access settings close only
 	// their guarded paths, and the two application AUD tags must differ.
 	//
-	// ACCESS_MCP_AUD stays blank until docs/MCP-OAUTH-RUNBOOK.md is complete.
+	// ACCESS_MCP_AUD is the audience tag for the dedicated poof-mcp Access app.
 	// Blank closes POST /mcp with 503; every other path on that host remains 404.
 	//
 	// Blank is the production value for DEV_ flags. Declaring them keeps generated
 	// types independent of an untracked `.dev.vars`, which overrides them locally.
 	"vars": {
 		"ACCESS_AUD": "7b1fe8269e149abe3e3c23cd11e0382543813270c5807c743a78175c5bb204ed",
-		"ACCESS_MCP_AUD": "",
+		"ACCESS_MCP_AUD": "ceaf6816ffca3a94e7536ac2f4d6f0bcb4263e36778d12e54af73f364e3402f7",
 		"ACCESS_TEAM_DOMAIN": "5n7.cloudflareaccess.com",
 		"DEV_DISABLE_ACCESS": "",
 		"DEV_DISABLE_AI_TITLES": "",

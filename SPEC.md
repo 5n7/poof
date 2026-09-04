@@ -222,7 +222,7 @@ Configuration failures close the surface, and how much they close depends on whi
 
 Missing and blank end the same way by construction. `wrangler types` declares every var as a required `string`, but a var dropped from `wrangler.jsonc` reaches the Worker with no property at all, and `undefined.trim()` would be a 500 where the 503 belongs. `configured()` in `src/lib/hosts.ts` collapses both to `""`.
 
-`ACCESS_MCP_AUD` ships blank, because the MCP Access application does not exist yet. That closes `POST /mcp` and nothing else: `accessAuth` is mounted on the exact path `/mcp`, so `/mcp` answers 503 while every other path on `mcp.poof.5n7.me` answers 404 for the ordinary reason that no route is mounted there.
+During a new rollout, `ACCESS_MCP_AUD` stays blank until the MCP Access application exists and its configuration has been checked. That closes `POST /mcp` and nothing else: `accessAuth` is mounted on the exact path `/mcp`, so `/mcp` answers 503 while every other path on `mcp.poof.5n7.me` answers 404 for the ordinary reason that no route is mounted there.
 
 Hostnames are normalized before anything compares them (`src/lib/hosts.ts`), and the two comparisons need different answers. Whether the vars name one host or two is decided on DNS identity alone (`hostIdentity`), with the port discarded. Including the port would make the answer depend on the request's scheme: `OWNER_HOST=example` against `MCP_HOST=example:443` collapses to one host over HTTPS, where 443 is the default and drops, and stays two strings over HTTP, where it does not. One DNS name cannot be two isolated surfaces on either scheme.
 

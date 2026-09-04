@@ -1,13 +1,10 @@
-import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { sign } from "hono/jwt";
 import type { HonoJsonWebKey, JWTPayload } from "hono/utils/jwt/types";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import worker from "../src/index";
 import { nowSeconds } from "../src/lib/time";
-import { MCP_BASE, MCP_CALL, envWith } from "./helpers";
-
-const BASE = "https://poof.5n7.me";
+import { b64url } from "../src/lib/tokens";
+import { MCP_BASE, MCP_CALL, OWNER_BASE, fetchWorker } from "./helpers";
 
 // Must match ACCESS_TEAM_DOMAIN, ACCESS_AUD, and ACCESS_MCP_AUD in
 // vitest.config.ts. The issuer is the team domain with an `https://` scheme and
@@ -19,6 +16,7 @@ const OWNER_AUD = "test-owner-aud";
 const MCP_AUD = "test-mcp-aud";
 
 const KID = "poof-test-key";
+const ENCODER = new TextEncoder();
 
 interface KeyPair {
 	privateJwk: HonoJsonWebKey;
@@ -127,7 +125,7 @@ function serviceClaims(aud: string, now: number): Record<string, unknown> {
 
 /** Encode a JWT whose signature is never reached, for header-only rejections. */
 function tokenWithHeader(header: object, claims: object): string {
-	const part = (o: object) => btoa(JSON.stringify(o)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+	const part = (o: object) => b64url(ENCODER.encode(JSON.stringify(o)));
 	return `${part(header)}.${part(claims)}.c2lnbmF0dXJl`;
 }
 
@@ -139,21 +137,17 @@ async function fetchWithToken(
 	url: string,
 	token: string | null,
 	init: RequestInit = {},
-	overrides: Partial<Record<keyof Env, string>> = {},
+	overrides: Partial<Record<keyof Env, string | undefined>> = {},
 ): Promise<Response> {
 	const headers = new Headers(init.headers);
 	if (token !== null) headers.set("Cf-Access-Jwt-Assertion", token);
 
-	const ctx = createExecutionContext();
-	const env = envWith({ DEV_DISABLE_ACCESS: "", ...overrides });
-	const res = await worker.fetch!(new Request(url, { ...init, headers }), env, ctx);
-	await waitOnExecutionContext(ctx);
-	return res;
+	return fetchWorker(url, { DEV_DISABLE_ACCESS: "", ...overrides }, { ...init, headers });
 }
 
 /** Reach the owner surface (`GET /api/documents`) with `claims` signed by the team key. */
 async function ownerRequest(claims: Record<string, unknown>): Promise<Response> {
-	return fetchWithToken(`${BASE}/api/documents`, await signAs(claims, team.privateJwk));
+	return fetchWithToken(`${OWNER_BASE}/api/documents`, await signAs(claims, team.privateJwk));
 }
 
 /** Reach the MCP surface (`POST /mcp`) with `claims` signed by the team key. */
@@ -181,7 +175,7 @@ describe("Access JWT verification", () => {
 	});
 
 	it("rejects a request with no Cf-Access-Jwt-Assertion header", async () => {
-		const res = await fetchWithToken(`${BASE}/api/documents`, null);
+		const res = await fetchWithToken(`${OWNER_BASE}/api/documents`, null);
 		expect(res.status).toBe(403);
 		expect(await res.text()).toBe("Forbidden");
 	});
@@ -191,7 +185,7 @@ describe("Access JWT verification", () => {
 		// fails. A mismatched `kid` would prove nothing about the signature.
 		const forged = await signAs(identityClaims(OWNER_AUD, nowSeconds()), forger.privateJwk);
 
-		const res = await fetchWithToken(`${BASE}/api/documents`, forged);
+		const res = await fetchWithToken(`${OWNER_BASE}/api/documents`, forged);
 		expect(res.status).toBe(403);
 	});
 
@@ -214,19 +208,19 @@ describe("Access JWT verification", () => {
 	it("rejects a symmetric algorithm", async () => {
 		const token = tokenWithHeader({ alg: "HS256", kid: KID, typ: "JWT" }, identityClaims(OWNER_AUD, nowSeconds()));
 
-		expect((await fetchWithToken(`${BASE}/api/documents`, token)).status).toBe(403);
+		expect((await fetchWithToken(`${OWNER_BASE}/api/documents`, token)).status).toBe(403);
 	});
 
 	it("rejects an asymmetric algorithm other than RS256", async () => {
 		const token = tokenWithHeader({ alg: "RS512", kid: KID, typ: "JWT" }, identityClaims(OWNER_AUD, nowSeconds()));
 
-		expect((await fetchWithToken(`${BASE}/api/documents`, token)).status).toBe(403);
+		expect((await fetchWithToken(`${OWNER_BASE}/api/documents`, token)).status).toBe(403);
 	});
 
 	it("rejects a header with no kid", async () => {
 		const token = tokenWithHeader({ alg: "RS256", typ: "JWT" }, identityClaims(OWNER_AUD, nowSeconds()));
 
-		expect((await fetchWithToken(`${BASE}/api/documents`, token)).status).toBe(403);
+		expect((await fetchWithToken(`${OWNER_BASE}/api/documents`, token)).status).toBe(403);
 	});
 
 	it("rejects an expired token", async () => {
@@ -283,8 +277,8 @@ describe("route-specific audiences", () => {
 	it("refuses the MCP audience on the owner surface", async () => {
 		const token = await signAs(serviceClaims(MCP_AUD, nowSeconds()), team.privateJwk);
 
-		expect((await fetchWithToken(`${BASE}/api/documents`, token)).status).toBe(403);
-		expect((await fetchWithToken(`${BASE}/`, token)).status).toBe(403);
+		expect((await fetchWithToken(`${OWNER_BASE}/api/documents`, token)).status).toBe(403);
+		expect((await fetchWithToken(`${OWNER_BASE}/`, token)).status).toBe(403);
 	});
 
 	it("accepts each audience at its own endpoint", async () => {
@@ -347,13 +341,17 @@ describe("fail-closed configuration", () => {
 	 * Send a request that would otherwise succeed, so a 503 can only come from
 	 * `overrides` and never from the credential.
 	 */
-	async function fetchWithEnv(url: string, overrides: Partial<Record<keyof Env, string>>, init: RequestInit = {}) {
+	async function fetchWithEnv(
+		url: string,
+		overrides: Partial<Record<keyof Env, string | undefined>>,
+		init: RequestInit = {},
+	) {
 		const token = await signAs(serviceClaims(OWNER_AUD, nowSeconds()), team.privateJwk);
 		return fetchWithToken(url, token, init, overrides);
 	}
 
 	it("refuses every request when MCP_HOST is blank", async () => {
-		for (const url of [`${BASE}/api/documents`, `${BASE}/`, `${MCP_BASE}/mcp`]) {
+		for (const url of [`${OWNER_BASE}/api/documents`, `${OWNER_BASE}/`, `${MCP_BASE}/mcp`]) {
 			const res = await fetchWithEnv(url, { MCP_HOST: "" });
 			expect(res.status, url).toBe(503);
 			expect(await res.text()).toBe("Service Unavailable");
@@ -361,33 +359,33 @@ describe("fail-closed configuration", () => {
 	});
 
 	it("refuses every request when OWNER_HOST is blank", async () => {
-		expect((await fetchWithEnv(`${BASE}/api/documents`, { OWNER_HOST: "" })).status).toBe(503);
+		expect((await fetchWithEnv(`${OWNER_BASE}/api/documents`, { OWNER_HOST: "" })).status).toBe(503);
 	});
 
 	it("refuses every request when the two hostnames are equal", async () => {
-		expect((await fetchWithEnv(`${BASE}/`, { MCP_HOST: BASE.replace("https://", "") })).status).toBe(503);
+		expect((await fetchWithEnv(`${OWNER_BASE}/`, { MCP_HOST: OWNER_BASE.replace("https://", "") })).status).toBe(503);
 	});
 
 	it("refuses the owner surface when ACCESS_TEAM_DOMAIN is blank", async () => {
-		const res = await fetchWithEnv(`${BASE}/api/documents`, { ACCESS_TEAM_DOMAIN: "" });
+		const res = await fetchWithEnv(`${OWNER_BASE}/api/documents`, { ACCESS_TEAM_DOMAIN: "" });
 		expect(res.status).toBe(503);
 		expect(await res.text()).toBe("Service Unavailable");
 	});
 
 	it("refuses the owner surface when ACCESS_AUD is blank", async () => {
-		expect((await fetchWithEnv(`${BASE}/api/documents`, { ACCESS_AUD: "" })).status).toBe(503);
+		expect((await fetchWithEnv(`${OWNER_BASE}/api/documents`, { ACCESS_AUD: "" })).status).toBe(503);
 	});
 
 	it("refuses the MCP endpoint when ACCESS_MCP_AUD is blank, and leaves the owner surface alone", async () => {
 		expect((await fetchWithEnv(`${MCP_BASE}/mcp`, { ACCESS_MCP_AUD: "" }, MCP_CALL)).status).toBe(503);
-		expect((await fetchWithEnv(`${BASE}/api/documents`, { ACCESS_MCP_AUD: "" })).status).toBe(200);
+		expect((await fetchWithEnv(`${OWNER_BASE}/api/documents`, { ACCESS_MCP_AUD: "" })).status).toBe(200);
 	});
 
 	// Equal AUD tags mean one Access application, so an MCP grant would also open
 	// the library. Neither surface has a safe half to keep serving.
 	it("refuses both surfaces when the two AUD tags are equal", async () => {
 		const same = { ACCESS_AUD: OWNER_AUD, ACCESS_MCP_AUD: OWNER_AUD };
-		expect((await fetchWithEnv(`${BASE}/api/documents`, same)).status).toBe(503);
+		expect((await fetchWithEnv(`${OWNER_BASE}/api/documents`, same)).status).toBe(503);
 		expect((await fetchWithEnv(`${MCP_BASE}/mcp`, same, MCP_CALL)).status).toBe(503);
 	});
 
@@ -397,7 +395,7 @@ describe("fail-closed configuration", () => {
 	it("refuses without a TypeError when the Access vars are absent, not blank", async () => {
 		const absent: (keyof Env)[] = ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD"];
 		for (const key of absent) {
-			const res = await fetchWithEnv(`${BASE}/api/documents`, { [key]: undefined });
+			const res = await fetchWithEnv(`${OWNER_BASE}/api/documents`, { [key]: undefined });
 			expect(res.status, key).toBe(503);
 			expect(await res.text()).toBe("Service Unavailable");
 		}
@@ -411,7 +409,7 @@ describe("fail-closed configuration", () => {
 
 	it("refuses every request when the host vars are absent, not blank", async () => {
 		for (const key of ["MCP_HOST", "OWNER_HOST"] as (keyof Env)[]) {
-			const res = await fetchWithEnv(`${BASE}/`, { [key]: undefined });
+			const res = await fetchWithEnv(`${OWNER_BASE}/`, { [key]: undefined });
 			expect(res.status, key).toBe(503);
 		}
 	});
@@ -420,7 +418,7 @@ describe("fail-closed configuration", () => {
 	// to tell the surfaces apart, and it fails the same way.
 	it("refuses every request when a host var is not a host", async () => {
 		for (const bad of ["https://poof.5n7.me", "poof.5n7.me/mcp", "poof 5n7 me", "/"]) {
-			const res = await fetchWithEnv(`${BASE}/`, { OWNER_HOST: bad });
+			const res = await fetchWithEnv(`${OWNER_BASE}/`, { OWNER_HOST: bad });
 			expect(res.status, bad).toBe(503);
 		}
 	});
@@ -428,7 +426,7 @@ describe("fail-closed configuration", () => {
 	// Misconfiguration must not open the public paths either way: they stay
 	// readable when Access config is missing, because they never used it.
 	it("leaves the public paths alone when the Access audience is blank", async () => {
-		const res = await fetchWithEnv(`${BASE}/raw/s_nonexistent000000000`, { ACCESS_AUD: "" });
+		const res = await fetchWithEnv(`${OWNER_BASE}/raw/s_nonexistent000000000`, { ACCESS_AUD: "" });
 		expect(res.status).toBe(404);
 	});
 });

@@ -31,7 +31,7 @@ export default defineConfig({
 					ACCESS_MCP_AUD: "test-mcp-aud",
 					// Host isolation is not production-only behavior: the suite reaches
 					// the MCP endpoint at MCP_HOST and every other route at OWNER_HOST.
-					// Keep both in sync with BASE / MCP_BASE in test/helpers.ts.
+					// Keep both in sync with OWNER_BASE / MCP_BASE in test/helpers.ts.
 					MCP_HOST: "mcp.poof.5n7.me",
 					OWNER_HOST: "poof.5n7.me",
 					OWNER_TOKEN_SECRET: "test-secret",

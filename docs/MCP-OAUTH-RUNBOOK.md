@@ -6,9 +6,10 @@ that a hosted client such as ChatGPT can connect without a service token.
 
 Steps run top-to-bottom. Later steps assume the earlier ones succeeded.
 
-Only the Zero Trust and client side is covered here. The Worker side needs no
-work: `wrangler.jsonc` declares `mcp.poof.5n7.me`, and `src/index.ts` serves
-`POST /mcp` there and nothing else.
+This runbook covers Zero Trust, client setup, and deployment configuration. It
+requires no Worker code changes: `wrangler.jsonc` declares
+`mcp.poof.5n7.me`, and `src/index.ts` serves `POST /mcp` there and nothing
+else.
 
 ## What changes, and what does not
 
@@ -23,10 +24,9 @@ work: `wrangler.jsonc` declares `mcp.poof.5n7.me`, and `src/index.ts` serves
 The CLI keeps its service token, and the Service Auth policy that accepts it
 stays on the owner application. Only the MCP endpoint moves.
 
-None of this is optional. Until it is done, `POST /mcp` answers 503, and no
-other credential reaches the tools: the owner application's JWT fails the
-audience check at `/mcp`, and a service-token assertion is refused there
-whatever audience it carries.
+None of this is optional. Through step 5, `ACCESS_MCP_AUD` stays blank and
+`POST /mcp` answers 503. Step 6 enables the endpoint only after the Access
+application and its OAuth settings have been checked.
 
 ## Status
 
@@ -40,12 +40,11 @@ label yourself rather than trusting the date on this paragraph. Cloudflare
 documents MCP server portals as beta, but that is a separate feature which poof
 does not use, and its label says nothing about Managed OAuth.
 
-The end-to-end OAuth contract is unverified. Everything here is drawn from
-Cloudflare's and OpenAI's documentation, and no step in [Verify](#verify) has
-been run against a live account. `test/access-jwt.spec.ts` covers the Worker's
-JWT verification, which is a narrower claim: poof accepts the token shape
-Cloudflare documents and refuses the shapes it should. It says nothing about
-whether Cloudflare mints that shape through this flow.
+The Codex flow was verified against the live application on 2026-09-04: OAuth
+login completed and Codex called the `ls` tool. The hosted ChatGPT callback and
+the remaining negative checks still need live verification. The automated
+coverage in `test/access-jwt.spec.ts` separately checks that poof accepts the
+documented Access JWT claims and rejects invalid or misplaced tokens.
 
 ## Prerequisites
 
@@ -63,6 +62,8 @@ whether Cloudflare mints that shape through this flow.
 
 ## 1. Deploy the hostname first
 
+For a new rollout, leave `ACCESS_MCP_AUD` blank before this first deployment.
+
 ```sh
 bun run deploy
 ```
@@ -70,9 +71,9 @@ bun run deploy
 `wrangler.jsonc` declares `mcp.poof.5n7.me` as a second custom domain, so this
 creates the DNS record and the route.
 
-The hostname is now live with no Access application in front of it. That is
-safe because `ACCESS_MCP_AUD` ships blank, and a blank audience makes the Worker
-refuse the endpoint. Confirm both statuses before going on:
+The hostname is then live with no Access application in front of it, but the
+blank audience makes the Worker refuse the endpoint. Confirm both statuses
+before going on:
 
 ```sh
 curl -si https://mcp.poof.5n7.me/mcp -X POST -d '{}' | head -1
@@ -183,6 +184,7 @@ On the new application, open **Advanced settings**:
 | Setting                 | Value                    | API field                                            |
 | ----------------------- | ------------------------ | ---------------------------------------------------- |
 | Managed OAuth           | on                       | `oauth_configuration.enabled`                        |
+| Dynamic registration    | on                       | `dynamic_client_registration.enabled`                |
 | Access token lifetime   | `15m`                    | `grant.access_token_lifetime`                        |
 | Grant session duration  | `336h` (14 days)         | `grant.session_duration`                             |
 | Allow loopback clients  | on                       | `dynamic_client_registration.allow_any_on_loopback`  |
@@ -199,8 +201,8 @@ DNS rebinding. Local CLI clients use loopback anyway; RFC 8252 tells them to.
 
 Leave **Allowed redirect URIs** empty here. ChatGPT does not show its callback
 until the connector exists, so step 7 creates the connector first and comes back
-with the value. An empty list blocks the flow rather than opening it, which is
-the safe state to wait in.
+with the value. The empty list blocks hosted callbacks while the explicit
+loopback setting still allows local clients such as Codex.
 
 ## 6. Copy the AUD tag into the Worker
 
@@ -265,7 +267,7 @@ allowlisted.
 
 ## Verify
 
-Work through these in order. None has been run against a live account yet.
+Work through these checks in order after every Access or Worker change.
 
 1. The endpoint is not open. From a machine with no session:
    ```sh

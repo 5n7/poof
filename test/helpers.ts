@@ -1,5 +1,6 @@
-import { env } from "cloudflare:test";
+import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 
+import worker from "../src/index";
 import {
 	deleteVersion,
 	insertDocument,
@@ -8,6 +9,9 @@ import {
 	setCurrentVersion,
 	versionR2Key,
 } from "../src/lib/db";
+
+/** Must match `OWNER_HOST` in vitest.config.ts. */
+export const OWNER_BASE = "https://poof.5n7.me";
 
 /** Must match `MCP_HOST` in vitest.config.ts. */
 export const MCP_BASE = "https://mcp.poof.5n7.me";
@@ -29,6 +33,18 @@ export function envWith(overrides: Partial<Record<keyof Env, string | undefined>
 		else mutable[key] = value;
 	}
 	return merged;
+}
+
+/** Call the Worker directly with binding overrides and wait for its execution context. */
+export async function fetchWorker(
+	url: string,
+	overrides: Partial<Record<keyof Env, string | undefined>> = {},
+	init?: RequestInit,
+): Promise<Response> {
+	const ctx = createExecutionContext();
+	const res = await worker.fetch!(new Request(url, init), envWith(overrides), ctx);
+	await waitOnExecutionContext(ctx);
+	return res;
 }
 
 /**
