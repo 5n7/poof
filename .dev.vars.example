@@ -1,5 +1,12 @@
-ACCESS_AUD=your-access-app-aud-tag
+ACCESS_AUD=your-owner-access-app-aud-tag
+ACCESS_MCP_AUD=your-mcp-access-app-aud-tag
 ACCESS_TEAM_DOMAIN=your-team.cloudflareaccess.com
 DEV_DISABLE_ACCESS=1
 DEV_DISABLE_AI_TITLES=1
+# `wrangler dev` binds one port, and poof dispatches on the request host, so the
+# two surfaces are reached through two spellings of the same local server:
+# http://localhost:8787 serves the library and API, http://127.0.0.1:8787 serves
+# only POST /mcp. Blank or equal values make every local request answer 503.
+MCP_HOST=127.0.0.1:8787
+OWNER_HOST=localhost:8787
 OWNER_TOKEN_SECRET=dev-secret-change-me

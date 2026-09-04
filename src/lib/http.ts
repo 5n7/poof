@@ -19,6 +19,38 @@ export async function csrfProtection(c: Context<{ Bindings: Env }>, next: Next) 
 }
 
 /**
+ * A plain-text response for the host dispatcher in `src/index.ts`, which runs
+ * before either Hono app and so has no `Context` to build one from. Spelling
+ * out the content type keeps a browser from sniffing the body into markup.
+ */
+function plain(body: string, status: number): Response {
+	return new Response(body, { headers: { "Content-Type": "text/plain; charset=UTF-8" }, status });
+}
+
+/**
+ * The fail-closed answer to a request the Worker is not configured to serve:
+ * a blank or duplicated `MCP_HOST` / `OWNER_HOST`, or a blank
+ * `ACCESS_TEAM_DOMAIN` or route audience (SPEC §6.5).
+ *
+ * 503 rather than 403 because nothing is wrong with the request. A 403 would
+ * send the operator hunting through Access policies for a deny that never
+ * happened, and it is the status a rejected JWT already produces, so the two
+ * failures would be indistinguishable in the logs.
+ */
+export function notConfigured(): Response {
+	return plain("Service Unavailable", 503);
+}
+
+/**
+ * The answer to a request for a hostname this Worker does not recognize
+ * (SPEC §6.5). A 404 says the hostname serves nothing, which is true, and
+ * reveals nothing about which hostnames do.
+ */
+export function unknownHost(): Response {
+	return plain("Not Found", 404);
+}
+
+/**
  * The single 404 used on all public paths (`/raw`, `/v`, and delete-by-token
  * paths). Missing, expired, and revoked tokens are indistinguishable (SPEC §6.3).
  */

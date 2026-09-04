@@ -16,6 +16,7 @@ import {
 	rollbackDocument,
 	sourceBytes,
 } from "../lib/documents";
+import { canonicalHost } from "../lib/hosts";
 import { nowSeconds } from "../lib/time";
 import { resolveNewTitle } from "../lib/title";
 import { TTL_KEYS, ttlToSeconds } from "../lib/tokens";
@@ -23,8 +24,9 @@ import { TTL_KEYS, ttlToSeconds } from "../lib/tokens";
 /**
  * Expose the document library as MCP tools over Streamable HTTP (SPEC §10).
  * Tool names match the CLI subcommands. `accessAuth` and `csrfProtection` in
- * index.ts protect this route, and MCP clients use a Cloudflare Access service
- * token.
+ * index.ts protect this route. MCP clients authenticate with Cloudflare Access
+ * Managed OAuth, and `accessAuth("mcp")` accepts only a human identity
+ * assertion here, never a service token (SPEC §11.2).
  *
  * The server runs here, on the Worker, so it cannot read the caller's
  * filesystem. `push` and `update` take content, not a path.
@@ -70,6 +72,20 @@ function missing(id: string): CallToolResult {
 /** Reject an oversized source with a readable message, before the core throws. */
 function tooLarge(source: string): CallToolResult | null {
 	return sourceBytes(source) > MAX_BYTES ? failure(`Content exceeds the ${MAX_BYTES}-byte limit.`) : null;
+}
+
+/**
+ * Build owner and share URLs from `OWNER_HOST`, never the MCP request host.
+ * Preserve the request scheme for local development. The guard matters because
+ * assigning an empty host is a no-op and would return a broken MCP-host URL.
+ */
+function ownerOrigin(c: Context<{ Bindings: Env }>): string {
+	const url = new URL(c.req.url);
+	const host = canonicalHost(c.env.OWNER_HOST, url.protocol);
+	if (host === null) throw new Error("OWNER_HOST is missing, blank, or not a host");
+
+	url.host = host;
+	return url.origin;
 }
 
 /**
@@ -160,9 +176,7 @@ async function readCapped(stream: ReadableStream, cap: number): Promise<string> 
  */
 function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 	const server = new McpServer({ name: "poof", version: "1.0.0" }, { instructions: INSTRUCTIONS });
-	// Build an absolute URL from the request so the caller can paste it into a
-	// message. The JSON API returns a relative /d/{id} path.
-	const origin = new URL(c.req.url).origin;
+	const origin = ownerOrigin(c);
 
 	server.registerTool(
 		"cat",
