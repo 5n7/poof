@@ -315,8 +315,7 @@ describe("the MCP endpoint takes human logins only", () => {
 		expect((await mcpRequest(claims)).status).toBe(403);
 	});
 
-	// The same three tokens are fine on the owner routes, which the CLI reaches
-	// with exactly this credential.
+	// Service-token claims remain valid on owner routes for CI and headless jobs.
 	it("leaves the owner surface accepting service tokens", async () => {
 		expect((await ownerRequest(serviceClaims(OWNER_AUD, nowSeconds()))).status).toBe(200);
 	});

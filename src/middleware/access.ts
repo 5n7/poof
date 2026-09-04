@@ -112,8 +112,9 @@ function isIdentityAssertion(payload: JWTPayload): boolean {
  * checks out against a key this team happens to serve.
  *
  * **The two surfaces accept different credentials.** The owner routes take
- * either documented assertion, because the CLI and CI authenticate with the
- * `poof-cli` service token. The MCP endpoint takes an identity assertion only.
+ * either documented assertion. Browser and CLI OAuth logins carry an identity
+ * assertion; CI may carry a service-token assertion. The MCP endpoint takes an
+ * identity assertion only.
  * Its Access application is meant to have no Service Auth policy at all
  * (SPEC §11.2), and this is the Worker-side half of that: if a service-token
  * policy is ever added to the MCP application by hand, or the endpoint is

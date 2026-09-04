@@ -19,10 +19,13 @@ else.
 | MCP credential                   | `poof-cli` service token  | OAuth authorization code + PKCE |
 | MCP Access application           | shared with the library   | its own, with its own AUD tag   |
 | Library, API, `/d`, `/v`, `/raw` | `poof.5n7.me`             | unchanged                       |
-| CLI and CI credential            | `poof-cli` service token  | unchanged                       |
+| Interactive CLI credential       | service token             | owner-app OAuth grant           |
+| CI and headless credential       | service token             | service token                   |
 
-The CLI keeps its service token, and the Service Auth policy that accepts it
-stays on the owner application. Only the MCP endpoint moves.
+The interactive CLI now uses a separate OAuth grant from the owner application.
+CI keeps a service token, and the Service Auth policy stays on that application.
+Neither credential can open the MCP hostname because it has a different Access
+application and audience.
 
 None of this is optional. Through step 5, `ACCESS_MCP_AUD` stays blank and
 `POST /mcp` answers 503. Step 6 enables the endpoint only after the Access
@@ -306,10 +309,11 @@ Work through these checks in order after every Access or Worker change.
    ```
    Expect a refusal, not a tool list. Delete the throwaway token afterwards.
 
-5. The owner surface did not move. The library, the CLI, and CI all still
-   use `poof.5n7.me` and the `poof-cli` service token:
+5. The owner surface did not move. The library, interactive CLI, and CI all use
+   `poof.5n7.me`. Test the CLI's owner OAuth grant with `poof status`, then test
+   the CI service token directly:
    ```sh
-   poof ls
+   poof status
    curl -si https://poof.5n7.me/mcp -X POST \
      -H "CF-Access-Client-Id: $POOF_ACCESS_CLIENT_ID" \
      -H "CF-Access-Client-Secret: $POOF_ACCESS_CLIENT_SECRET" \
@@ -391,5 +395,5 @@ has a new tag, `ACCESS_MCP_AUD` has to be filled in again from step 6, and every
 client has to re-authorize. To pause rather than tear down, stop after step 4
 and leave the application in place.
 
-The CLI, CI, the library, and every share link are untouched throughout, because
-none of them ever reach the MCP hostname.
+The CLI, CI, library, and every share link remain available throughout because
+none of them reach the MCP hostname.

@@ -5,7 +5,7 @@ import type { Context, MiddlewareHandler, Next } from "hono";
  * two Access-protected write surfaces. A cross-origin form/script can drive the
  * browser to POST/DELETE with the user's Access cookie attached, so we reject
  * any `Sec-Fetch-Site` the browser reports as cross-origin. The header is absent
- * on non-browser clients (the CLI's Node fetch, MCP clients, service tokens), so
+ * on non-browser clients (the CLI's fetch, MCP clients, service tokens), so
  * an absent value must pass. Safe methods (GET) are never guarded.
  */
 export async function csrfProtection(c: Context<{ Bindings: Env }>, next: Next) {

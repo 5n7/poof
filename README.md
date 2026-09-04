@@ -16,6 +16,8 @@ links show the latest content. The owner can view or restore earlier versions.
 ## Usage
 
 ```sh
+poof login                    # authenticate in a browser
+poof status                   # check the saved login against the API
 poof cat <doc-id>             # print the stored (rendered) HTML
 poof ls                       # list documents
 poof push report.md --share   # upload + print a share URL (1d TTL)
@@ -25,7 +27,17 @@ poof rollback <doc-id> <n>    # make version n current again
 poof share <doc-id>           # issue another share link
 poof update <doc-id> file.md  # new version; same URLs keep working
 poof versions <doc-id>        # version history, newest first
+poof logout                   # revoke the OAuth grant and forget it locally
 ```
+
+Set `POOF_URL=https://poof.5n7.me`, then run `poof login`. The CLI uses
+Cloudflare Access Managed OAuth and saves its tokens in the operating system's
+credential manager.
+
+CI and other sessions with no human use an Access service token instead. Set
+both `POOF_ACCESS_CLIENT_ID` and `POOF_ACCESS_CLIENT_SECRET`; a complete pair
+selects service authentication without reading or falling back to a saved OAuth
+grant.
 
 You can also drag and drop a file into the web library or paste one with ⌘V.
 A pasted document has no file name, so Workers AI reads the opening and names
@@ -56,7 +68,8 @@ Teaches Claude to share documents with the `poof` CLI.
 MCP has its own hostname, `mcp.poof.5n7.me`, which serves `POST /mcp` and
 nothing else. It sits behind a second Cloudflare Access application that
 authenticates clients with Managed OAuth, so a client logs in through Cloudflare
-instead of carrying the CLI's service token. No local process is required.
+with its own grant. The CLI's OAuth token belongs to the owner application and
+cannot open the MCP endpoint. No local process is required.
 
 ```sh
 claude mcp add --transport http poof https://mcp.poof.5n7.me/mcp
