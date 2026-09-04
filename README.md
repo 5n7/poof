@@ -53,14 +53,19 @@ Teaches Claude to share documents with the `poof` CLI.
 
 ## MCP server
 
-The Worker serves MCP at `/mcp` and uses the same Access service token as the
-CLI. No local process is required.
+MCP has its own hostname, `mcp.poof.5n7.me`, which serves `POST /mcp` and
+nothing else. It sits behind a second Cloudflare Access application that
+authenticates clients with Managed OAuth, so a client logs in through Cloudflare
+instead of carrying the CLI's service token. No local process is required.
 
 ```sh
-claude mcp add --transport http poof https://poof.5n7.me/mcp \
-  --header "CF-Access-Client-Id: $POOF_ACCESS_CLIENT_ID" \
-  --header "CF-Access-Client-Secret: $POOF_ACCESS_CLIENT_SECRET"
+claude mcp add --transport http poof https://mcp.poof.5n7.me/mcp
 ```
+
+`ACCESS_MCP_AUD` ships blank, so `POST /mcp` answers `503 Service Unavailable`
+until the Zero Trust setup in
+[docs/MCP-OAUTH-RUNBOOK.md](docs/MCP-OAUTH-RUNBOOK.md) is done. The endpoint
+accepts a human OAuth login and nothing else, so there is no shortcut past it.
 
 The tools match the nine CLI commands. `push` and `update` take document content
 instead of a file path because the server cannot access your filesystem.

@@ -1,8 +1,8 @@
 # poof ephemeral document viewer and sharing tool
 
-_Spec v0.4 adds an MCP server at `POST /mcp` as a second client alongside the CLI. It retains v0.3's document versioning and v0.2's security decisions around the CSP sandbox and unified delivery path._
+_Spec v0.5 moves v0.4's MCP server onto its own hostname behind its own Cloudflare Access application, so a hosted AI client can authenticate with Managed OAuth without holding the CLI's service token. It retains v0.3's document versioning and v0.2's security decisions around the CSP sandbox and unified delivery path._
 
-> Throw in a document, view the rendered result, and share it until the link expires. poof runs at `poof.5n7.me` on Cloudflare.
+> Throw in a document, view the rendered result, and share it until the link expires. poof runs at `poof.5n7.me` on Cloudflare, with its MCP endpoint at `mcp.poof.5n7.me`.
 
 ---
 
@@ -69,7 +69,7 @@ poof/
   cli/            # poof CLI (TypeScript)
   migrations/     # D1 migrations
   scripts/        # bootstrap.sh, idempotent resource creation (D1, R2)
-  docs/           # SETUP.md, one-time setup steps (Access, secrets, domain)
+  docs/           # SETUP.md (Access, secrets, domain) + MCP-OAUTH-RUNBOOK.md
   wrangler.jsonc
 ```
 
@@ -77,8 +77,8 @@ poof/
 
 - `wrangler.jsonc` declares all bindings, routes, and cron triggers.
 - **`scripts/bootstrap.sh`** creates the D1 database and R2 bucket. It skips resources that already exist, so the repository records the required resources without Terraform state. Revisit Terraform or OpenTofu only if the project gains more environments.
-- Configure Cloudflare Access apps, policies, and the service token once in the Zero Trust dashboard. **`docs/SETUP.md`** lists each step.
-- `workers_dev` and `preview_urls` are disabled because the default `*.workers.dev` route would bypass Access. The Worker also validates the Access JWT in `Cf-Access-Jwt-Assertion`.
+- Configure Cloudflare Access apps, policies, and the service token once in the Zero Trust dashboard. **`docs/SETUP.md`** lists each step, and **`docs/MCP-OAUTH-RUNBOOK.md`** covers the separate MCP application.
+- `workers_dev` and `preview_urls` are disabled because the default `*.workers.dev` route would bypass Access. The Worker serves only the two hostnames it is configured with and refuses every other host (§6.5). It also validates the Access JWT in `Cf-Access-Jwt-Assertion` against the route's own audience (§6.6).
 
 ## 5. Data model (D1, single store)
 
@@ -201,6 +201,63 @@ Nonexistent, expired, and revoked tokens all return the **same status (404)** wi
 
 HTML uploads run arbitrary JavaScript by design. Sanitizing only Markdown-derived HTML would create inconsistent behavior without improving the security boundary. **The system treats every document as an untrusted HTML blob and relies on the CSP sandbox.** It has no sanitizer dependency.
 
+### 6.5 Two hostnames, two Access applications
+
+One Worker serves two hostnames, and `src/index.ts` picks the surface from the request host before any route matches:
+
+| Hostname          | Var          | Serves                                            | Access application |
+| ----------------- | ------------ | ------------------------------------------------- | ------------------ |
+| `poof.5n7.me`     | `OWNER_HOST` | `/`, `/api/*`, `/d/*`, and public `/v/*` `/raw/*` | `ACCESS_AUD`       |
+| `mcp.poof.5n7.me` | `MCP_HOST`   | `POST /mcp`, and nothing else                     | `ACCESS_MCP_AUD`   |
+
+The two surfaces authenticate differently, which is what forces the split. The MCP endpoint uses Access Managed OAuth so a hosted client can complete an authorization code flow. The library and API use an interactive login and the CLI's service token. Cloudflare configures Managed OAuth per application, and an application covers a hostname, so one hostname cannot offer both without offering both to everything on it. Sharing an application would mean an OAuth grant issued to an AI client also authorizes `GET /api/documents/:id/content` for every document.
+
+Isolation is structural rather than a rule applied per route. Each hostname gets its own Hono app, and the MCP app registers exactly one path, so `mcp.poof.5n7.me/raw/{token}` returns 404 for a live token: the route does not exist there to be reached. A route added to the owner app cannot appear on the MCP hostname by accident, because nothing mounts it there.
+
+The audience is per route. `accessAuth` takes the application it is protecting and validates `aud` against that application's tag. A token minted for the MCP application presents itself at `/api/*` and gets 403, and the reverse holds too (§6.6).
+
+An unrecognized host is served nothing. Both hostnames are named explicitly and anything else returns 404. `workers_dev` and `preview_urls` are already off, so no third hostname should arrive. If one does, through a zone route added by hand or a hostname moved between Workers, it arrives with no Access application in front of it, and falling back to the owner app would put the library one misconfigured DNS record from public.
+
+Configuration failures close the surface, and how much they close depends on which value is wrong. A missing, blank, or malformed `MCP_HOST` or `OWNER_HOST`, or a pair naming one host, answers `503 Service Unavailable` to every request, because host isolation is what decides which surface a request reaches at all. A missing or blank `ACCESS_TEAM_DOMAIN` or route audience closes only what `accessAuth` guards. Two equal AUD tags close both surfaces, since equal tags mean one application and there is no half of that worth serving. The status is 503 rather than 403 because nothing is wrong with the request, and because 403 is what a rejected token already returns, which would make the two failures indistinguishable in the logs.
+
+Missing and blank end the same way by construction. `wrangler types` declares every var as a required `string`, but a var dropped from `wrangler.jsonc` reaches the Worker with no property at all, and `undefined.trim()` would be a 500 where the 503 belongs. `configured()` in `src/lib/hosts.ts` collapses both to `""`.
+
+`ACCESS_MCP_AUD` ships blank, because the MCP Access application does not exist yet. That closes `POST /mcp` and nothing else: `accessAuth` is mounted on the exact path `/mcp`, so `/mcp` answers 503 while every other path on `mcp.poof.5n7.me` answers 404 for the ordinary reason that no route is mounted there.
+
+Hostnames are normalized before anything compares them (`src/lib/hosts.ts`), and the two comparisons need different answers. Whether the vars name one host or two is decided on DNS identity alone (`hostIdentity`), with the port discarded. Including the port would make the answer depend on the request's scheme: `OWNER_HOST=example` against `MCP_HOST=example:443` collapses to one host over HTTPS, where 443 is the default and drops, and stays two strings over HTTP, where it does not. One DNS name cannot be two isolated surfaces on either scheme.
+
+Matching a request to a surface uses the full authority (`canonicalHost`), so a configured non-default port still routes, which is what lets `wrangler dev` serve both surfaces from its single port: `localhost:8787` is the owner host and `127.0.0.1:8787` the MCP host. Case and the trailing DNS root label normalize away in both comparisons. A value that is not a bare authority is `null` and fails closed, including one carrying a `/`, `?`, or `#` with nothing after it, since `poof.5n7.me/` names the same host `poof.5n7.me` does and accepting both would give one host two spellings that compare unequal.
+
+### 6.6 Access JWT verification
+
+Access runs in front of both hostnames in production. The Worker verifies the token again, which is what stops a request that reached it some other way.
+
+The Worker reads `Cf-Access-Jwt-Assertion` and never the `CF_Authorization` cookie. Cloudflare guarantees the header, and service-token clients send no cookie at all. The two authentication methods produce the same token _format_, signed by the same key and verified by one code path, but not the same _claims_: an interactive login carries `email`, `nbf`, `country`, `identity_nonce`, and a UUID `sub`, while a service token carries `common_name` and `"sub": ""`. Verification is therefore shared and acceptance is not, which is what the per-route branch below acts on.
+
+Beyond a valid RS256 signature from the team's JWKS, the Worker requires:
+
+| Claim  | Requirement                                  | Why                                                                                                  |
+| ------ | -------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `aud`  | contains the **route's own** application tag | The boundary in §6.5                                                                                 |
+| `iss`  | exactly `https://{ACCESS_TEAM_DOMAIN}`       | A token from another Cloudflare team cannot be replayed here                                         |
+| `exp`  | present, in the future                       | `hono/jwt` checks expiry only when the claim is present, so a token with no `exp` would never expire |
+| `iat`  | present, not in the future                   | Same reason                                                                                          |
+| `type` | `"app"`                                      | Cloudflare also issues `"org"` global session tokens, signed by the same team key                    |
+
+The set is the intersection of the two payloads Cloudflare documents, the identity login and the service token, and it applies on both hostnames. `nbf` is not required, because only the identity payload carries one and requiring it would reject every service token; it is still enforced on tokens that do carry it. `sub` must be present, because both payloads document it, but its value is only read below.
+
+The two surfaces then accept different credentials. The owner routes take either documented assertion, because the CLI and CI authenticate with the `poof-cli` service token. `POST /mcp` takes an identity assertion only:
+
+| Claim         | MCP requirement                                   |
+| ------------- | ------------------------------------------------- |
+| `common_name` | absent (it is the service token's Client ID)      |
+| `sub`         | present and non-empty (a service token's is `""`) |
+| `email`       | present and non-empty (service tokens have none)  |
+
+This is the Worker-side half of "the MCP application has no Service Auth policy" (§11.2). The policy is the primary control. This still refuses a static credential if such a policy is added by hand, or if the endpoint is pointed at an application that has one. All three signals are checked rather than any one, because a single check is a single point of failure on a boundary whose job is keeping a static credential out. `country` and `identity_nonce` are identity-only too and are deliberately not required. They add no discrimination beyond `email` and `sub`, and each further requirement is another way for a legitimate login to be refused if Cloudflare omits one.
+
+`DEV_DISABLE_ACCESS=1` skips this check and nothing else. Host and path isolation still apply with it set, so a local MCP client still cannot reach `/api/*`. The comparison is against the exact string `"1"`, and setting it in production would make every unauthenticated request the owner.
+
 ## 7. TTL enforcement (two layers)
 
 ### Defaults
@@ -264,6 +321,8 @@ HTML uploads skip Workers AI. Extracting text from arbitrary HTML would require 
 
 ## 9. HTTP routes
 
+Every route below is on `poof.5n7.me` except `POST /mcp`, which is on `mcp.poof.5n7.me` and is the only path that hostname serves (§6.5). Each hostname has its own Access application, so "Access" in the table means a different audience for the two.
+
 | Route                                                | Auth                         | Purpose                                                             |
 | ---------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------- |
 | `GET /`                                              | Access                       | Library list (newest first), upload UI                              |
@@ -277,7 +336,7 @@ HTML uploads skip Workers AI. Extracting text from arbitrary HTML would require 
 | `POST /api/documents/:id/shares`                     | Access                       | Issue share (TTL param) → returns `/v/{token}` URL                  |
 | `GET /api/documents/:id/shares`                      | Access                       | List active shares for a document                                   |
 | `DELETE /api/shares/:token`                          | Access                       | Revoke (`revoked=1`, immediate)                                     |
-| `POST /mcp`                                          | Access (incl. service token) | MCP server (Streamable HTTP): nine tools over the same core (§11)   |
+| `POST /mcp`                                          | Access, MCP application      | MCP server (Streamable HTTP): nine tools over the same core (§11)   |
 | `GET /d/:id`                                         | Access                       | Private viewer page (mints `o_` token, embeds iframe)               |
 | `GET /d/:id?v=N`                                     | Access                       | Read-only view of version N (banner, no Share, no uploader)         |
 | `GET /v/:token`                                      | none                         | Public shared viewer page; **always the current version**           |
@@ -294,7 +353,7 @@ Version routes follow these rules:
 - `/d/{id}?v=N` is a page rather than an API, so a malformed `v` returns the standard 404 instead of 400. If `v` names the live version, the request uses the normal viewer instead of a read-only view.
 - **Auto-naming applies only to creation.** On `POST /api/documents`, an absent `title` starts the naming process from §8. A supplied title is used verbatim. On `POST …/versions`, an absent `title` keeps the current title. Updates must not silently rename the document or change the recipient page's `<title>`. MCP `push` and `update` follow the same rule (§11.4).
 
-**Cloudflare Access configuration.** One Access application protects `poof.5n7.me`. It has an allow policy for the owner's Google account and a service-token policy for the CLI and MCP clients. Bypass applications cover only `/v/*` and `/raw/*`. `/mcp` uses the same protected application as `/` and `/api/*`.
+**Cloudflare Access configuration.** Two applications, one per hostname (§6.5). The `poof.5n7.me` application has an allow policy for the owner's Google account and a Service Auth policy for the CLI's service token. The `mcp.poof.5n7.me` application allows the owner's exact email through the Cloudflare identity provider and has **no Service Auth policy**: it authenticates with Managed OAuth, and a service token there would be a second credential that skips the account login. Bypass applications cover only `poof.5n7.me/v/*` and `poof.5n7.me/raw/*`. `docs/MCP-OAUTH-RUNBOOK.md` has the whole setup.
 
 Viewer pages (`/d/*`, `/v/*`) also send `Referrer-Policy: no-referrer` so links inside documents can't leak token URLs via `Referer`.
 
@@ -328,7 +387,7 @@ poof rm <doc-id>
 
 ## 11. MCP server
 
-The Worker hosts an **MCP server** at `POST /mcp`. It gives AI agents the same operations as the CLI without running `poof` in a shell. The existing deployment handles both `/api/*` and `/mcp`, so there is no local MCP process to install or maintain.
+The Worker hosts an **MCP server** at `POST https://mcp.poof.5n7.me/mcp`. It gives AI agents the same operations as the CLI without running `poof` in a shell. One deployment handles both `/api/*` and `/mcp`, on two hostnames (§6.5), so there is no local MCP process to install or maintain.
 
 ### 11.1 Transport and stateless operation
 
@@ -342,13 +401,17 @@ The MCP specification permits a server without an SSE stream to answer `GET` wit
 
 The Worker registers the 405 response explicitly. With only `post("/")`, Hono would return its fallback **404** for `GET`, which incorrectly reports a missing endpoint. An `all("/")` handler after the POST route returns the required status and `Allow: POST` header. The route table in §9 names the method for the same reason.
 
+The path is exact. Hono matches `/mcp` and answers 404 for `/mcp/`, `/mcp//`, and `/mcp/anything`, so the endpoint is registered with clients as `https://mcp.poof.5n7.me/mcp` with no trailing slash. A tolerant match would be worse than an inconvenient one. The `accessAuth` and `csrfProtection` middleware are registered on the exact path `/mcp`, so any spelling the router accepted but the middleware did not would be an unguarded endpoint. Nothing else on that hostname is served either, so a wrong spelling fails as a 404 rather than reaching a different route.
+
 ### 11.2 Auth
 
-`/mcp` sits behind Cloudflare Access with `/api/*`. Both use the `accessAuth` middleware from the same protected block in `src/index.ts` and the same `csrfProtection` guard for state-changing requests. The shared guard lives in `src/lib/http.ts`.
+`/mcp` sits behind **its own Cloudflare Access application** on its own hostname (§6.5), validated against `ACCESS_MCP_AUD`. It uses the same `accessAuth` middleware as `/api/*`, parameterized with the application it is protecting, and the same `csrfProtection` guard for state-changing requests. Both guards live beside the route registration in `src/index.ts`, and the shared CSRF guard lives in `src/lib/http.ts`.
 
-Clients send the **same Access service token as the CLI** in `CF-Access-Client-Id` and `CF-Access-Client-Secret`. Access exchanges it for the `Cf-Access-Jwt-Assertion` that the Worker verifies (§4). MCP adds no credential, Access application, or token type. Revoking the service token disables both clients.
+Clients authenticate with Access Managed OAuth, an authorization code flow with PKCE that a hosted client such as ChatGPT can complete on its own. Cloudflare issues the client an opaque access token, checks it at the edge, and passes the origin the same `Cf-Access-Jwt-Assertion` the Worker already verifies (§6.6). The MCP application has no Service Auth policy: a service token there would be a second credential that skips the account login and the MFA behind it, and it would be reusable by anything that read it out of a config file. The Worker refuses service-token assertions at `/mcp` independently of that policy (§6.6), so the boundary survives a policy added by hand. `docs/MCP-OAUTH-RUNBOOK.md` has the setup.
 
-`/v/*` and `/raw/*` remain public. All MCP tools sit inside the Access boundary and require the service token. A share link still grants only read access to the current version of one document.
+The CLI is unaffected. It keeps the `poof-cli` service token against `poof.5n7.me`, where the Service Auth policy stays. The two clients no longer share a credential, so revoking one leaves the other working.
+
+`/v/*` and `/raw/*` remain public on the owner hostname. They are not served on the MCP hostname at all, so a tool caller who somehow escaped the tool set still could not read a blob from the host it called. A share link still grants only read access to the current version of one document.
 
 ### 11.3 Tools
 
@@ -384,7 +447,9 @@ When MCP `push` omits `title`, it uses the server-side naming process from §8. 
 
 Defaulting `update` to `md` would silently reinterpret HTML as Markdown when the caller omits `kind`. The resulting version would be valid and immediately visible through every share link (§3). Inheriting the current kind avoids that failure. The enum rejects misspelled values such as `markdown` or `txt` before the handler runs.
 
-**Absolute URLs.** Tool results return full owner and share URLs built from the request origin, such as `https://poof.5n7.me/d/{id}`. The JSON API returns relative paths (§9), which the CLI joins to `POOF_URL`. MCP clients have no equivalent variable and often paste tool output directly into messages or comments.
+**Absolute URLs.** Tool results return full owner and share URLs, such as `https://poof.5n7.me/d/{id}`. The JSON API returns relative paths (§9), which the CLI joins to `POOF_URL`. MCP clients have no equivalent variable and often paste tool output directly into messages or comments.
+
+They are built from `OWNER_HOST`, **not from the request origin**. The server answers on `mcp.poof.5n7.me`, which serves no `/d` or `/v` path (§6.5), so a URL built from the request would hand the model, and then the recipient it was passed to, a link that 404s. Only the scheme and any port come from the request, which keeps `wrangler dev` producing `http://localhost:8787` URLs.
 
 **Bounded `cat` output.** The tool caps output at **128 KiB**. Smaller documents return unchanged. Larger ones return the beginning of the blob plus a notice with the total size and absolute owner-only `/d/{id}` URL.
 
@@ -402,7 +467,7 @@ Limits live where their reason applies. The 10 MiB upload cap (§9) applies to e
 
 The 128 KiB `cat` cap (§11.4) protects a model's context rather than stored data. Only the MCP adapter enforces it.
 
-The tools do not call the Worker's `/api/*` routes over HTTP. Doing so would re-enter Access with a service token and add another request to every tool call. Direct function calls reuse the same code without that cost.
+The tools do not call the Worker's `/api/*` routes over HTTP. Doing so would add a second authenticated request to every tool call, and since §6.5 the API is not on the hostname the tools answer on, so the call would have to leave and come back through a different Access application. Direct function calls reuse the same code without either cost.
 
 ## 12. Main flows
 
@@ -431,25 +496,27 @@ Workers AI is the only metered addition. Auto-naming uses about 3 to 5 neurons f
 
 ## 15. Decision summary
 
-| Item              | Decision                                                                                                                                                                                                                                                                    |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Share model       | Unlisted URL + TTL; `share` as its own entity; revocation in initial scope                                                                                                                                                                                                  |
-| Versioning        | Document = stable identity + ordered immutable versions; `document_version` is the only source of truth for blobs; `current_version` is a pointer, next = `MAX+1`                                                                                                           |
-| Share on update   | Shares **follow the current version**. An update reaches every live link without reissuing it. Per-share pinning is out of scope (§13).                                                                                                                                     |
-| Rollback          | `POST …/versions/:version/rollback`; pointer move only, no blob copied; already-current is an idempotent no-op                                                                                                                                                              |
-| Version viewing   | Owner-only: `/d/{id}?v=N` (read-only, behind Access) via an `o_` token with the version **inside the signed payload**; `/raw` never accepts a `v` query param                                                                                                               |
-| Security boundary | **CSP `sandbox allow-scripts allow-popups` response header** on `/raw/*`, plus the iframe `sandbox` attribute. Never add `allow-same-origin`.                                                                                                                               |
-| Delivery path     | Single public `/raw/{token}` endpoint; `s_` share tokens (D1) + `o_` owner tokens (HMAC, ~10 min)                                                                                                                                                                           |
-| Sanitization      | None; all docs treated as untrusted blobs, sandbox is the boundary                                                                                                                                                                                                          |
-| Rendering         | Write-time `markdown-it` in the Worker; Mermaid + highlight.js lazily loaded client-side inside the sandbox                                                                                                                                                                 |
-| Titling           | Create-only when `title` is absent: Workers AI → first `#` heading → client fallback. `/api` uses the file name, and MCP `push` uses `untitled`. It runs synchronously because rendering writes the title into the blob. Failures use the next fallback.                    |
-| Errors            | Uniform 404 for missing/expired/revoked                                                                                                                                                                                                                                     |
-| Tokens            | `crypto.getRandomValues`, 128-bit, base64url                                                                                                                                                                                                                                |
-| MCP server        | Worker-hosted at `POST /mcp` with Streamable HTTP (`@hono/mcp`). It creates a server per request and issues no session id because isolates are not sticky. Other methods return `405` with `Allow: POST`; the server offers no SSE stream.                                  |
-| MCP auth          | Same Access application and same CLI service token (`CF-Access-Client-*`) as `/api/*`, plus the shared CSRF guard; no new credential and no new bypass                                                                                                                      |
-| MCP tools         | Nine, named after the CLI subcommands; `push`/`update` take content, not a file path; an omitted `kind` means `md` on `push` and the document's current kind on `update`; `cat` capped at 128 KiB; results carry absolute URLs; one shared core in `src/lib/`, two adapters |
-| Auth              | Cloudflare Access (`/` + API + `/mcp`); service token for CLI and MCP clients; bypass on `/v/*` `/raw/*`                                                                                                                                                                    |
-| Infra / stack     | Cloudflare Workers + R2 + D1 + Access; TypeScript + Hono + wrangler + vitest-pool-workers                                                                                                                                                                                   |
-| Provisioning      | Idempotent `scripts/bootstrap.sh` + `docs/SETUP.md`; no Terraform until environments multiply; `workers_dev` disabled; Access JWT verified in-Worker                                                                                                                        |
-| TTL defaults      | Library: none; shares: 1 day (1h/1d/1w selectable)                                                                                                                                                                                                                          |
-| Headers           | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex` on viewer/raw paths                                                                                                                                                                                                 |
+| Item              | Decision                                                                                                                                                                                                                                                                                       |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Share model       | Unlisted URL + TTL; `share` as its own entity; revocation in initial scope                                                                                                                                                                                                                     |
+| Versioning        | Document = stable identity + ordered immutable versions; `document_version` is the only source of truth for blobs; `current_version` is a pointer, next = `MAX+1`                                                                                                                              |
+| Share on update   | Shares **follow the current version**. An update reaches every live link without reissuing it. Per-share pinning is out of scope (§13).                                                                                                                                                        |
+| Rollback          | `POST …/versions/:version/rollback`; pointer move only, no blob copied; already-current is an idempotent no-op                                                                                                                                                                                 |
+| Version viewing   | Owner-only: `/d/{id}?v=N` (read-only, behind Access) via an `o_` token with the version **inside the signed payload**; `/raw` never accepts a `v` query param                                                                                                                                  |
+| Security boundary | **CSP `sandbox allow-scripts allow-popups` response header** on `/raw/*`, plus the iframe `sandbox` attribute. Never add `allow-same-origin`.                                                                                                                                                  |
+| Delivery path     | Single public `/raw/{token}` endpoint; `s_` share tokens (D1) + `o_` owner tokens (HMAC, ~10 min)                                                                                                                                                                                              |
+| Sanitization      | None; all docs treated as untrusted blobs, sandbox is the boundary                                                                                                                                                                                                                             |
+| Rendering         | Write-time `markdown-it` in the Worker; Mermaid + highlight.js lazily loaded client-side inside the sandbox                                                                                                                                                                                    |
+| Titling           | Create-only when `title` is absent: Workers AI → first `#` heading → client fallback. `/api` uses the file name, and MCP `push` uses `untitled`. It runs synchronously because rendering writes the title into the blob. Failures use the next fallback.                                       |
+| Errors            | Uniform 404 for missing/expired/revoked                                                                                                                                                                                                                                                        |
+| Tokens            | `crypto.getRandomValues`, 128-bit, base64url                                                                                                                                                                                                                                                   |
+| Host isolation    | One Worker, two hostnames dispatched before routing: `poof.5n7.me` serves the web, API, and public paths; `mcp.poof.5n7.me` serves `POST /mcp` and nothing else. Any other host gets 404. Blank or duplicated host vars answer 503 (§6.5).                                                     |
+| MCP server        | Worker-hosted at `POST mcp.poof.5n7.me/mcp` with Streamable HTTP (`@hono/mcp`). It creates a server per request and issues no session id because isolates are not sticky. The path is exact; other methods return `405` with `Allow: POST` and the server offers no SSE stream.                |
+| MCP auth          | Its own Access application and AUD tag, authenticated with Managed OAuth (authorization code + PKCE) and **no Service Auth policy**, enforced again in-Worker by refusing service-token assertions, plus the shared CSRF guard. The CLI keeps its service token against the owner application. |
+| MCP tools         | Nine, named after the CLI subcommands; `push`/`update` take content, not a file path; an omitted `kind` means `md` on `push` and the document's current kind on `update`; `cat` capped at 128 KiB; results carry absolute `OWNER_HOST` URLs; one shared core in `src/lib/`, two adapters       |
+| Auth              | Cloudflare Access on both hostnames, each validated against its own AUD; service token for the CLI, Managed OAuth for MCP clients; bypass on `poof.5n7.me/v/*` `/raw/*`                                                                                                                        |
+| JWT verification  | `Cf-Access-Jwt-Assertion` only, RS256 against the team JWKS, pinned `iss`, route-specific `aud`, and required `exp` / `iat` / `sub` / `type: "app"`. `nbf` is checked when present but never required. `/mcp` additionally requires an identity assertion and refuses service tokens (§6.6).   |
+| Infra / stack     | Cloudflare Workers + R2 + D1 + Access; TypeScript + Hono + wrangler + vitest-pool-workers                                                                                                                                                                                                      |
+| Provisioning      | Idempotent `scripts/bootstrap.sh` + `docs/SETUP.md` + `docs/MCP-OAUTH-RUNBOOK.md`; no Terraform until environments multiply; `workers_dev` disabled; Access JWT verified in-Worker                                                                                                             |
+| TTL defaults      | Library: none; shares: 1 day (1h/1d/1w selectable)                                                                                                                                                                                                                                             |
+| Headers           | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex` on viewer/raw paths                                                                                                                                                                                                                    |

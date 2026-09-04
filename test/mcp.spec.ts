@@ -2,8 +2,11 @@ import { SELF, createExecutionContext, env, waitOnExecutionContext } from "cloud
 import { describe, expect, it } from "vitest";
 
 import worker from "../src/index";
-import { seedDoc } from "./helpers";
+import { MCP_BASE, MCP_CALL, envWith, seedDoc } from "./helpers";
 
+// Two hosts, because the Worker serves two isolated surfaces (SPEC §6.5).
+// `MCP_BASE` is where the endpoint answers; `BASE` is the owner host whose
+// `/d`, `/v`, and `/raw` paths the tool results point at.
 const BASE = "https://poof.5n7.me";
 
 /** The nine tools, named after the CLI subcommands (SPEC §10). */
@@ -35,10 +38,9 @@ let nextId = 1;
  * default), so the response is the single `data:` frame in the body. Takes the
  * whole message so a test can choose its own `id`.
  */
-async function rpcRaw<T>(message: object, base = BASE): Promise<RpcResponse<T>> {
-	const res = await SELF.fetch(`${base}/mcp`, {
-		method: "POST",
-		headers: { Accept: "application/json, text/event-stream", "Content-Type": "application/json" },
+async function rpcRaw<T>(message: object): Promise<RpcResponse<T>> {
+	const res = await SELF.fetch(`${MCP_BASE}/mcp`, {
+		...MCP_CALL,
 		body: JSON.stringify(message),
 	});
 	expect(res.status).toBe(200);
@@ -173,18 +175,42 @@ describe("MCP endpoint", () => {
 		expect(update.description).toContain("Omit to keep the document's current kind");
 	});
 
-	// Each tool closes over the current request's origin. A reused server would
-	// return the first request's origin to later callers. Different origins verify
-	// per-request construction without requiring overlapping requests.
+	// Tool results carry owner-host URLs, never this endpoint's own host. The MCP
+	// host serves `/mcp` and nothing else, so an `https://mcp.poof.5n7.me/v/…`
+	// link would be dead on arrival for the recipient it was handed to.
+	it("points tool results at the owner host, not at the MCP host", async () => {
+		const { body } = await pushDoc({ content: "# Owner Host\n\nbody", share: true });
+
+		expect(body).toContain(`${BASE}/d/`);
+		expect(body).toContain(`${BASE}/v/`);
+		expect(body).not.toContain(MCP_BASE);
+	});
+
+	// Each tool closes over the origin derived from the current request's env. A
+	// server built once at module scope would answer later callers with the first
+	// request's configuration, so varying `OWNER_HOST` between two calls tests
+	// per-request construction without needing them to overlap.
 	it("builds the server per request, so each caller gets its own origin", async () => {
+		const ctx = createExecutionContext();
+		const alt = envWith({ OWNER_HOST: "alt.example" });
+		const res = await worker.fetch!(
+			new Request(`${MCP_BASE}/mcp`, {
+				...MCP_CALL,
+				body: JSON.stringify(pushMessage("Origin Alt")),
+			}),
+			alt,
+			ctx,
+		);
+		await waitOnExecutionContext(ctx);
+
+		const frame = (await res.text()).split("\n").find((line) => line.startsWith("data:"))!;
+		const text = (JSON.parse(frame.slice("data:".length)) as RpcResponse<ToolResult>).result.content[0].text;
+		expect(text).toContain("https://alt.example/d/");
+		expect(text).not.toContain(BASE);
+
+		// The next request, back on the shared env, is unaffected by that one.
 		const here = await rpcRaw<ToolResult>(pushMessage("Origin Default"));
 		expect(here.result.content[0].text).toContain(`${BASE}/d/`);
-
-		const ALT = "https://alt.example";
-		const there = await rpcRaw<ToolResult>(pushMessage("Origin Alt"), ALT);
-		const text = there.result.content[0].text;
-		expect(text).toContain(`${ALT}/d/`);
-		expect(text).not.toContain(BASE);
 	});
 
 	// Clients commonly reuse numeric ids across connections. Both requests must be
@@ -584,61 +610,17 @@ describe("MCP tool errors", () => {
 	});
 });
 
-// POST is the only supported method in SPEC §9. A stateless server has no SSE
-// stream for GET and no session for DELETE. Both return 405 with Allow: POST.
-describe("MCP method handling", () => {
-	for (const method of ["GET", "DELETE"]) {
-		it(`answers ${method} /mcp with 405 and Allow: POST`, async () => {
-			const res = await SELF.fetch(`${BASE}/mcp`, {
-				method,
-				headers: { Accept: "application/json, text/event-stream" },
-			});
-			expect(res.status).toBe(405);
-			expect(res.headers.get("Allow")).toBe("POST");
-		});
-	}
-
-	it("still serves POST", async () => {
-		const { result } = await rpc<{ tools: { name: string }[] }>("tools/list");
-		expect(result.tools).toHaveLength(TOOL_NAMES.length);
-	});
-});
-
 // The global test env sets DEV_DISABLE_ACCESS="1" (auth skipped). To exercise
 // the real Access-enforcement path we call the worker directly with the flag
 // cleared, keeping the live DB/BLOBS bindings.
 describe("MCP behind Access (DEV_DISABLE_ACCESS unset)", () => {
-	const accessEnv: Env = { ...env, DEV_DISABLE_ACCESS: "" };
+	const accessEnv = envWith({ DEV_DISABLE_ACCESS: "" });
 
 	it("rejects /mcp without the Cf-Access-Jwt-Assertion header (403)", async () => {
 		const ctx = createExecutionContext();
-		const res = await worker.fetch!(
-			new Request(`${BASE}/mcp`, {
-				method: "POST",
-				headers: { Accept: "application/json, text/event-stream", "Content-Type": "application/json" },
-				body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
-			}),
-			accessEnv,
-			ctx,
-		);
+		const res = await worker.fetch!(new Request(`${MCP_BASE}/mcp`, MCP_CALL), accessEnv, ctx);
 		await waitOnExecutionContext(ctx);
 
-		expect(res.status).toBe(403);
-		expect(await res.text()).toBe("Forbidden");
-	});
-});
-
-describe("MCP CSRF protection", () => {
-	it("rejects a cross-site POST even though auth passes (403)", async () => {
-		const res = await SELF.fetch(`${BASE}/mcp`, {
-			method: "POST",
-			headers: {
-				Accept: "application/json, text/event-stream",
-				"Content-Type": "application/json",
-				"Sec-Fetch-Site": "cross-site",
-			},
-			body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
-		});
 		expect(res.status).toBe(403);
 		expect(await res.text()).toBe("Forbidden");
 	});

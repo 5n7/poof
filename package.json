@@ -20,8 +20,8 @@
 		"migrate:remote": "wrangler d1 migrations apply poof-db --remote",
 		"poof": "bun cli/index.ts",
 		"test": "vitest run",
-		"typecheck": "wrangler types && tsc -p . && tsc -p cli",
-		"types": "wrangler types"
+		"typecheck": "wrangler types --strict-vars=false && tsc -p . && tsc -p cli",
+		"types": "wrangler types --strict-vars=false"
 	},
 	"dependencies": {
 		"@hono/mcp": "^0.3.2",

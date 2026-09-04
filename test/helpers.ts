@@ -9,6 +9,28 @@ import {
 	versionR2Key,
 } from "../src/lib/db";
 
+/** Must match `MCP_HOST` in vitest.config.ts. */
+export const MCP_BASE = "https://mcp.poof.5n7.me";
+
+/** A minimal call with the `Accept` value required by Streamable HTTP. */
+export const MCP_CALL: RequestInit = {
+	method: "POST",
+	headers: { Accept: "application/json, text/event-stream", "Content-Type": "application/json" },
+	body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+};
+
+/** Build a test environment; an explicit `undefined` removes a binding. */
+export function envWith(overrides: Partial<Record<keyof Env, string | undefined>>): Env {
+	const merged: Env = { ...env };
+	const mutable = merged as Partial<Record<keyof Env, unknown>>;
+
+	for (const [key, value] of Object.entries(overrides) as [keyof Env, string | undefined][]) {
+		if (value === undefined) delete mutable[key];
+		else mutable[key] = value;
+	}
+	return merged;
+}
+
 /**
  * Seed a document row through the real insert path, keeping the column list in
  * `src/lib/db`. Writes an R2 blob unless `body` is null and returns the R2 key.

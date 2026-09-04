@@ -5,7 +5,15 @@
 	"compatibility_date": "2026-07-01",
 	"workers_dev": false,
 	"preview_urls": false,
-	"routes": [{ "pattern": "poof.5n7.me", "custom_domain": true }],
+	// One Worker, two isolated hostnames. `src/index.ts` dispatches on the request
+	// host: `poof.5n7.me` serves the web UI, the JSON API, and the public
+	// `/raw` + `/v` paths, and `mcp.poof.5n7.me` serves only `POST /mcp`. Each
+	// hostname has its own Cloudflare Access application, so each carries its own
+	// AUD tag (see `vars` below).
+	"routes": [
+		{ "pattern": "poof.5n7.me", "custom_domain": true },
+		{ "pattern": "mcp.poof.5n7.me", "custom_domain": true },
+	],
 	"d1_databases": [{
 		"binding": "DB",
 		"database_name": "poof-db",
@@ -15,9 +23,26 @@
 	"r2_buckets": [{ "binding": "BLOBS", "bucket_name": "poof-blobs" }],
 	"ai": { "binding": "AI" },
 	"triggers": { "crons": ["0 3 * * 1"] },
+	// A bad host pair closes every request. Hosts compare by DNS identity, so a
+	// port cannot disguise one host as two. Missing Access settings close only
+	// their guarded paths, and the two application AUD tags must differ.
+	//
+	// ACCESS_MCP_AUD stays blank until docs/MCP-OAUTH-RUNBOOK.md is complete.
+	// Blank closes POST /mcp with 503; every other path on that host remains 404.
+	//
+	// Blank is the production value for DEV_ flags. Declaring them keeps generated
+	// types independent of an untracked `.dev.vars`, which overrides them locally.
 	"vars": {
-		"ACCESS_TEAM_DOMAIN": "5n7.cloudflareaccess.com",
 		"ACCESS_AUD": "7b1fe8269e149abe3e3c23cd11e0382543813270c5807c743a78175c5bb204ed",
+		"ACCESS_MCP_AUD": "",
+		"ACCESS_TEAM_DOMAIN": "5n7.cloudflareaccess.com",
+		"DEV_DISABLE_ACCESS": "",
+		"DEV_DISABLE_AI_TITLES": "",
+		"MCP_HOST": "mcp.poof.5n7.me",
+		"OWNER_HOST": "poof.5n7.me",
 	},
+	// This declaration stabilizes generated types; the value still comes from
+	// `wrangler secret put`.
+	"secrets": { "required": ["OWNER_TOKEN_SECRET"] },
 	"observability": { "enabled": true },
 }
