@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// Headless upload and sharing client for the poof JSON API.
+// Interactive and headless client for the poof JSON API.
 
 import { defineCommand, runMain } from "citty";
 import { readFile } from "node:fs/promises";
@@ -9,6 +9,7 @@ import { pipeline } from "node:stream/promises";
 
 import {
 	api,
+	apiCheck,
 	apiStream,
 	loadConfig,
 	p,
@@ -18,6 +19,15 @@ import {
 	type UpdateResult,
 	type VersionsResult,
 } from "./api";
+import { loginOAuth, logoutOAuth, oauthStatus } from "./auth";
+import { openBrowser } from "./browser";
+import {
+	loginSelectionWarning,
+	logoutMessage,
+	logoutWarning,
+	oauthStatusMessage,
+	replacementRevocationWarning,
+} from "./messages";
 
 const TTL_OPTIONS = ["1h", "1d", "1w"];
 
@@ -78,6 +88,80 @@ function printTable(header: string[], rows: string[][]): void {
 		cells.map((cell, i) => cell + " ".repeat(widths[i] - Bun.stringWidth(cell))).join("  ");
 	for (const cells of [header, ...rows]) process.stdout.write(line(cells) + "\n");
 }
+
+const login = defineCommand({
+	meta: {
+		name: "login",
+		description: "Log in through Cloudflare Access Managed OAuth.",
+	},
+	args: {
+		"new-client": {
+			type: "boolean",
+			description: "Replace the saved OAuth client registration and callback port.",
+		},
+		open: {
+			type: "boolean",
+			default: true,
+			description: "Open the authorization URL in a browser (disable with --no-open).",
+		},
+	},
+	run: ({ args }) =>
+		attempt(async () => {
+			if (args.open !== false && !process.stdin.isTTY) {
+				throw new Error("login requires a terminal; pass --no-open to print the authorization URL explicitly");
+			}
+			const cfg = loadConfig();
+			const selectionWarning = loginSelectionWarning(cfg.auth.type);
+			if (selectionWarning) process.stderr.write(selectionWarning);
+			const result = await loginOAuth(cfg.url, {
+				newClient: args["new-client"] === true,
+				onAuthorization: async (url) => {
+					process.stderr.write(`Authorize poof in your browser:\n${url}\n`);
+					if (args.open !== false && !openBrowser(url)) {
+						process.stderr.write("Could not open a browser. Open the URL above manually.\n");
+					}
+				},
+			});
+			if (result.replacementRevocationFailed) process.stderr.write(replacementRevocationWarning());
+			process.stdout.write(`logged in to ${result.resource}\n`);
+		}),
+});
+
+const logout = defineCommand({
+	meta: {
+		name: "logout",
+		description: "Revoke the OAuth grant and delete its local tokens.",
+	},
+	run: () =>
+		attempt(async () => {
+			const cfg = loadConfig();
+			const result = await logoutOAuth(cfg.url);
+			if (result.revocationError) {
+				process.stderr.write(logoutWarning(cfg.auth.type));
+				throw result.revocationError;
+			}
+			process.stdout.write(logoutMessage(cfg.auth.type, cfg.url, result.hadTokens));
+		}),
+});
+
+const status = defineCommand({
+	meta: {
+		name: "status",
+		description: "Check the configured authentication against the owner API.",
+	},
+	run: () =>
+		attempt(async () => {
+			const cfg = loadConfig();
+			await apiCheck(cfg);
+			if (cfg.auth.type === "service") {
+				process.stdout.write(`service authentication is valid for ${cfg.url}\n`);
+				return;
+			}
+			const stored = await oauthStatus(cfg.url);
+			if (!stored) throw new Error(`Not logged in to ${cfg.url}. Run 'poof login'.`);
+			process.stdout.write(oauthStatusMessage(cfg.url, stored.expiresAt));
+		}),
+});
 
 const cat = defineCommand({
 	meta: {
@@ -396,10 +480,11 @@ const main = defineCommand({
 	meta: {
 		name: "poof",
 		description:
-			"CLI for viewing and sharing temporary documents. " +
-			"Reads POOF_URL, POOF_ACCESS_CLIENT_ID, and POOF_ACCESS_CLIENT_SECRET from the environment.",
+			"CLI for viewing and sharing temporary documents. Reads POOF_URL and uses stored OAuth by default. " +
+			"Only 'poof login' opens a browser. A complete POOF_ACCESS_CLIENT_ID and POOF_ACCESS_CLIENT_SECRET " +
+			"pair selects headless service auth.",
 	},
-	subCommands: { cat, ls, push, revoke, rm, rollback, share, update, versions },
+	subCommands: { cat, login, logout, ls, push, revoke, rm, rollback, share, status, update, versions },
 });
 
 runMain(main);

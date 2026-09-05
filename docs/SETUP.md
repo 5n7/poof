@@ -5,7 +5,7 @@ top-to-bottom; later steps assume the earlier ones succeeded.
 
 ## 1. Prerequisites
 
-- **Bun 1.3+** and **Node.js 22+** installed (both pinned in `mise.toml`).
+- **Bun 1.3.14+** and **Node.js 22+** installed (both pinned in `mise.toml`).
 - A **Cloudflare account** that owns the `5n7.me` zone (poof is served from the
   `poof.5n7.me` subdomain as a custom domain route).
 - The repository cloned locally, with dependencies installed:
@@ -109,10 +109,24 @@ hostname; [MCP-OAUTH-RUNBOOK.md](MCP-OAUTH-RUNBOOK.md) creates that one (step 9)
 - **Type**: Self-hosted.
 - **Path**: `poof.5n7.me/` (protects the library, viewer `/d/*`, and `/api/*`).
 - **Policies**:
-  - **Allow** your owner identity, such as a Google account. Add **One-Time
-    PIN** as a backup login method.
-  - **Service Auth** accepts the CLI **service token** created below. It lets the
-    CLI and CI authenticate without an interactive login.
+  - **Allow** the owner's exact email through Cloudflare account login.
+  - **Service Auth** accepts the optional CI service token created below. Human
+    CLI sessions use Managed OAuth instead.
+- **Identity providers**: this account has one Cloudflare identity provider,
+  with account-member restriction enabled. Add that provider explicitly to
+  `poof-admin` and enable auto-redirect. This hardens the existing application;
+  do not replace unrelated providers on another deployment without reviewing
+  its login policy.
+- **Managed OAuth**, under **Advanced settings**:
+  - enable Managed OAuth and dynamic client registration;
+  - allow loopback clients (`127.0.0.1`) and keep localhost clients disabled;
+  - set the access token lifetime to `15m` and grant session duration to `336h`;
+  - keep the hosted redirect allowlist separate from the loopback setting.
+
+The owner policy should have one **Include Emails** rule for the owner's exact
+address and one **Require Cloudflare Account Member** rule for this account.
+The explicit application identity-provider setting already pins the Cloudflare
+login method, so a second Require Login Methods rule adds no restriction.
 
 ### App 2: public shared viewer
 
@@ -137,11 +151,13 @@ hostname; [MCP-OAUTH-RUNBOOK.md](MCP-OAUTH-RUNBOOK.md) creates that one (step 9)
 > world-readable and world-writable. The MCP endpoint sitting on another
 > hostname changes nothing about that.
 
-### Service token (for the CLI)
+### Optional service token for CI and headless jobs
 
-Under **Access → Service Auth**, create a service token named **`poof-cli`**.
+Under **Access → Service Auth**, create a service token named **`poof-ci`** only
+when an automated caller cannot complete a browser login.
 Record the generated **Client ID** and **Client Secret**. They are shown only
-once and become `POOF_ACCESS_CLIENT_ID` / `POOF_ACCESS_CLIENT_SECRET` in step 8.
+once and become `POOF_ACCESS_CLIENT_ID` / `POOF_ACCESS_CLIENT_SECRET` in the CI
+environment.
 The MCP endpoint does not take this pair. Its application gets no Service Auth
 policy, and its clients authenticate through OAuth instead (step 9).
 
@@ -206,12 +222,10 @@ Verify in the Cloudflare dashboard that:
 
 ## 8. CLI setup
 
-Export the service-token credentials from step 6 and the base URL:
+Export the owner base URL:
 
 ```sh
 export POOF_URL=https://poof.5n7.me
-export POOF_ACCESS_CLIENT_ID=<client-id-from-service-token>
-export POOF_ACCESS_CLIENT_SECRET=<client-secret-from-service-token>
 ```
 
 Make the `poof` command available globally by linking this checkout:
@@ -225,7 +239,86 @@ is on your `PATH`. The command follows the checkout, so pulling updates is
 enough. If you prefer not to link, use a shell alias:
 `alias poof='bun <repo>/cli/index.ts'`.
 
-Run `poof --help` to confirm the wiring.
+Run `poof login`. The CLI prints the authorization URL, opens it in a browser,
+and listens for the callback on an exact random path at `127.0.0.1`. It saves
+OAuth access and refresh tokens in the operating system's credential manager.
+The same credential-manager record keeps the per-deployment dynamic client
+registration and callback port. No OAuth registration or token file is written
+to the filesystem.
+
+```sh
+poof login
+poof status
+```
+
+Unset `POOF_ACCESS_CLIENT_ID` and `POOF_ACCESS_CLIENT_SECRET` before checking
+the OAuth login. A complete pair always selects service authentication, even
+after `poof login` saves an OAuth grant.
+
+Ordinary commands refresh an expiring token but never open a browser. When the
+grant expires, run `poof login` again. If another process owns the saved
+callback port, stop it or replace the registration explicitly with
+`poof login --new-client`. Use `--no-open` to print the URL without launching a
+browser.
+
+If a process exits while changing OAuth credentials, a later command may time
+out on the credential lock. The error prints the exact lock file. Confirm that
+no `poof` process is running, then delete only that path and retry. The CLI does
+not delete locks by age because doing so can let two processes rotate the same
+refresh token.
+
+For CI or another headless job, set the service-token pair from step 6 in its
+secret store:
+
+```sh
+export POOF_ACCESS_CLIENT_ID=<client-id-from-poof-ci>
+export POOF_ACCESS_CLIENT_SECRET=<client-secret-from-poof-ci>
+```
+
+A complete pair selects service authentication. One missing half is a
+configuration error. The CLI never falls back between service authentication
+and OAuth.
+
+### Verify CLI OAuth at the edge
+
+The local test suite mocks Cloudflare's opaque-token exchange. Check the live
+owner application before removing any human user's service credentials:
+
+1. From a request with no Access session, confirm the protected owner root `/`
+   returns `401` with a Bearer `WWW-Authenticate` header and a same-origin
+   `resource_metadata` URL.
+2. Run `poof login`, `poof status`, and each document command. If the token
+   response includes `resource`, it must normalize exactly to
+   `https://poof.5n7.me`.
+3. Leave the grant idle past the 15-minute access-token lifetime, then run
+   `poof status` to exercise refresh.
+4. Confirm an account outside the owner policy cannot authorize.
+5. Confirm the owner OAuth token cannot open the MCP hostname, the MCP grant
+   cannot open `/api/*`, and the CI service token still reaches the owner API.
+6. Run `poof logout`; `poof status` must then require a new login.
+
+Do not remove the old human service token until these checks pass. The client
+accepts a token response with no `resource`, as shown in some Cloudflare
+examples, but rejects a malformed or different value. The protocol tests cannot
+settle that edge-owned response shape.
+
+### Roll back owner Managed OAuth
+
+Keep the CI service token and Service Auth policy until the OAuth rollout has
+passed the edge checks. To roll back:
+
+1. Restore the service credential pair for affected CLI users.
+2. Verify `poof status` reports valid service authentication.
+3. Disable Managed OAuth and dynamic client registration on the owner
+   application. Keep the owner Allow policy, CI Service Auth policy, AUD, and
+   hostname unchanged.
+4. Revoke owner-application tokens only for an urgent credential incident.
+   Application-wide revocation also ends current browser sessions, so it is not
+   part of an ordinary rollback.
+
+Re-enable Managed OAuth with the same application instead of deleting and
+recreating it. Recreating the application changes `ACCESS_AUD` and turns this
+CLI rollback into a Worker configuration change.
 
 ## 9. MCP client setup
 

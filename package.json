@@ -6,7 +6,7 @@
 		"poof": "cli/index.ts"
 	},
 	"engines": {
-		"bun": ">=1.3",
+		"bun": ">=1.3.14",
 		"node": ">=22"
 	},
 	"trustedDependencies": ["dprint", "esbuild", "sharp", "workerd"],
@@ -19,7 +19,9 @@
 		"migrate:local": "wrangler d1 migrations apply poof-db --local",
 		"migrate:remote": "wrangler d1 migrations apply poof-db --remote",
 		"poof": "bun cli/index.ts",
-		"test": "vitest run",
+		"test": "bun run test:worker && bun run test:cli",
+		"test:cli": "bun test cli",
+		"test:worker": "vitest run",
 		"typecheck": "wrangler types --strict-vars=false && tsc -p . && tsc -p cli",
 		"types": "wrangler types --strict-vars=false"
 	},

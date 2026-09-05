@@ -30,14 +30,18 @@ TTLs, and update behavior remain the same.
 ## Prerequisites (CLI route only)
 
 The `poof` command must be on PATH (or run `bun <repo>/cli/index.ts`), with
-these environment variables set:
+`POOF_URL` set to the deployment, such as `https://poof.5n7.me`.
 
-- `POOF_URL` sets the deployment base URL, such as `https://poof.5n7.me`.
-- `POOF_ACCESS_CLIENT_ID` and `POOF_ACCESS_CLIENT_SECRET` hold the Cloudflare
-  Access service token credentials.
+Run `poof status`. If it says the OAuth login is missing or expired, ask the
+user to run `poof login`; ordinary document commands never open a browser.
 
-Verify with `poof --help`. If a command fails with a config error, ask the
-user to set these rather than guessing values.
+CI and other headless jobs may set both `POOF_ACCESS_CLIENT_ID` and
+`POOF_ACCESS_CLIENT_SECRET`. A complete pair selects service authentication.
+One missing half is an error, and the CLI never falls back between service
+authentication and OAuth.
+
+If a command reports a missing `POOF_URL`, ask the user to set it rather than
+guessing a deployment.
 
 ## Commands
 

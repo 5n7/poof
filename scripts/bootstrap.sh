@@ -33,7 +33,7 @@ NEXT STEPS (manual). The numbering matches docs/SETUP.md.
                    ACCESS_TEAM_DOMAIN / ACCESS_AUD / OWNER_HOST / MCP_HOST in
                    wrangler.jsonc. Leave ACCESS_MCP_AUD blank here.
   SETUP.md step 7  bun run deploy
-  SETUP.md step 8  CLI setup (service token env vars)
+  SETUP.md step 8  CLI setup (Managed OAuth login; optional CI service token)
   SETUP.md step 9  docs/MCP-OAUTH-RUNBOOK.md. Required before the MCP endpoint
                    serves anything: while ACCESS_MCP_AUD is blank, POST /mcp on
                    the MCP hostname answers 503. Every other path on that
