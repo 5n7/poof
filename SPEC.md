@@ -362,21 +362,21 @@ Viewer pages (`/d/*`, `/v/*`) also send `Referrer-Policy: no-referrer` so links 
 The CLI is the usual path from AI output to a share link. It is written in TypeScript, lives in `cli/`, and runs through `npx`, `bunx`, or a compiled binary.
 
 ```
-poof login [--new-client] [--no-open]
-poof logout
-poof status
-poof push <file> [--title <t>] [--ttl <dur>] [--share [--share-ttl 1d]]
-                                # upload; prints /d/{id} URL; --share also prints /v/{token}
 poof cat <doc-id> [--version <n>]
                                 # print the stored (rendered) HTML to stdout
+poof login [--new-client] [--no-open]
+poof logout
 poof ls                         # list documents
+poof push <file> [--title <t>] [--ttl <dur>] [--share [--share-ttl 1d]]
+                                # upload; prints /d/{id} URL; --share also prints /v/{token}
+poof revoke <share-token>
+poof rm <doc-id>
+poof rollback <doc-id> <version>
+poof share <doc-id> [--share-ttl 1h|1d|1w]
+poof status
 poof update <doc-id> <file> [--title <t>]
                                 # new version of an existing document; prints /d/{id} then v{n}
 poof versions <doc-id>          # VER / KIND / CREATED / CURRENT, newest first, '*' marks current
-poof rollback <doc-id> <version>
-poof share <doc-id> [--share-ttl 1h|1d|1w]
-poof revoke <share-token>
-poof rm <doc-id>
 ```
 
 - `POOF_URL` is required and must be an HTTPS origin. Service authentication

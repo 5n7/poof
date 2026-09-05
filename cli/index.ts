@@ -89,6 +89,41 @@ function printTable(header: string[], rows: string[][]): void {
 	for (const cells of [header, ...rows]) process.stdout.write(line(cells) + "\n");
 }
 
+const cat = defineCommand({
+	meta: {
+		name: "cat",
+		description: "Print the stored HTML served by share links. Poof does not keep the original Markdown.",
+	},
+	args: {
+		"doc-id": {
+			type: "positional",
+			description: "Document id to print.",
+			required: true,
+		},
+		version: {
+			type: "string",
+			description: "Version to print (default: the current one; see 'poof versions').",
+			valueHint: "n",
+		},
+	},
+	run: ({ args }) =>
+		attempt(async () => {
+			if (args.version !== undefined) requireVersion(args.version);
+
+			const cfg = loadConfig();
+			// The version is validated above, so it needs no encoding of its own.
+			const query = args.version === undefined ? "" : `?v=${args.version}`;
+			const body = await apiStream(cfg, "GET", p`/api/documents/${args["doc-id"]}/content` + query);
+			if (!body) return;
+			// Stream without adding a newline so redirected output matches `/raw` byte
+			// for byte. Keep stdout open for citty. Treat EPIPE from `| head` as a
+			// normal stop.
+			await pipeline(Readable.fromWeb(body), process.stdout, { end: false }).catch((err: NodeJS.ErrnoException) => {
+				if (err.code !== "EPIPE") throw err;
+			});
+		}),
+});
+
 const login = defineCommand({
 	meta: {
 		name: "login",
@@ -141,60 +176,6 @@ const logout = defineCommand({
 				throw result.revocationError;
 			}
 			process.stdout.write(logoutMessage(cfg.auth.type, cfg.url, result.hadTokens));
-		}),
-});
-
-const status = defineCommand({
-	meta: {
-		name: "status",
-		description: "Check the configured authentication against the owner API.",
-	},
-	run: () =>
-		attempt(async () => {
-			const cfg = loadConfig();
-			await apiCheck(cfg);
-			if (cfg.auth.type === "service") {
-				process.stdout.write(`service authentication is valid for ${cfg.url}\n`);
-				return;
-			}
-			const stored = await oauthStatus(cfg.url);
-			if (!stored) throw new Error(`Not logged in to ${cfg.url}. Run 'poof login'.`);
-			process.stdout.write(oauthStatusMessage(cfg.url, stored.expiresAt));
-		}),
-});
-
-const cat = defineCommand({
-	meta: {
-		name: "cat",
-		description: "Print the stored HTML served by share links. Poof does not keep the original Markdown.",
-	},
-	args: {
-		"doc-id": {
-			type: "positional",
-			description: "Document id to print.",
-			required: true,
-		},
-		version: {
-			type: "string",
-			description: "Version to print (default: the current one; see 'poof versions').",
-			valueHint: "n",
-		},
-	},
-	run: ({ args }) =>
-		attempt(async () => {
-			if (args.version !== undefined) requireVersion(args.version);
-
-			const cfg = loadConfig();
-			// The version is validated above, so it needs no encoding of its own.
-			const query = args.version === undefined ? "" : `?v=${args.version}`;
-			const body = await apiStream(cfg, "GET", p`/api/documents/${args["doc-id"]}/content` + query);
-			if (!body) return;
-			// Stream without adding a newline so redirected output matches `/raw` byte
-			// for byte. Keep stdout open for citty. Treat EPIPE from `| head` as a
-			// normal stop.
-			await pipeline(Readable.fromWeb(body), process.stdout, { end: false }).catch((err: NodeJS.ErrnoException) => {
-				if (err.code !== "EPIPE") throw err;
-			});
 		}),
 });
 
@@ -393,6 +374,25 @@ const share = defineCommand({
 			const body = args["share-ttl"] ? { ttl: args["share-ttl"] } : {};
 			const result = await api<ShareResult>(cfg, "POST", p`/api/documents/${args["doc-id"]}/shares`, body);
 			process.stdout.write(`${cfg.url}/v/${result.token}\n`);
+		}),
+});
+
+const status = defineCommand({
+	meta: {
+		name: "status",
+		description: "Check the configured authentication against the owner API.",
+	},
+	run: () =>
+		attempt(async () => {
+			const cfg = loadConfig();
+			await apiCheck(cfg);
+			if (cfg.auth.type === "service") {
+				process.stdout.write(`service authentication is valid for ${cfg.url}\n`);
+				return;
+			}
+			const stored = await oauthStatus(cfg.url);
+			if (!stored) throw new Error(`Not logged in to ${cfg.url}. Run 'poof login'.`);
+			process.stdout.write(oauthStatusMessage(cfg.url, stored.expiresAt));
 		}),
 });
 
