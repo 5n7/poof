@@ -1,7 +1,7 @@
 import MarkdownIt from "markdown-it";
 
 /** Minimal HTML-escape for text placed inside an element. */
-function escapeHtml(s: string): string {
+export function escapeHtml(s: string): string {
 	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 

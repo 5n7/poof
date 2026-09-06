@@ -1,6 +1,13 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 
+import {
+	type DocumentKind,
+	attachmentDisposition,
+	defaultMediaType,
+	inferFileBytes,
+	isDocumentKind,
+} from "../lib/content";
 import { getLiveDocument, listDocuments, listShares, listVersions, revokeShare } from "../lib/db";
 import {
 	MAX_BYTES,
@@ -8,7 +15,7 @@ import {
 	createDocument,
 	deleteDocumentWithBlobs,
 	issueShare,
-	readVersionBlob,
+	readVersionContent,
 	rollbackDocument,
 } from "../lib/documents";
 import { API_CONTENT_HEADERS, isVersionString, uniform404, withHeaders } from "../lib/http";
@@ -19,10 +26,17 @@ import { parseTtl } from "../lib/tokens";
 /** All routes here sit behind `accessAuth` and `csrfProtection` (wired in index.ts). */
 export const apiRoutes = new Hono<{ Bindings: Env }>();
 
+/** Allow multipart boundaries and metadata without reducing the source-byte limit. */
+const UPLOAD_BUFFER_BYTES = 64 * 1024;
+const MAX_UPLOAD_BYTES = MAX_BYTES + UPLOAD_BUFFER_BYTES;
+
 interface Upload {
 	file: File;
-	kind: "md" | "html";
+	source: ArrayBuffer;
+	kind: DocumentKind;
+	media_type: string;
 	title: string | null;
+	ttl: string | File | null;
 }
 
 /**
@@ -34,22 +48,59 @@ interface Upload {
  */
 async function readUpload(c: Context<{ Bindings: Env }>): Promise<Upload | Response> {
 	const contentLength = Number(c.req.header("Content-Length") ?? "0");
-	if (contentLength > MAX_BYTES) return c.text("Payload Too Large", 413);
+	if (contentLength > MAX_UPLOAD_BYTES) return c.text("Payload Too Large", 413);
 
-	const form = await c.req.formData();
+	// Count received bytes too: chunked uploads may have no Content-Length.
+	const reader = c.req.raw.body?.getReader();
+	if (!reader) return c.json({ error: "file is required" }, 400);
+	const chunks: Uint8Array[] = [];
+	let buffer: Uint8Array | undefined;
+	let used = 0;
+	let received = 0;
+	try {
+		while (true) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			received += value.byteLength;
+			if (received > MAX_UPLOAD_BYTES) {
+				await reader.cancel();
+				return c.text("Payload Too Large", 413);
+			}
+			// Tiny transport chunks must not each retain an object and backing buffer.
+			let offset = 0;
+			while (offset < value.byteLength) {
+				if (!buffer || used === buffer.byteLength) {
+					buffer = new Uint8Array(UPLOAD_BUFFER_BYTES);
+					chunks.push(buffer);
+					used = 0;
+				}
+				const length = Math.min(value.byteLength - offset, buffer.byteLength - used);
+				buffer.set(value.subarray(offset, offset + length), used);
+				used += length;
+				offset += length;
+			}
+		}
+	} finally {
+		reader.releaseLock();
+	}
+	if (buffer) chunks[chunks.length - 1] = buffer.subarray(0, used);
+	const form = await new Response(new Blob(chunks), { headers: c.req.raw.headers }).formData();
 	const file = form.get("file");
 	if (!(file instanceof File)) return c.json({ error: "file is required" }, 400);
 	if (file.size > MAX_BYTES) return c.text("Payload Too Large", 413);
 
-	const kind = form.get("kind");
-	if (kind !== "md" && kind !== "html") {
-		return c.json({ error: "kind must be 'md' or 'html'" }, 400);
+	const source = await file.arrayBuffer();
+	const inferred = inferFileBytes(file.name, file.type, source);
+	const kind = form.get("kind") ?? inferred.kind;
+	if (!isDocumentKind(kind)) {
+		return c.json({ error: "kind must be 'md', 'html', 'text', or 'file'" }, 400);
 	}
+	const media_type = kind === inferred.kind ? inferred.media_type : defaultMediaType(kind);
 
 	const titleField = form.get("title");
 	const title = typeof titleField === "string" && titleField.trim() ? titleField.trim() : null;
 
-	return { file, kind, title };
+	return { file, source, kind, title, media_type, ttl: form.get("ttl") };
 }
 
 apiRoutes.post("/documents", async (c) => {
@@ -58,24 +109,37 @@ apiRoutes.post("/documents", async (c) => {
 
 	const now = nowSeconds();
 	let expires_at: number | null = null;
-	// Hono caches the parsed body, so this is the same FormData readUpload read.
-	const ttlField = (await c.req.formData()).get("ttl");
+	const ttlField = upload.ttl;
 	if (typeof ttlField === "string" && ttlField) {
 		const secs = parseTtl(ttlField);
 		if (secs === null) return c.json({ error: "invalid ttl" }, 400);
 		expires_at = now + secs;
 	}
 
-	const source = await upload.file.text();
+	const source = upload.source;
 	// An absent or blank title means "name it for me". See readUpload.
 	// A present one is used verbatim, which is what keeps the CLI and every
 	// drag-dropped file naming itself. Ordering: after the TTL check above, so an
 	// `invalid ttl` 400 never spends a neuron; after readUpload's size guard, so
 	// the model never reads a document that is about to be rejected; and before
-	// createDocument, which bakes the title into the stored blob's <title>.
+	// createDocument, which records the title beside the original bytes.
 	const title =
-		upload.title ?? (await resolveNewTitle(c.env, { fallback: upload.file.name, kind: upload.kind, source }));
-	const id = await createDocument(c.env, now, { expires_at, kind: upload.kind, source, title });
+		upload.title ??
+		(upload.kind === "md"
+			? await resolveNewTitle(c.env, {
+					fallback: upload.file.name,
+					kind: "md",
+					source: new TextDecoder().decode(source),
+				})
+			: upload.file.name.trim() || "untitled");
+	const id = await createDocument(c.env, now, {
+		expires_at,
+		kind: upload.kind,
+		source,
+		title,
+		filename: upload.file.name,
+		media_type: upload.media_type,
+	});
 
 	return c.json(
 		{ id, title, kind: upload.kind, version: 1, created_at: now, updated_at: now, expires_at, url: `/d/${id}` },
@@ -105,8 +169,14 @@ apiRoutes.post("/documents/:id/versions", async (c) => {
 	const upload = await readUpload(c);
 	if (upload instanceof Response) return upload;
 
-	const source = await upload.file.text();
-	const added = await addVersion(c.env, doc, now, { kind: upload.kind, source, title: upload.title });
+	const source = upload.source;
+	const added = await addVersion(c.env, doc, now, {
+		kind: upload.kind,
+		source,
+		title: upload.title,
+		filename: upload.file.name,
+		media_type: upload.media_type,
+	});
 	// null = the document was deleted mid-request, which folds into the same 404
 	// as any other missing document.
 	if (!added) return uniform404(c);
@@ -134,7 +204,7 @@ apiRoutes.get("/documents/:id/versions", async (c) => {
 apiRoutes.use("/documents/:id/content", withHeaders(API_CONTENT_HEADERS));
 
 /**
- * Return the stored HTML printed by `poof cat`. A `?v=N` pin is
+ * Return readable content, or original stored bytes with `?format=raw`. A `?v=N` pin is
  * accepted here and refused on `/raw` for the same reason: there the token *is*
  * the authorization, so a version in the URL would let anyone holding a share
  * link enumerate history, while this route sits behind Access, where the
@@ -150,10 +220,20 @@ apiRoutes.get("/documents/:id/content", async (c) => {
 
 	// A staged version can exist without its blob (phase 1 → 2 of an upload), and
 	// documents can reach 10 MiB, so stream the body as /raw does.
-	const obj = await readVersionBlob(c.env, id, asked, nowSeconds());
+	const format = c.req.query("format");
+	if (format !== undefined && format !== "raw") return c.json({ error: "invalid format" }, 400);
+	const obj = await readVersionContent(c.env, id, asked, nowSeconds(), format === "raw");
 	if (!obj) return uniform404(c);
 
-	return new Response(obj.body, { headers: { "Content-Type": "text/plain; charset=utf-8" } });
+	return new Response(obj.body, {
+		headers:
+			format === "raw"
+				? {
+						"Content-Type": "application/octet-stream",
+						"Content-Disposition": attachmentDisposition(obj.filename),
+					}
+				: { "Content-Type": "text/plain; charset=utf-8" },
+	});
 });
 
 apiRoutes.post("/documents/:id/versions/:version/rollback", async (c) => {

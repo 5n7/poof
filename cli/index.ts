@@ -3,7 +3,7 @@
 
 import { defineCommand, runMain } from "citty";
 import { readFile } from "node:fs/promises";
-import { basename, extname } from "node:path";
+import { basename } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
@@ -39,13 +39,6 @@ function fail(message: string): never {
 /** Run an API interaction, converting thrown errors into a clean exit. */
 function attempt(work: () => Promise<void>): Promise<void> {
 	return work().catch((err: Error) => fail(err.message));
-}
-
-function kindFromExtension(file: string): "md" | "html" {
-	const ext = extname(file).toLowerCase();
-	if (ext === ".md" || ext === ".markdown") return "md";
-	if (ext === ".html" || ext === ".htm") return "html";
-	fail(`cannot infer kind from extension '${ext || "(none)"}' (expected .md/.markdown or .html/.htm)`);
 }
 
 /**
@@ -92,13 +85,17 @@ function printTable(header: string[], rows: string[][]): void {
 const cat = defineCommand({
 	meta: {
 		name: "cat",
-		description: "Print the stored HTML served by share links. Poof does not keep the original Markdown.",
+		description: "Print source text or readable Markdown for HTML. Use --raw to download original bytes.",
 	},
 	args: {
 		"doc-id": {
 			type: "positional",
 			description: "Document id to print.",
 			required: true,
+		},
+		raw: {
+			type: "boolean",
+			description: "Print original stored bytes, including HTML or binary files.",
 		},
 		version: {
 			type: "string",
@@ -111,12 +108,13 @@ const cat = defineCommand({
 			if (args.version !== undefined) requireVersion(args.version);
 
 			const cfg = loadConfig();
-			// The version is validated above, so it needs no encoding of its own.
-			const query = args.version === undefined ? "" : `?v=${args.version}`;
+			const params = new URLSearchParams();
+			if (args.version !== undefined) params.set("v", args.version);
+			if (args.raw) params.set("format", "raw");
+			const query = params.size ? `?${params}` : "";
 			const body = await apiStream(cfg, "GET", p`/api/documents/${args["doc-id"]}/content` + query);
 			if (!body) return;
-			// Stream without adding a newline so redirected output matches `/raw` byte
-			// for byte. Keep stdout open for citty. Treat EPIPE from `| head` as a
+			// Stream without adding a newline so redirected raw output preserves the original bytes. Keep stdout open for citty. Treat EPIPE from `| head` as a
 			// normal stop.
 			await pipeline(Readable.fromWeb(body), process.stdout, { end: false }).catch((err: NodeJS.ErrnoException) => {
 				if (err.code !== "EPIPE") throw err;
@@ -213,9 +211,7 @@ const ls = defineCommand({
 const push = defineCommand({
 	meta: {
 		name: "push",
-		description:
-			"Upload a Markdown/HTML file; prints the /d/{id} viewer URL. " +
-			"kind is inferred from the extension (.md/.markdown, .html/.htm).",
+		description: "Upload any file unchanged; prints the /d/{id} viewer URL.",
 	},
 	args: {
 		file: {
@@ -247,24 +243,25 @@ const push = defineCommand({
 	},
 	run: ({ args }) =>
 		attempt(async () => {
-			// Infer kind and read the file before touching the network, so bad input
-			// fails fast without an API round-trip.
-			const kind = kindFromExtension(args.file);
-			let content: string;
+			// Preserve file bytes, including binary data and text encoding.
+			let content: Uint8Array<ArrayBuffer>;
 			try {
-				content = await readFile(args.file, "utf8");
+				content = new Uint8Array(await readFile(args.file));
 			} catch (err) {
 				fail(`cannot read file '${args.file}': ${(err as Error).message}`);
 			}
 
 			const filename = basename(args.file);
-			const title = args.title ?? (kind === "md" ? (firstMarkdownHeading(content) ?? filename) : filename);
+			const title =
+				args.title ??
+				(/\.(md|markdown)$/i.test(filename)
+					? (firstMarkdownHeading(new TextDecoder().decode(content)) ?? filename)
+					: filename);
 
 			const cfg = loadConfig();
 
 			const form = new FormData();
 			form.append("file", new Blob([content]), filename);
-			form.append("kind", kind);
 			form.append("title", title);
 			if (args.ttl) form.append("ttl", args.ttl);
 
@@ -401,7 +398,7 @@ const update = defineCommand({
 		name: "update",
 		description:
 			"Replace a document's contents with a new version, keeping its /d/{id} and share links. " +
-			"kind is inferred from the extension (.md/.markdown, .html/.htm).",
+			"The file type is inferred from its filename.",
 	},
 	args: {
 		"doc-id": {
@@ -422,12 +419,9 @@ const update = defineCommand({
 	},
 	run: ({ args }) =>
 		attempt(async () => {
-			// Same fail-fast order as push: infer kind and read the file before touching
-			// the network, so bad input fails without an API round-trip.
-			const kind = kindFromExtension(args.file);
-			let content: string;
+			let content: Uint8Array<ArrayBuffer>;
 			try {
-				content = await readFile(args.file, "utf8");
+				content = new Uint8Array(await readFile(args.file));
 			} catch (err) {
 				fail(`cannot read file '${args.file}': ${(err as Error).message}`);
 			}
@@ -436,7 +430,6 @@ const update = defineCommand({
 
 			const form = new FormData();
 			form.append("file", new Blob([content]), basename(args.file));
-			form.append("kind", kind);
 			// Do not infer a title during updates. Omitting the field keeps the current
 			// title. The user must pass --title to rename the document.
 			if (args.title) form.append("title", args.title);

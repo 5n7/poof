@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 
+import { attachmentDisposition } from "../lib/content";
 import { type ResolvedDocument, getLiveDocumentAt, getLiveDocumentByShareToken } from "../lib/db";
 import { RAW_HEADERS, uniform404, withHeaders } from "../lib/http";
+import { escapeHtml, renderMarkdown, wrapViewerHtml } from "../lib/render";
 import { nowSeconds } from "../lib/time";
 import { verifyOwnerToken } from "../lib/tokens";
 
@@ -35,7 +37,35 @@ rawRoutes.get("/:token", async (c) => {
 	const obj = await c.env.BLOBS.get(doc.r2_key);
 	if (!obj) return uniform404(c);
 
-	return new Response(obj.body, {
-		headers: { "Content-Type": "text/html; charset=utf-8" },
-	});
+	const format = c.req.query("format");
+	if (format !== undefined && format !== "raw") {
+		await obj.body.cancel();
+		return uniform404(c);
+	}
+	if (format === "raw") {
+		return new Response(obj.body, {
+			headers: {
+				"Content-Type": "application/octet-stream",
+				"Content-Disposition": attachmentDisposition(doc.filename),
+			},
+		});
+	}
+	if (doc.media_type === "image/svg+xml") {
+		return new Response(obj.body, { headers: { "Content-Type": "image/svg+xml" } });
+	}
+	if (doc.kind === "html") {
+		return new Response(obj.body, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+	}
+	const title = doc.version_title ?? doc.title;
+	if (doc.kind === "md" || doc.kind === "text") {
+		const source = await obj.text();
+		const body = doc.kind === "md" ? renderMarkdown(source) : `<pre><code>${escapeHtml(source)}</code></pre>`;
+		return new Response(wrapViewerHtml(title, body), { headers: { "Content-Type": "text/html; charset=utf-8" } });
+	}
+	if (/^(image\/(png|jpeg|gif|webp|avif|x-icon)|audio\/(mpeg|wav|ogg|mp4)|video\/(mp4|webm))$/.test(doc.media_type)) {
+		return new Response(obj.body, { headers: { "Content-Type": doc.media_type } });
+	}
+	await obj.body.cancel();
+	const body = `<h1>${escapeHtml(doc.filename ?? title)}</h1><p>${escapeHtml(doc.media_type)} · ${obj.size} bytes</p><p>This file has no browser preview. Use the download button to save the original file.</p>`;
+	return new Response(wrapViewerHtml(title, body), { headers: { "Content-Type": "text/html; charset=utf-8" } });
 });

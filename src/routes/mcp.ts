@@ -5,6 +5,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { z } from "zod";
 
+import { defaultMediaType, inferFileBytes } from "../lib/content";
 import { type ShareRow, getLiveDocument, listDocuments, listVersions, revokeShare } from "../lib/db";
 import {
 	MAX_BYTES,
@@ -12,7 +13,7 @@ import {
 	createDocument,
 	deleteDocumentWithBlobs,
 	issueShare,
-	readVersionBlob,
+	readVersionContent,
 	rollbackDocument,
 	sourceBytes,
 } from "../lib/documents";
@@ -33,14 +34,22 @@ import { TTL_KEYS, ttlToSeconds } from "../lib/tokens";
  */
 export const mcpRoutes = new Hono<{ Bindings: Env }>();
 
-const KIND = z.enum(["md", "html"]);
+const KIND = z.enum(["md", "html", "text", "file"]);
+const SOURCE_FIELDS = {
+	encoding: z
+		.enum(["utf8", "base64"])
+		.default("utf8")
+		.describe("Use base64 for binary files; the limit applies to decoded bytes."),
+	filename: z.string().optional().describe("Original filename, also used to infer the file type."),
+	media_type: z.string().optional().describe("Media type for a file without a recognized extension."),
+};
 // Build this enum from the same table as `parseTtl` to keep them in sync.
 const TTL = z.enum(TTL_KEYS);
 
 /**
  * Give the model the safety rules that apply across tools.
  */
-const INSTRUCTIONS = `poof stores Markdown/HTML documents and mints short-lived public share links.
+const INSTRUCTIONS = `poof stores original files and mints short-lived public share links.
 
 Poof returns two URL types. Do not mix them up:
 - /d/{id} is the owner view, behind Cloudflare Access. Only the owner can open it. Never hand this URL to a recipient; it will not work for them.
@@ -70,8 +79,18 @@ function missing(id: string): CallToolResult {
 }
 
 /** Reject an oversized source with a readable message, before the core throws. */
-function tooLarge(source: string): CallToolResult | null {
+function tooLarge(source: string | ArrayBuffer): CallToolResult | null {
 	return sourceBytes(source) > MAX_BYTES ? failure(`Content exceeds the ${MAX_BYTES}-byte limit.`) : null;
+}
+
+/** Decode binary input before validating the source size. */
+function decodeSource(content: string, encoding: "utf8" | "base64"): string | ArrayBuffer | null {
+	if (encoding === "utf8") return content;
+	if (content.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(content)) return null;
+	const decoded = atob(content);
+	const bytes = new Uint8Array(decoded.length);
+	for (let i = 0; i < decoded.length; i++) bytes[i] = decoded.charCodeAt(i);
+	return bytes.buffer;
 }
 
 /**
@@ -119,41 +138,50 @@ function table(header: string[], rows: string[][]): string {
 	return [header, ...rows].map((cells) => cells.map(cell).join("\t")).join("\n");
 }
 
-/**
- * Limit `cat` output because it enters a model's context. The API endpoint
- * streams the same blob to a file and does not need this limit.
- *
- * `wrapViewerHtml` puts styles, the title, and content first. Its loader script
- * comes last, so truncation preserves the start of the visible document.
- */
+/** Cap the readable representation after HTML conversion. */
 const CAT_MAX_BYTES = 128 * 1024; // 128 KiB
 
-/**
- * Decode at most `cap` bytes and stop the transfer without buffering the full
- * document.
- *
- * Do not flush the streaming decoder because a cap can land
- * mid-codepoint, and flushing would turn the dangling bytes into a U+FFFD at the
- * tail. Not flushing drops the incomplete sequence instead.
- */
-async function readCapped(stream: ReadableStream, cap: number): Promise<string> {
+/** Count emitted UTF-8 bytes, including replacement characters from invalid input. */
+async function readCapped(
+	stream: ReadableStream<Uint8Array>,
+	cap: number,
+): Promise<{ content: string; truncated: boolean }> {
 	const reader = stream.getReader();
-	const decoder = new TextDecoder();
-	let out = "";
-	let seen = 0;
+	const decoder = new TextDecoder("utf-8", { fatal: false, ignoreBOM: true });
+	const encoder = new TextEncoder();
+	let content = "";
+	let emitted = 0;
+	function append(decoded: string): boolean {
+		const bytes = encoder.encode(decoded);
+		const remaining = cap - emitted;
+		if (bytes.length <= remaining) {
+			content += decoded;
+			emitted += bytes.length;
+			return false;
+		}
+		// An unflushed decoder drops any partial code point at the output boundary.
+		content += new TextDecoder("utf-8", { fatal: false, ignoreBOM: true }).decode(bytes.subarray(0, remaining), {
+			stream: true,
+		});
+		return true;
+	}
 	try {
-		while (seen < cap) {
+		while (true) {
 			const { done, value } = await reader.read();
-			if (done) break;
-			const chunk = value as Uint8Array;
-			const take = Math.min(chunk.length, cap - seen);
-			out += decoder.decode(chunk.subarray(0, take), { stream: true });
-			seen += take;
+			if (done) {
+				const truncated = append(decoder.decode());
+				return { content, truncated };
+			}
+			// R2 may deliver a large chunk. Bound each decoded temporary allocation.
+			for (let offset = 0; offset < value.length; offset += 16 * 1024) {
+				if (append(decoder.decode(value.subarray(offset, offset + 16 * 1024), { stream: true }))) {
+					return { content, truncated: true };
+				}
+			}
 		}
 	} finally {
 		await reader.cancel().catch(() => {});
 	}
-	return out;
 }
 
 /**
@@ -183,9 +211,15 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 		{
 			annotations: { openWorldHint: false, readOnlyHint: true },
 			description:
-				"Print the stored HTML served by share links. Poof does not keep the original Markdown. Use this to inspect what recipients see. Do not pass this output to `update`, or the rendered HTML will replace the source. Edit your source and pass that to `update` instead.",
+				"Read original Markdown/text or compact Markdown extracted from HTML. Binary files return metadata and a download URL. For editing HTML, use raw: true to retrieve the original markup.",
 			inputSchema: {
 				id: z.string().describe("Document id."),
+				raw: z
+					.boolean()
+					.default(false)
+					.describe(
+						"Return original text/HTML instead of readable HTML extraction. Binary files still return download metadata.",
+					),
 				version: z
 					.number()
 					.int()
@@ -194,19 +228,25 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 					.describe("Version to read (default: the current one; see the `versions` tool)."),
 			},
 		},
-		async ({ id, version }) => {
-			const obj = await readVersionBlob(c.env, id, version ?? null, nowSeconds());
+		async ({ id, version, raw }) => {
+			const obj = await readVersionContent(c.env, id, version ?? null, nowSeconds(), raw);
 			if (!obj) return version === undefined ? missing(id) : failure(`No version ${version} of document ${id}.`);
 
-			// The common case: the whole document fits, so nothing is touched.
-			if (obj.size <= CAT_MAX_BYTES) return text(await obj.text());
-
-			const head = await readCapped(obj.body, CAT_MAX_BYTES);
+			if (obj.binary) {
+				await obj.body.cancel();
+				const query = new URLSearchParams({ format: "raw" });
+				if (version !== undefined) query.set("v", String(version));
+				return text(
+					`Binary file: ${JSON.stringify(obj.filename ?? "document")} (${obj.media_type}, ${obj.source_size} bytes).\nDownload: ${origin}/api/documents/${encodeURIComponent(id)}/content?${query}\nThis URL is owner-only. Do not send it to a recipient.`,
+				);
+			}
+			const result = await readCapped(obj.body, CAT_MAX_BYTES);
+			if (!result.truncated) return text(result.content);
 			return text(
 				[
-					head,
+					result.content,
 					"",
-					`[truncated: this document is ${obj.size} bytes and only the first ${CAT_MAX_BYTES} are shown.`,
+					`[truncated: input is ${obj.size} bytes; decoded text exceeds ${CAT_MAX_BYTES} UTF-8 bytes.`,
 					`The whole thing is at ${origin}/d/${id}. This URL is owner-only. Do not send it to a recipient.]`,
 				].join("\n"),
 			);
@@ -245,10 +285,13 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 		{
 			annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
 			description:
-				"Create a document from Markdown or HTML and return its owner URL. With share: true, also create a public /v/{token} URL. Send recipients only the /v/ URL. The /d/{id} URL requires Cloudflare Access. Anyone with the /v/ URL can read the document until expiry or revocation. Treat the /v/ URL itself as a secret. Revise a shared document with `update`; do not create a replacement.",
+				"Create a document from original text or a base64-encoded file and return its owner URL. With share: true, also create a public /v/{token} URL. Send recipients only the /v/ URL. The /d/{id} URL requires Cloudflare Access. Anyone with the /v/ URL can read the document until expiry or revocation. Treat the /v/ URL itself as a secret. Revise a shared document with `update`; do not create a replacement.",
 			inputSchema: {
-				content: z.string().describe("The document source: Markdown, or HTML when kind is 'html'."),
-				kind: KIND.default("md").describe("How to treat the content: 'md' is rendered, 'html' is stored as-is."),
+				content: z.string().describe("Original source text, or base64 bytes when encoding is base64."),
+				...SOURCE_FIELDS,
+				kind: KIND.optional().describe(
+					"Display kind. Inferred from filename/media_type when provided; otherwise defaults to md for text or file for base64.",
+				),
 				share: z.boolean().default(false).describe("Also issue a public share link and return its /v/{token} URL."),
 				share_ttl: TTL.default("1d").describe(
 					"Share link lifetime. Only takes effect when share is true; it is ignored otherwise. Shares always expire; there is no forever share. Prefer the shortest that works.",
@@ -262,24 +305,47 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 				),
 			},
 		},
-		async ({ content, kind, share, share_ttl, title, ttl }) => {
-			const oversized = tooLarge(content);
+		async ({ content, encoding, filename, media_type, kind, share, share_ttl, title, ttl }) => {
+			if (encoding === "base64" && content.length > 4 * Math.ceil(MAX_BYTES / 3)) {
+				return failure(`Content exceeds the ${MAX_BYTES}-byte limit.`);
+			}
+			const source = decodeSource(content, encoding);
+			if (source === null) return failure("Content is not valid base64.");
+			const oversized = tooLarge(source);
 			if (oversized) return oversized;
 
 			const now = nowSeconds();
 			const expires_at = ttl === undefined ? null : now + ttlToSeconds(ttl);
-			// The same naming chain the API create route runs (SPEC §8), with the one
-			// difference this adapter has to supply: an MCP client pushes content, not a
-			// file, so there is no file name to end on and the terminal is "untitled".
-			// `||` rather than `??` keeps a whitespace-only title counting as absent,
-			// matching what `readUpload` does with a blank multipart field. It runs after
-			// tooLarge above, so the model never reads a document that is about to be
-			// refused.
-			const resolved = title?.trim() || (await resolveNewTitle(c.env, { fallback: "untitled", kind, source: content }));
-			const id = await createDocument(c.env, now, { expires_at, kind, source: content, title: resolved });
+			const inferred = inferFileBytes(
+				filename ?? "",
+				media_type ?? "",
+				typeof source === "string" ? new TextEncoder().encode(source).buffer : source,
+			);
+			const resolvedKind = kind ?? (filename || media_type ? inferred.kind : encoding === "base64" ? "file" : "md");
+			const resolvedMediaType =
+				(filename || media_type) && resolvedKind === inferred.kind
+					? inferred.media_type
+					: defaultMediaType(resolvedKind);
+			const resolved =
+				title?.trim() ||
+				(resolvedKind === "md"
+					? await resolveNewTitle(c.env, {
+							fallback: filename || "untitled",
+							kind: "md",
+							source: typeof source === "string" ? source : new TextDecoder().decode(source),
+						})
+					: filename || "untitled");
+			const id = await createDocument(c.env, now, {
+				expires_at,
+				filename,
+				kind: resolvedKind,
+				media_type: resolvedMediaType,
+				source,
+				title: resolved,
+			});
 
 			const lines = [
-				`Created document ${id} (v1, ${kind}, title ${JSON.stringify(resolved)}, expires ${formatTime(expires_at)}).`,
+				`Created document ${id} (v1, ${resolvedKind}, title ${JSON.stringify(resolved)}, expires ${formatTime(expires_at)}).`,
 				ownerLine(origin, id),
 			];
 			if (share) {
@@ -398,21 +464,27 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 			// loss, so this remains false. `rm` is the destructive operation.
 			annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
 			description:
-				"Add a version while keeping the same /d/{id} and share links. Recipients see the new content on their next load. Pass your edited source, not the rendered HTML from `cat`. The current title and kind remain unless you provide replacements. All live share links update at once, with no per-recipient version pinning. Use a separate document for content that some recipients must not see.",
+				"Add a version while keeping the same /d/{id} and share links. Recipients see the new content on their next load. Pass edited source. Use `cat` with raw: true when editing HTML. The title remains unless replaced; file metadata can infer a new kind. All live share links update at once, with no per-recipient version pinning. Use a separate document for content that some recipients must not see.",
 			inputSchema: {
-				content: z.string().describe("The new document source: Markdown, or HTML when kind is 'html'."),
+				content: z.string().describe("Original source text, or base64 bytes when encoding is base64."),
+				...SOURCE_FIELDS,
 				id: z.string().describe("Document id to update."),
 				// Unlike push, update has no default. An omitted kind keeps the current
 				// value. Defaulting to "md" would render an HTML document as Markdown and
 				// publish the mistake to every share holder.
 				kind: KIND.optional().describe(
-					"How to treat the content: 'md' is rendered, 'html' is stored as-is. Omit to keep the document's current kind; pass it explicitly to change the kind for this and later versions.",
+					"Display kind. Omit to keep the document's current kind, unless filename or media_type supplies a new type.",
 				),
 				title: z.string().optional().describe("New document title (default: keep the current one)."),
 			},
 		},
-		async ({ content, id, kind, title }) => {
-			const oversized = tooLarge(content);
+		async ({ content, encoding, filename, media_type, id, kind, title }) => {
+			if (encoding === "base64" && content.length > 4 * Math.ceil(MAX_BYTES / 3)) {
+				return failure(`Content exceeds the ${MAX_BYTES}-byte limit.`);
+			}
+			const source = decodeSource(content, encoding);
+			if (source === null) return failure("Content is not valid base64.");
+			const oversized = tooLarge(source);
 			if (oversized) return oversized;
 
 			const now = nowSeconds();
@@ -421,10 +493,22 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 			if (!doc) return missing(id);
 
 			// doc.kind comes from the version joined on current_version.
-			const resolved = kind ?? doc.kind;
+			const inferred = inferFileBytes(
+				filename ?? "",
+				media_type ?? "",
+				typeof source === "string" ? new TextEncoder().encode(source).buffer : source,
+			);
+			const resolved = kind ?? (filename || media_type ? inferred.kind : doc.kind);
 			const added = await addVersion(c.env, doc, now, {
+				filename,
 				kind: resolved,
-				source: content,
+				media_type:
+					filename || media_type
+						? resolved === inferred.kind
+							? inferred.media_type
+							: defaultMediaType(resolved)
+						: undefined,
+				source,
 				title: title?.trim() || null,
 			});
 			if (!added) return missing(id);

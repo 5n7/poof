@@ -160,13 +160,14 @@ describe("MCP endpoint", () => {
 
 	// `push` has no prior kind and defaults to "md". `update` must have no default,
 	// or omitting it would render an HTML document as Markdown for every share.
-	it("gives push's kind a default and update's none", async () => {
+	it("leaves kind optional so handlers can infer file types", async () => {
 		const { result } = await rpc<{
 			tools: { inputSchema: { properties: Record<string, { default?: string; description: string }> }; name: string }[];
 		}>("tools/list");
 		const kindOf = (name: string) => result.tools.find((t) => t.name === name)!.inputSchema.properties.kind;
 
-		expect(kindOf("push").default).toBe("md");
+		expect(kindOf("push")).not.toHaveProperty("default");
+		expect(kindOf("push").description).toContain("defaults to md");
 
 		const update = kindOf("update");
 		expect(update).not.toHaveProperty("default");
@@ -292,17 +293,15 @@ describe("MCP endpoint", () => {
 		expect(body).toContain('title "Explicit"');
 
 		// html is stored as-is: no viewer wrapper around it.
-		expect(await callTool("cat", { id })).toBe("<h1>Raw</h1>");
+		expect(await callTool("cat", { id })).toBe("# Raw");
+		expect(await callTool("cat", { id, raw: true })).toBe("<h1>Raw</h1>");
 	});
 
-	it("cat returns the stored rendered HTML, current version by default", async () => {
+	it("cat returns original Markdown, current version by default", async () => {
 		const { id } = await pushDoc({ content: "# Rendered\n\nsome text" });
 
 		const html = await callTool("cat", { id });
-		expect(html).toContain("<h1>Rendered</h1>");
-		expect(html).toContain("<title>Rendered</title>");
-		// It is the rendering, not the Markdown that produced it.
-		expect(html).not.toContain("# Rendered");
+		expect(html).toBe("# Rendered\n\nsome text");
 	});
 
 	// The behavior the schema assertion above exists to protect. An omitted kind
@@ -316,7 +315,8 @@ describe("MCP endpoint", () => {
 
 		// Stored as-is: no viewer wrapper, and the markup is not escaped into text.
 		const html = await callTool("cat", { id });
-		expect(html).toBe("<p>revised</p>");
+		expect(html).toBe("revised");
+		expect(await callTool("cat", { id, raw: true })).toBe("<p>revised</p>");
 		expect(await callTool("versions", { id })).toContain("v2\thtml\t");
 	});
 
@@ -327,7 +327,7 @@ describe("MCP endpoint", () => {
 		expect(updated).toContain("(md,");
 
 		const html = await callTool("cat", { id });
-		expect(html).toContain("<h1>Now Markdown</h1>");
+		expect(html).toBe("# Now Markdown\n\nbody");
 		expect(await callTool("versions", { id })).toContain("v2\tmd\t");
 	});
 
@@ -341,16 +341,16 @@ describe("MCP endpoint", () => {
 		const out = await callTool("cat", { id });
 		expect(out).toContain("[truncated:");
 		// The true total, not the capped length, and where the whole thing lives.
-		expect(out).toContain(`${big.length} bytes`);
+		expect(out).toContain(`${big.length - 7} bytes`);
 		expect(out).toContain(`${OWNER_BASE}/d/${id}`);
 		expect(out).toContain("This URL is owner-only. Do not send it to a recipient.");
 		// The output keeps the prefix and remains shorter than the source.
-		expect(out.startsWith("<p>xxx")).toBe(true);
+		expect(out.startsWith("xxx")).toBe(true);
 		expect(out.length).toBeLessThan(big.length);
 
 		// The API content route has no cap because the CLI streams it to a file
 		// descriptor. `poof cat big > out.html` must preserve every byte.
-		const api = await SELF.fetch(`${OWNER_BASE}/api/documents/${id}/content`);
+		const api = await SELF.fetch(`${OWNER_BASE}/api/documents/${id}/content?format=raw`);
 		expect((await api.text()).length).toBe(big.length);
 	});
 
@@ -370,12 +370,111 @@ describe("MCP endpoint", () => {
 		expect(head.length).toBe(Math.floor((128 * 1024) / 3));
 	});
 
+	it("caps emitted UTF-8 when invalid source bytes expand during decoding", async () => {
+		const source = "\xff".repeat(102400);
+		const { id } = await pushDoc({ content: btoa(source), encoding: "base64", filename: "legacy.txt" });
+		for (const raw of [false, true]) {
+			const out = await callTool("cat", { id, raw });
+			expect(out).toContain("[truncated: input is 102400 bytes;");
+			const head = out.slice(0, out.indexOf("\n\n[truncated:"));
+			expect(head).toBe("�".repeat(Math.floor((128 * 1024) / 3)));
+			expect(new TextEncoder().encode(head).length).toBeLessThanOrEqual(128 * 1024);
+		}
+		const response = await SELF.fetch(`${OWNER_BASE}/api/documents/${id}/content?format=raw`);
+		const original = new Uint8Array(await response.arrayBuffer());
+		expect(original.length).toBe(102400);
+		expect(original.every((byte) => byte === 255)).toBe(true);
+	});
+
+	it("retains a BOM and decoded replacement exactly at the output cap", async () => {
+		const body = "x".repeat(128 * 1024 - 6);
+		const { id } = await pushDoc({
+			content: btoa(`\xef\xbb\xbf${body}\xff`),
+			encoding: "base64",
+			filename: "boundary.txt",
+		});
+		for (const raw of [false, true]) {
+			const out = await callTool("cat", { id, raw });
+			expect(out).toBe(`\ufeff${body}�`);
+			expect(new TextEncoder().encode(out).length).toBe(128 * 1024);
+			expect(out).not.toContain("[truncated:");
+		}
+	});
+
+	it("counts decoder flush output and omits an incomplete character at the cap", async () => {
+		const body = "x".repeat(128 * 1024 - 2);
+		const { id } = await pushDoc({ content: btoa(`${body}\xe2`), encoding: "base64", filename: "incomplete.txt" });
+		const out = await callTool("cat", { id });
+		expect(out).toContain("[truncated:");
+		expect(out.slice(0, out.indexOf("\n\n[truncated:"))).toBe(body);
+	});
+
 	it("cat does not truncate a document that fits", async () => {
 		const { id } = await pushDoc({ content: "<p>small</p>", kind: "html", title: "Small" });
 
 		const out = await callTool("cat", { id });
-		expect(out).toBe("<p>small</p>");
+		expect(out).toBe("small");
 		expect(out).not.toContain("[truncated:");
+	});
+
+	it("cat removes large HTML styles before applying its cap", async () => {
+		const { id } = await pushDoc({
+			content: `<style>${"x".repeat(200 * 1024)}</style><h1>Useful</h1><p>Only content</p>`,
+			kind: "html",
+			title: "Styled",
+		});
+		expect(await callTool("cat", { id })).toBe("# Useful\n\nOnly content");
+	});
+
+	it("infers text file types and preserves source on push and update", async () => {
+		const source = '\ufeff{"answer":42}\r\n';
+		const { id } = await pushDoc({ content: source, filename: "answer.json" });
+		expect(await callTool("cat", { id })).toBe(source);
+		expect(await callTool("versions", { id })).toContain("v1\ttext\t");
+		await callTool("update", { id, content: "name,value\nanswer,42\n", filename: "answer.csv" });
+		expect(await callTool("cat", { id })).toBe("name,value\nanswer,42\n");
+	});
+
+	it("preserves binary uploads and returns download metadata even for raw cat", async () => {
+		const { id } = await pushDoc({ content: "AP+AQUI=", encoding: "base64", filename: "sample.bin" });
+		for (const raw of [false, true]) {
+			const result = await callTool("cat", { id, raw, version: 1 });
+			expect(result).toContain('"sample.bin" (application/octet-stream, 5 bytes)');
+			expect(result).toContain(`/api/documents/${id}/content?format=raw&v=1`);
+			expect(result).not.toContain("�");
+		}
+		const response = await SELF.fetch(`${OWNER_BASE}/api/documents/${id}/content?format=raw`);
+		expect(Array.from(new Uint8Array(await response.arrayBuffer()))).toEqual([0, 255, 128, 65, 66]);
+	});
+
+	it("keeps the image media type for explicit file kind and content-only updates", async () => {
+		const { id } = await pushDoc({ content: "AP+AQUI=", encoding: "base64", filename: "sample.png", kind: "file" });
+		expect(await callTool("cat", { id })).toContain("image/png, 5 bytes");
+		await callTool("update", { id, content: "AP8=", encoding: "base64" });
+		expect(await callTool("cat", { id })).toContain('"sample.png" (image/png, 2 bytes)');
+		await callTool("update", { id, content: "AP8=", encoding: "base64", kind: "file" });
+		expect(await callTool("cat", { id })).toContain('"sample.png" (image/png, 2 bytes)');
+	});
+
+	it("accepts large valid base64 without a regex stack overflow", async () => {
+		const size = 10 * 1024 * 1024 - 1;
+		const { id } = await pushDoc({ content: "A".repeat((size / 3) * 4), encoding: "base64", kind: "file" });
+		expect(await callTool("cat", { id })).toContain(`${size} bytes`);
+	});
+
+	it("rejects oversized base64 before decoding", async () => {
+		expect(
+			await callToolExpectingError("push", {
+				content: "A".repeat(4 * Math.ceil((10 * 1024 * 1024) / 3) + 4),
+				encoding: "base64",
+			}),
+		).toContain("Content exceeds");
+	});
+
+	it("rejects malformed base64 before creating a document", async () => {
+		expect(
+			await callToolExpectingError("push", { content: "not base64!", encoding: "base64", filename: "bad.bin" }),
+		).toContain("not valid base64");
 	});
 
 	it("update adds a version that every live share link follows", async () => {
@@ -490,8 +589,7 @@ describe("MCP automatic titling", () => {
 	it("names an untitled document from its own first heading", async () => {
 		const { body, id } = await pushDoc({ content: "# Design Review\n\nbody text" });
 		expect(body).toContain('title "Design Review"');
-		// The stored blob contains the selected title.
-		expect(await callTool("cat", { id })).toContain("<title>Design Review</title>");
+		expect(await callTool("cat", { id })).toBe("# Design Review\n\nbody text");
 	});
 
 	it("falls back to untitled when the document has no heading to take", async () => {
@@ -512,8 +610,7 @@ describe("MCP automatic titling", () => {
 		const { body, id } = await pushDoc({ content: "# Heading Not Used\n\nbody", title: "Explicit Title" });
 		expect(body).toContain('title "Explicit Title"');
 		const html = await callTool("cat", { id });
-		expect(html).toContain("<title>Explicit Title</title>");
-		expect(html).not.toContain("<title>Heading Not Used</title>");
+		expect(html).toBe("# Heading Not Used\n\nbody");
 	});
 
 	it("treats a whitespace-only title as absent and runs the chain", async () => {
