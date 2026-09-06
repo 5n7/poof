@@ -16,19 +16,19 @@ owner can view or restore earlier versions.
 ## Usage
 
 ```sh
-poof auth login               # authenticate in a browser
-poof auth logout              # revoke the OAuth grant and forget it locally
-poof cat <doc-id>             # print source text; HTML becomes Markdown
-poof cat <doc-id> --raw > file # download original bytes
-poof ls                       # list documents
-poof push report.md --share   # upload + print a share URL (1d TTL)
-poof revoke <share-token>     # kill a share link now
-poof rm <doc-id>              # delete a document and its shares
-poof rollback <doc-id> <n>    # make version n current again
-poof share <doc-id>           # issue another share link
-poof status                   # check the saved login against the API
-poof update <doc-id> file.md  # new version; same URLs keep working
-poof versions <doc-id>        # version history, newest first
+poof auth login                 # authenticate in a browser
+poof auth logout                # revoke the OAuth grant and forget it locally
+poof cat <doc-id>               # print source text; HTML becomes Markdown
+poof cat <doc-id> --raw > file  # download original bytes
+poof ls                         # list documents
+poof push report.md --share     # upload + print a share URL (1d TTL)
+poof revoke <share-token>       # kill a share link now
+poof rm <doc-id>                # delete a document and its shares
+poof rollback <doc-id> <n>      # make version n current again
+poof share <doc-id>             # issue another share link
+poof status                     # check the saved login against the API
+poof update <doc-id> file.md    # new version; same URLs keep working
+poof versions <doc-id>          # version history, newest first
 ```
 
 Set `POOF_URL=https://poof.5n7.me`, then run `poof auth login`. The CLI uses
