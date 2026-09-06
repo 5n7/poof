@@ -60,12 +60,12 @@ function enforceMaxBytes(source: string | ArrayBuffer): void {
 }
 
 export interface NewDocumentInput {
-	expires_at: number | null;
+	title: string;
 	filename?: string;
 	kind: DocumentKind;
 	media_type?: string;
 	source: string | ArrayBuffer;
-	title: string;
+	expires_at: number | null;
 }
 
 /**
@@ -82,14 +82,14 @@ export async function createDocument(env: Env, now: number, input: NewDocumentIn
 	const r2_key = versionR2Key(id, 1);
 
 	await insertDocument(env.DB, {
-		created_at: now,
-		expires_at: input.expires_at,
-		filename: input.filename ?? null,
 		id,
+		title: input.title,
+		filename: input.filename ?? null,
 		kind: input.kind,
 		media_type: input.media_type ?? defaultMediaType(input.kind),
 		r2_key,
-		title: input.title,
+		created_at: now,
+		expires_at: input.expires_at,
 	});
 	try {
 		await env.BLOBS.put(r2_key, input.source);
@@ -102,18 +102,18 @@ export async function createDocument(env: Env, now: number, input: NewDocumentIn
 }
 
 export interface NewVersionInput {
+	/** null keeps the document's current title. */
+	title: string | null;
 	filename?: string;
 	kind: DocumentKind;
 	media_type?: string;
 	source: string | ArrayBuffer;
-	/** null keeps the document's current title. */
-	title: string | null;
 }
 
 /** The version an upload landed on, plus the title it is now filed under. */
 export interface NewVersion {
-	title: string;
 	version: number;
+	title: string;
 }
 
 /**
@@ -148,14 +148,14 @@ export async function addVersion(
 		version = await nextVersion(env.DB, doc.id);
 		r2_key = versionR2Key(doc.id, version);
 		const row = {
-			created_at: now,
 			document_id: doc.id,
+			version,
+			r2_key,
+			title,
 			filename: input.filename ?? doc.filename,
 			kind: input.kind,
 			media_type: input.media_type ?? (input.kind === doc.kind ? doc.media_type : defaultMediaType(input.kind)),
-			r2_key,
-			title,
-			version,
+			created_at: now,
 		};
 		if (await insertVersion(env.DB, row)) break;
 		// A competing request took this version number. Allocate another.
@@ -195,7 +195,7 @@ export async function addVersion(
 		return null;
 	}
 
-	return { title, version };
+	return { version, title };
 }
 
 /** Where a document's pointer ended up, and when it last moved. */
@@ -284,10 +284,10 @@ export async function deleteDocumentWithBlobs(env: Env, id: string): Promise<boo
 }
 
 export interface VersionContent {
-	binary: boolean;
-	body: ReadableStream<Uint8Array>;
 	filename: string | null;
 	media_type: string;
+	binary: boolean;
+	body: ReadableStream<Uint8Array>;
 	size: number;
 	source_size: number;
 }
@@ -305,9 +305,9 @@ export async function readVersionContent(
 	const obj = await env.BLOBS.get(doc.r2_key);
 	if (!obj) return null;
 	const metadata = {
-		binary: doc.kind === "file",
 		filename: doc.filename,
 		media_type: doc.media_type,
+		binary: doc.kind === "file",
 		source_size: obj.size,
 	};
 	if (raw || (doc.kind !== "html" && doc.kind !== "file")) {

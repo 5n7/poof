@@ -305,7 +305,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 				),
 			},
 		},
-		async ({ content, encoding, filename, kind, media_type, share, share_ttl, title, ttl }) => {
+		async ({ content, encoding, filename, media_type, kind, share, share_ttl, title, ttl }) => {
 			if (encoding === "base64" && content.length > 4 * Math.ceil(MAX_BYTES / 3)) {
 				return failure(`Content exceeds the ${MAX_BYTES}-byte limit.`);
 			}
@@ -336,12 +336,12 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 						})
 					: filename || "untitled");
 			const id = await createDocument(c.env, now, {
-				expires_at,
+				title: resolved,
 				filename,
 				kind: resolvedKind,
 				media_type: resolvedMediaType,
 				source,
-				title: resolved,
+				expires_at,
 			});
 
 			const lines = [
@@ -478,7 +478,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 				title: z.string().optional().describe("New document title (default: keep the current one)."),
 			},
 		},
-		async ({ content, encoding, filename, id, kind, media_type, title }) => {
+		async ({ content, encoding, filename, media_type, id, kind, title }) => {
 			if (encoding === "base64" && content.length > 4 * Math.ceil(MAX_BYTES / 3)) {
 				return failure(`Content exceeds the ${MAX_BYTES}-byte limit.`);
 			}
@@ -500,6 +500,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 			);
 			const resolved = kind ?? (filename || media_type ? inferred.kind : doc.kind);
 			const added = await addVersion(c.env, doc, now, {
+				title: title?.trim() || null,
 				filename,
 				kind: resolved,
 				media_type:
@@ -509,7 +510,6 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 							: defaultMediaType(resolved)
 						: undefined,
 				source,
-				title: title?.trim() || null,
 			});
 			if (!added) return missing(id);
 
