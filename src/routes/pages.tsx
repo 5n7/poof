@@ -141,17 +141,64 @@ const GUIDE_CSS = `
 .guide-section p, .guide-section li { color: #62626b; font-size: 13px; line-height: 1.55; }
 .guide-section p { margin: 0 0 10px; }
 .guide-section ul { margin: 0; padding-left: 19px; }
-.guide-command { display: block; overflow-x: auto; margin: 12px 0; padding: 11px 12px; border: 1px solid #e0e0e6; border-radius: 8px; background: #fff; color: #1a1a1e; font: 400 12px ui-monospace, Menlo, monospace; white-space: pre; }`;
+.guide-command { display: flex; align-items: flex-start; gap: 10px; overflow: hidden; margin: 12px 0; padding: 8px 8px 8px 12px; border: 1px solid #e0e0e6; border-radius: 8px; background: #fff; color: #1a1a1e; }
+.guide-command code { flex: 1; min-width: 0; overflow-x: auto; padding: 3px 0; font: 400 12px ui-monospace, Menlo, monospace; white-space: pre; }
+.guide-copy { flex: 0 0 auto; border: 0; border-radius: 6px; background: #f1f1f5; color: #62626b; cursor: pointer; font: 500 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; padding: 5px 8px; }
+.guide-copy:hover { background: #e6e6eb; color: #1a1a1e; }
+.guide-copy.copied { background: oklch(0.68 0.17 52 / .1); color: oklch(0.55 0.17 52); }
+@media (max-width: 420px) { .guide-command { gap: 6px; } .guide-copy { padding: 5px 7px; } }`;
 
-// Shared client logic: toast, the share modal (built with textContent only, no
-// innerHTML with user data), remaining-time formatting, and Esc-to-close.
-const CORE_JS = `
+const DOM_HELPERS_JS = `
 function el(tag, cls, text) {
 	const e = document.createElement(tag);
 	if (cls) e.className = cls;
 	if (text != null) e.textContent = text;
 	return e;
-}
+}`;
+
+const TOAST_JS = `
+let toastT;
+function toast(msg) {
+	const old = document.getElementById("toast");
+	if (old) old.remove();
+	const t = el("div", "toast", msg);
+	t.id = "toast";
+	t.setAttribute("role", "status");
+	t.setAttribute("aria-live", "polite");
+	document.body.append(t);
+	clearTimeout(toastT);
+	toastT = setTimeout(function () { t.remove(); }, 2200);
+}`;
+
+// writeText can hang instead of rejecting while Chrome waits for document focus or a
+// pending permission prompt. Race it with a timeout so callers always get an answer.
+const COPY_TO_CLIPBOARD_JS = `
+function copyToClipboard(text) {
+	if (!navigator.clipboard) return Promise.resolve(false);
+	return new Promise(function (resolve) {
+		let settled = false;
+		let timeout;
+		function finish(ok) {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timeout);
+			resolve(ok);
+		}
+		timeout = setTimeout(function () { finish(false); }, 1000);
+		// Clipboard writes cannot be aborted, so a write that outlives this timeout may still complete.
+		try {
+			navigator.clipboard.writeText(text).then(function () { finish(true); }, function () { finish(false); });
+		} catch {
+			finish(false);
+		}
+	});
+}`;
+
+// Shared client logic: toast, the share modal (built with textContent only, no
+// innerHTML with user data), remaining-time formatting, and Esc-to-close.
+const CORE_JS =
+	DOM_HELPERS_JS +
+	`
 function nowSec() { return Math.floor(Date.now() / 1000); }
 // Mirror server-side formatRemaining in this file. Keep both copies in sync.
 function fmtRemaining(sec) {
@@ -167,17 +214,10 @@ function fmtCreated(sec) {
 	const p = {};
 	CREATED_FMT.formatToParts(new Date(sec * 1000)).forEach(function (x) { p[x.type] = x.value; });
 	return p.month + " " + p.day + ", " + p.hour + ":" + p.minute;
-}
-let toastT;
-function toast(msg) {
-	const old = document.getElementById("toast");
-	if (old) old.remove();
-	const t = el("div", "toast", msg);
-	t.id = "toast";
-	document.body.append(t);
-	clearTimeout(toastT);
-	toastT = setTimeout(function () { t.remove(); }, 2200);
-}
+}` +
+	TOAST_JS +
+	COPY_TO_CLIPBOARD_JS +
+	`
 function closeModal() {
 	const root = document.getElementById("modal-root");
 	if (root) root.textContent = "";
@@ -189,16 +229,6 @@ function updateShareCount() {
 	const n = list.children.length;
 	root.querySelector(".active-head").textContent = "Active links \\u00b7 " + n;
 	root.querySelector(".empty").style.display = n ? "none" : "";
-}
-// writeText can hang instead of rejecting while Chrome waits for document focus or a
-// pending permission prompt. Race it with a timeout so callers always get an
-// answer, and never await it before an update that has to happen regardless.
-function copyToClipboard(text) {
-	if (!navigator.clipboard) return Promise.resolve(false);
-	return Promise.race([
-		navigator.clipboard.writeText(text).then(function () { return true; }, function () { return false; }),
-		new Promise(function (r) { setTimeout(function () { r(false); }, 1000); }),
-	]);
 }
 // Never claim a copy that did not happen; the URL is on screen in .share-url,
 // so a failure just points the user at it.
@@ -543,6 +573,38 @@ if (removeFile) removeFile.addEventListener("click", async function () {
 
 const VIEWER_SCRIPT = CORE_JS + UPLOAD_JS + VERSIONS_JS + VIEWER_JS + FILES_JS;
 
+const GUIDE_SCRIPT =
+	DOM_HELPERS_JS +
+	TOAST_JS +
+	COPY_TO_CLIPBOARD_JS +
+	`
+document.querySelectorAll("[data-copy-command]").forEach(function (copy) {
+	let attempt = 0;
+	let restoreTimer;
+	function resetCopy() {
+		copy.textContent = "Copy";
+		copy.classList.remove("copied");
+		copy.setAttribute("aria-label", "Copy " + copy.dataset.copyLabel + " command");
+	}
+	copy.addEventListener("click", function () {
+		const currentAttempt = ++attempt;
+		clearTimeout(restoreTimer);
+		resetCopy();
+		copyToClipboard(copy.dataset.copyCommand).then(function (ok) {
+			if (currentAttempt !== attempt) return;
+			if (!ok) { toast("Could not copy \\u2014 select the command instead"); return; }
+			copy.textContent = "Copied \\u2713";
+			copy.classList.add("copied");
+			copy.setAttribute("aria-label", "Copied " + copy.dataset.copyLabel + " command");
+			toast("Copied " + copy.dataset.copyLabel + " command");
+			restoreTimer = setTimeout(function () {
+				if (currentAttempt !== attempt) return;
+				resetCopy();
+			}, 2200);
+		});
+	});
+});`;
+
 const Layout: FC<PropsWithChildren<{ title: string; pageCss?: string }>> = ({ title, pageCss, children }) => (
 	<html lang="en">
 		<head>
@@ -555,6 +617,21 @@ const Layout: FC<PropsWithChildren<{ title: string; pageCss?: string }>> = ({ ti
 		</head>
 		<body>{children}</body>
 	</html>
+);
+
+const GuideCommand: FC<{ command: string; label: string }> = ({ command, label }) => (
+	<div class="guide-command">
+		<code>{command}</code>
+		<button
+			type="button"
+			class="guide-copy"
+			data-copy-command={command}
+			data-copy-label={label}
+			aria-label={`Copy ${label} command`}
+		>
+			Copy
+		</button>
+	</div>
 );
 
 // Shared viewer scaffold: topbar (contents vary per page) above the sandboxed
@@ -736,19 +813,16 @@ export function guidePage(c: Ctx) {
 				<section class="guide-section">
 					<h2>Server URL</h2>
 					<p>Use this exact URL, with no trailing slash.</p>
-					<code class="guide-command">{mcpUrl}</code>
+					<GuideCommand command={mcpUrl} label="server URL" />
 				</section>
 
 				<section class="guide-section">
 					<h2>Connect</h2>
 					<p>Register the server, then complete the Cloudflare login when your client prompts you.</p>
 					<h3 class="guide-client">Claude Code</h3>
-					<code class="guide-command">claude mcp add --transport http poof {mcpUrl}</code>
+					<GuideCommand command={`claude mcp add --transport http poof ${mcpUrl}`} label="Claude Code" />
 					<h3 class="guide-client">Codex</h3>
-					<code class="guide-command">
-						codex mcp add poof --url {mcpUrl}
-						{"\n"}codex mcp login poof
-					</code>
+					<GuideCommand command={`codex mcp add poof --url ${mcpUrl}\ncodex mcp login poof`} label="Codex" />
 				</section>
 
 				<section class="guide-section">
@@ -784,6 +858,7 @@ export function guidePage(c: Ctx) {
 					</p>
 				</section>
 			</main>
+			<script dangerouslySetInnerHTML={{ __html: GUIDE_SCRIPT }} />
 		</Layout>,
 	);
 }
