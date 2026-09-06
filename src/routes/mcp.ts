@@ -228,7 +228,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 					.describe("Version to read (default: the current one; see the `versions` tool)."),
 			},
 		},
-		async ({ id, version, raw }) => {
+		async ({ id, raw, version }) => {
 			const obj = await readVersionContent(c.env, id, version ?? null, nowSeconds(), raw);
 			if (!obj) return version === undefined ? missing(id) : failure(`No version ${version} of document ${id}.`);
 
@@ -305,7 +305,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 				),
 			},
 		},
-		async ({ content, encoding, filename, media_type, kind, share, share_ttl, title, ttl }) => {
+		async ({ content, encoding, filename, kind, media_type, share, share_ttl, title, ttl }) => {
 			if (encoding === "base64" && content.length > 4 * Math.ceil(MAX_BYTES / 3)) {
 				return failure(`Content exceeds the ${MAX_BYTES}-byte limit.`);
 			}
@@ -478,7 +478,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 				title: z.string().optional().describe("New document title (default: keep the current one)."),
 			},
 		},
-		async ({ content, encoding, filename, media_type, id, kind, title }) => {
+		async ({ content, encoding, filename, id, kind, media_type, title }) => {
 			if (encoding === "base64" && content.length > 4 * Math.ceil(MAX_BYTES / 3)) {
 				return failure(`Content exceeds the ${MAX_BYTES}-byte limit.`);
 			}

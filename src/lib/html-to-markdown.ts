@@ -1,9 +1,8 @@
 import { type DefaultTreeAdapterTypes, parse } from "parse5";
 
-type Node = DefaultTreeAdapterTypes.Node;
 type Element = DefaultTreeAdapterTypes.Element;
+type Node = DefaultTreeAdapterTypes.Node;
 
-const omittedTags = new Set(["head", "script", "style", "template", "noscript"]);
 const MAX_TABLE_CELLS = 10_000;
 const blockTags = new Set([
 	"address",
@@ -27,6 +26,7 @@ const blockTags = new Set([
 	"section",
 	"summary",
 ]);
+const omittedTags = new Set(["head", "script", "style", "template", "noscript"]);
 
 function attribute(element: Element, name: string): string | undefined {
 	return element.attrs.find((entry) => entry.name === name)?.value;

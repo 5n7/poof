@@ -32,9 +32,9 @@ const MAX_UPLOAD_BYTES = MAX_BYTES + UPLOAD_BUFFER_BYTES;
 
 interface Upload {
 	file: File;
-	source: ArrayBuffer;
 	kind: DocumentKind;
 	media_type: string;
+	source: ArrayBuffer;
 	title: string | null;
 	ttl: string | File | null;
 }
@@ -100,7 +100,7 @@ async function readUpload(c: Context<{ Bindings: Env }>): Promise<Upload | Respo
 	const titleField = form.get("title");
 	const title = typeof titleField === "string" && titleField.trim() ? titleField.trim() : null;
 
-	return { file, source, kind, title, media_type, ttl: form.get("ttl") };
+	return { file, kind, media_type, source, title, ttl: form.get("ttl") };
 }
 
 apiRoutes.post("/documents", async (c) => {
@@ -134,11 +134,11 @@ apiRoutes.post("/documents", async (c) => {
 			: upload.file.name.trim() || "untitled");
 	const id = await createDocument(c.env, now, {
 		expires_at,
+		filename: upload.file.name,
 		kind: upload.kind,
+		media_type: upload.media_type,
 		source,
 		title,
-		filename: upload.file.name,
-		media_type: upload.media_type,
 	});
 
 	return c.json(
@@ -171,11 +171,11 @@ apiRoutes.post("/documents/:id/versions", async (c) => {
 
 	const source = upload.source;
 	const added = await addVersion(c.env, doc, now, {
+		filename: upload.file.name,
 		kind: upload.kind,
+		media_type: upload.media_type,
 		source,
 		title: upload.title,
-		filename: upload.file.name,
-		media_type: upload.media_type,
 	});
 	// null = the document was deleted mid-request, which folds into the same 404
 	// as any other missing document.

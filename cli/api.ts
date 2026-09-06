@@ -28,20 +28,20 @@ export type HttpMethod = "DELETE" | "GET" | "HEAD" | "POST";
 export const defaultApiRuntime: ApiRuntime = { fetch, oauthAccessToken };
 
 export interface DocumentRow {
-	id: string;
-	title: string;
-	kind: "md" | "html" | "text" | "file";
 	created_at: number;
-	updated_at: number;
 	current_version: number;
 	expires_at: number | null;
+	id: string;
+	kind: "md" | "html" | "text" | "file";
+	title: string;
+	updated_at: number;
 }
 
 /** One history entry returned by the API. `r2_key` stays on the server. */
 export interface VersionRow {
-	version: number;
-	kind: "md" | "html" | "text" | "file";
 	created_at: number;
+	kind: "md" | "html" | "text" | "file";
+	version: number;
 }
 
 export interface VersionsResult {
@@ -51,11 +51,11 @@ export interface VersionsResult {
 
 export interface UpdateResult {
 	id: string;
-	version: number;
 	kind: "md" | "html" | "text" | "file";
 	title: string;
 	updated_at: number;
 	url: string;
+	version: number;
 }
 
 export interface RollbackResult {

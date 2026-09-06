@@ -6,57 +6,57 @@ export interface FileType {
 }
 
 const TYPES: Record<string, string> = {
-	md: "text/markdown",
-	markdown: "text/markdown",
-	html: "text/html",
-	htm: "text/html",
-	txt: "text/plain",
-	csv: "text/csv",
-	tsv: "text/tab-separated-values",
-	json: "application/json",
-	xml: "application/xml",
-	yaml: "text/yaml",
-	yml: "text/yaml",
-	svg: "image/svg+xml",
-	js: "text/javascript",
-	jsx: "text/javascript",
-	ts: "text/plain",
-	tsx: "text/plain",
+	avif: "image/avif",
+	bash: "text/plain",
+	c: "text/plain",
+	conf: "text/plain",
+	cpp: "text/plain",
 	css: "text/css",
+	csv: "text/csv",
+	gif: "image/gif",
+	go: "text/plain",
+	h: "text/plain",
+	htm: "text/html",
+	html: "text/html",
+	ico: "image/x-icon",
+	ini: "text/plain",
+	java: "text/plain",
+	jpeg: "image/jpeg",
+	jpg: "image/jpeg",
+	js: "text/javascript",
+	json: "application/json",
+	jsx: "text/javascript",
+	kt: "text/plain",
+	log: "text/plain",
+	m4a: "audio/mp4",
+	markdown: "text/markdown",
+	md: "text/markdown",
+	mp3: "audio/mpeg",
+	mp4: "video/mp4",
+	ogg: "audio/ogg",
+	pdf: "application/pdf",
+	png: "image/png",
 	py: "text/plain",
 	rb: "text/plain",
 	rs: "text/plain",
-	go: "text/plain",
 	sh: "text/plain",
-	bash: "text/plain",
-	zsh: "text/plain",
 	sql: "text/plain",
-	log: "text/plain",
-	toml: "text/plain",
-	ini: "text/plain",
-	conf: "text/plain",
-	c: "text/plain",
-	h: "text/plain",
-	cpp: "text/plain",
-	java: "text/plain",
-	kt: "text/plain",
+	svg: "image/svg+xml",
 	swift: "text/plain",
 	tex: "text/plain",
-	pdf: "application/pdf",
-	png: "image/png",
-	jpg: "image/jpeg",
-	jpeg: "image/jpeg",
-	gif: "image/gif",
-	webp: "image/webp",
-	avif: "image/avif",
-	ico: "image/x-icon",
-	mp3: "audio/mpeg",
+	toml: "text/plain",
+	ts: "text/plain",
+	tsv: "text/tab-separated-values",
+	tsx: "text/plain",
+	txt: "text/plain",
 	wav: "audio/wav",
-	ogg: "audio/ogg",
-	m4a: "audio/mp4",
-	mp4: "video/mp4",
 	webm: "video/webm",
+	webp: "image/webp",
+	xml: "application/xml",
+	yaml: "text/yaml",
+	yml: "text/yaml",
 	zip: "application/zip",
+	zsh: "text/plain",
 };
 
 export function isDocumentKind(value: unknown): value is DocumentKind {
@@ -83,17 +83,6 @@ export function inferFileType(filename: string, mediaType = ""): FileType {
 	return { kind: isTextMediaType(media_type) ? "text" : "file", media_type };
 }
 
-export function defaultMediaType(kind: DocumentKind): string {
-	return { md: "text/markdown", html: "text/html", text: "text/plain", file: "application/octet-stream" }[kind];
-}
-
-/** Keep download names in a quoted ASCII fallback plus an encoded UTF-8 parameter. */
-export function attachmentDisposition(filename: string | null): string {
-	const name = filename || "document";
-	const fallback = name.replace(/[^a-zA-Z0-9._-]/g, "_");
-	return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`;
-}
-
 /** Recognize UTF-8 text only when metadata did not identify a binary format. */
 export function inferFileBytes(filename: string, mediaType: string, source: ArrayBufferLike): FileType {
 	const inferred = inferFileType(filename, mediaType);
@@ -107,4 +96,15 @@ export function inferFileBytes(filename: string, mediaType: string, source: Arra
 		// Invalid UTF-8 remains a binary file. Its original bytes are still stored.
 	}
 	return inferred;
+}
+
+export function defaultMediaType(kind: DocumentKind): string {
+	return { md: "text/markdown", html: "text/html", text: "text/plain", file: "application/octet-stream" }[kind];
+}
+
+/** Keep download names in a quoted ASCII fallback plus an encoded UTF-8 parameter. */
+export function attachmentDisposition(filename: string | null): string {
+	const name = filename || "document";
+	const fallback = name.replace(/[^a-zA-Z0-9._-]/g, "_");
+	return `attachment; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`;
 }

@@ -1,12 +1,12 @@
 import { type DocumentKind, defaultMediaType } from "./content";
 
 export interface DocumentRow {
-	id: string;
-	title: string;
 	created_at: number;
-	updated_at: number;
 	current_version: number;
 	expires_at: number | null;
+	id: string;
+	title: string;
+	updated_at: number;
 }
 
 export interface VersionMetadata {
@@ -16,22 +16,22 @@ export interface VersionMetadata {
 }
 
 export interface VersionRow extends VersionMetadata {
+	created_at: number;
 	document_id: string;
-	version: number;
 	kind: DocumentKind;
 	r2_key: string;
-	created_at: number;
+	version: number;
 }
 
 /** A document joined to one version. */
 export interface ResolvedDocument extends DocumentRow {
 	filename: string | null;
-	media_type: string;
-	version_title: string | null;
-	version: number;
 	kind: DocumentKind;
+	media_type: string;
 	r2_key: string;
+	version: number;
 	version_created_at: number;
+	version_title: string | null;
 }
 
 /** List projection: no r2_key (nothing outside the blob paths needs it). */
@@ -41,12 +41,12 @@ export interface DocumentSummary extends DocumentRow {
 
 /** A brand-new document plus the contents of its version 1. */
 export interface NewDocument extends VersionMetadata {
-	id: string;
-	title: string;
-	kind: DocumentKind;
-	r2_key: string;
 	created_at: number;
 	expires_at: number | null;
+	id: string;
+	kind: DocumentKind;
+	r2_key: string;
+	title: string;
 }
 
 export interface ShareRow {

@@ -61,10 +61,10 @@ function enforceMaxBytes(source: string | ArrayBuffer): void {
 
 export interface NewDocumentInput {
 	expires_at: number | null;
-	kind: DocumentKind;
-	source: string | ArrayBuffer;
 	filename?: string;
+	kind: DocumentKind;
 	media_type?: string;
+	source: string | ArrayBuffer;
 	title: string;
 }
 
@@ -82,14 +82,14 @@ export async function createDocument(env: Env, now: number, input: NewDocumentIn
 	const r2_key = versionR2Key(id, 1);
 
 	await insertDocument(env.DB, {
-		id,
-		title: input.title,
-		kind: input.kind,
-		filename: input.filename ?? null,
-		media_type: input.media_type ?? defaultMediaType(input.kind),
-		r2_key,
 		created_at: now,
 		expires_at: input.expires_at,
+		filename: input.filename ?? null,
+		id,
+		kind: input.kind,
+		media_type: input.media_type ?? defaultMediaType(input.kind),
+		r2_key,
+		title: input.title,
 	});
 	try {
 		await env.BLOBS.put(r2_key, input.source);
@@ -102,10 +102,10 @@ export async function createDocument(env: Env, now: number, input: NewDocumentIn
 }
 
 export interface NewVersionInput {
-	kind: DocumentKind;
-	source: string | ArrayBuffer;
 	filename?: string;
+	kind: DocumentKind;
 	media_type?: string;
+	source: string | ArrayBuffer;
 	/** null keeps the document's current title. */
 	title: string | null;
 }
@@ -148,14 +148,14 @@ export async function addVersion(
 		version = await nextVersion(env.DB, doc.id);
 		r2_key = versionR2Key(doc.id, version);
 		const row = {
-			document_id: doc.id,
-			version,
-			kind: input.kind,
-			r2_key,
 			created_at: now,
+			document_id: doc.id,
 			filename: input.filename ?? doc.filename,
+			kind: input.kind,
 			media_type: input.media_type ?? (input.kind === doc.kind ? doc.media_type : defaultMediaType(input.kind)),
+			r2_key,
 			title,
+			version,
 		};
 		if (await insertVersion(env.DB, row)) break;
 		// A competing request took this version number. Allocate another.
@@ -284,12 +284,12 @@ export async function deleteDocumentWithBlobs(env: Env, id: string): Promise<boo
 }
 
 export interface VersionContent {
+	binary: boolean;
 	body: ReadableStream<Uint8Array>;
+	filename: string | null;
+	media_type: string;
 	size: number;
 	source_size: number;
-	media_type: string;
-	filename: string | null;
-	binary: boolean;
 }
 
 /** Read source or an AI-friendly text representation after resolving authorization. */
@@ -305,10 +305,10 @@ export async function readVersionContent(
 	const obj = await env.BLOBS.get(doc.r2_key);
 	if (!obj) return null;
 	const metadata = {
-		media_type: doc.media_type,
-		filename: doc.filename,
-		source_size: obj.size,
 		binary: doc.kind === "file",
+		filename: doc.filename,
+		media_type: doc.media_type,
+		source_size: obj.size,
 	};
 	if (raw || (doc.kind !== "html" && doc.kind !== "file")) {
 		return { ...metadata, body: obj.body, size: obj.size };
