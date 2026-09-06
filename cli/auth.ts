@@ -112,16 +112,16 @@ function parseCredential(raw: string | null, resource: string): StoredCredential
 	try {
 		parsed = JSON.parse(raw);
 	} catch {
-		throw new Error("Stored OAuth credential is corrupt. Run 'poof logout', then 'poof login'.");
+		throw new Error("Stored OAuth credential is corrupt. Run 'poof auth logout', then 'poof auth login'.");
 	}
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-		throw new Error("Stored OAuth credential is invalid. Run 'poof logout', then 'poof login'.");
+		throw new Error("Stored OAuth credential is invalid. Run 'poof auth logout', then 'poof auth login'.");
 	}
 	const value = parsed as Partial<StoredCredential>;
 	const registered = validateOAuthRegistration(value.registration, resource);
 	const tokens = parseTokens(value.tokens);
 	if (value.version !== CREDENTIAL_VERSION || !registered || (value.tokens !== undefined && !tokens)) {
-		throw new Error("Stored OAuth credential is invalid. Run 'poof logout', then 'poof login'.");
+		throw new Error("Stored OAuth credential is invalid. Run 'poof auth logout', then 'poof auth login'.");
 	}
 	return tokens
 		? { version: CREDENTIAL_VERSION, registration: registered, tokens }
@@ -224,7 +224,7 @@ export async function oauthAccessToken(
 ): Promise<string> {
 	const resource = canonicalResource(resourceValue);
 	const credential = await loadCredential(resource, runtime);
-	if (!credential?.tokens) throw new Error(`Not logged in to ${resource}. Run 'poof login'.`);
+	if (!credential?.tokens) throw new Error(`Not logged in to ${resource}. Run 'poof auth login'.`);
 	const registered = credential.registration;
 	const current = credential.tokens;
 	if (!forceRefresh && !expiring(current, runtime.now())) return current.accessToken;
@@ -234,7 +234,7 @@ export async function oauthAccessToken(
 		if (!reread || !sameOAuthRegistration(reread.registration, registered)) {
 			throw new Error("OAuth registration changed while waiting for the credential lock. Retry the command.");
 		}
-		if (!reread.tokens) throw new Error(`Not logged in to ${resource}. Run 'poof login'.`);
+		if (!reread.tokens) throw new Error(`Not logged in to ${resource}. Run 'poof auth login'.`);
 		if (forceRefresh && reread.tokens.accessToken !== current.accessToken) return reread.tokens.accessToken;
 		if (!forceRefresh && !expiring(reread.tokens, runtime.now())) return reread.tokens.accessToken;
 		let refreshed: OAuthTokens;
@@ -243,7 +243,7 @@ export async function oauthAccessToken(
 		} catch (error) {
 			if (/\binvalid_grant\b/.test((error as Error).message)) {
 				await saveCredential({ version: CREDENTIAL_VERSION, registration: reread.registration }, runtime);
-				throw new Error(`OAuth login for ${resource} has expired. Run 'poof login'.`, { cause: error });
+				throw new Error(`OAuth login for ${resource} has expired. Run 'poof auth login'.`, { cause: error });
 			}
 			throw error;
 		}
@@ -277,7 +277,7 @@ export async function loginOAuth(
 	} catch (error) {
 		if (reusedRegistration) {
 			throw new Error(
-				`Cannot bind saved OAuth callback port ${reusedRegistration.callbackPort}. Run 'poof login --new-client'.`,
+				`Cannot bind saved OAuth callback port ${reusedRegistration.callbackPort}. Run 'poof auth login --new-client'.`,
 				{ cause: error },
 			);
 		}
@@ -286,7 +286,7 @@ export async function loginOAuth(
 
 	try {
 		if (reusedRegistration && !sameOAuthDiscovery(reusedRegistration, discovery)) {
-			throw new Error("Stored OAuth registration no longer matches discovery. Run 'poof login --new-client'.");
+			throw new Error("Stored OAuth registration no longer matches discovery. Run 'poof auth login --new-client'.");
 		}
 		const registration = reusedRegistration ?? (await registerClient(discovery, listener.port, callbackPath, runtime));
 		const redirectUri = `http://127.0.0.1:${listener.port}${callbackPath}`;
@@ -306,10 +306,10 @@ export async function loginOAuth(
 			const reread = await loadCredential(resource, runtime);
 			if (baseline) {
 				if (!reread || !sameOAuthRegistration(reread.registration, baseline.registration)) {
-					throw new Error("OAuth registration changed during browser authorization. Retry 'poof login'.");
+					throw new Error("OAuth registration changed during browser authorization. Retry 'poof auth login'.");
 				}
 			} else if (reread) {
-				throw new Error("Another login created an OAuth registration. Retry 'poof login'.");
+				throw new Error("Another login created an OAuth registration. Retry 'poof auth login'.");
 			}
 			await saveCredential({ version: CREDENTIAL_VERSION, registration, tokens }, runtime);
 			return reread?.tokens && reread.registration.clientId !== registration.clientId ? reread : null;

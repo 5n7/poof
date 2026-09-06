@@ -17,8 +17,8 @@ owner can view or restore earlier versions.
 
 ```sh
 poof cat <doc-id>             # print the stored (rendered) HTML
-poof login                    # authenticate in a browser
-poof logout                   # revoke the OAuth grant and forget it locally
+poof auth login               # authenticate in a browser
+poof auth logout              # revoke the OAuth grant and forget it locally
 poof ls                       # list documents
 poof push report.md --share   # upload + print a share URL (1d TTL)
 poof revoke <share-token>     # kill a share link now
@@ -30,7 +30,7 @@ poof update <doc-id> file.md  # new version; same URLs keep working
 poof versions <doc-id>        # version history, newest first
 ```
 
-Set `POOF_URL=https://poof.5n7.me`, then run `poof login`. The CLI uses
+Set `POOF_URL=https://poof.5n7.me`, then run `poof auth login`. The CLI uses
 Cloudflare Access Managed OAuth and saves its tokens in the operating system's
 credential manager.
 

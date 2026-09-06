@@ -490,7 +490,7 @@ describe("OAuth refresh and logout", () => {
 			}
 			return originalFetch(input, init);
 		}) as typeof fetch;
-		await expect(oauthAccessToken(RESOURCE, false, f.runtime)).rejects.toThrow("Run 'poof login'");
+		await expect(oauthAccessToken(RESOURCE, false, f.runtime)).rejects.toThrow("Run 'poof auth login'");
 		expect(f.secrets.values.size).toBe(1);
 		expect(await oauthStatus(RESOURCE, f.runtime)).toBeNull();
 	});
