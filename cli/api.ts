@@ -188,7 +188,7 @@ async function request(
 					`Service authentication failed for ${cfg.url}. Check the credential pair and Service Auth policy.`,
 				);
 			}
-			throw new Error(`OAuth authentication failed for ${cfg.url}. Run 'poof login'.`);
+			throw new Error(`OAuth authentication failed for ${cfg.url}. Run 'poof auth login'.`);
 		}
 		if (res.status === 403) {
 			if (cfg.auth.type === "service") {

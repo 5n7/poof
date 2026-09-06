@@ -179,6 +179,14 @@ const logout = defineCommand({
 		}),
 });
 
+const auth = defineCommand({
+	meta: {
+		name: "auth",
+		description: "Manage authentication.",
+	},
+	subCommands: { login, logout },
+});
+
 const ls = defineCommand({
 	meta: {
 		name: "ls",
@@ -391,7 +399,7 @@ const status = defineCommand({
 				return;
 			}
 			const stored = await oauthStatus(cfg.url);
-			if (!stored) throw new Error(`Not logged in to ${cfg.url}. Run 'poof login'.`);
+			if (!stored) throw new Error(`Not logged in to ${cfg.url}. Run 'poof auth login'.`);
 			process.stdout.write(oauthStatusMessage(cfg.url, stored.expiresAt));
 		}),
 });
@@ -481,10 +489,10 @@ const main = defineCommand({
 		name: "poof",
 		description:
 			"CLI for viewing and sharing temporary documents. Reads POOF_URL and uses stored OAuth by default. " +
-			"Only 'poof login' opens a browser. A complete POOF_ACCESS_CLIENT_ID and POOF_ACCESS_CLIENT_SECRET " +
+			"Only 'poof auth login' opens a browser. A complete POOF_ACCESS_CLIENT_ID and POOF_ACCESS_CLIENT_SECRET " +
 			"pair selects headless service auth.",
 	},
-	subCommands: { cat, login, logout, ls, push, revoke, rm, rollback, share, status, update, versions },
+	subCommands: { auth, cat, ls, push, revoke, rm, rollback, share, status, update, versions },
 });
 
 runMain(main);

@@ -239,7 +239,7 @@ is on your `PATH`. The command follows the checkout, so pulling updates is
 enough. If you prefer not to link, use a shell alias:
 `alias poof='bun <repo>/cli/index.ts'`.
 
-Run `poof login`. The CLI prints the authorization URL, opens it in a browser,
+Run `poof auth login`. The CLI prints the authorization URL, opens it in a browser,
 and listens for the callback on an exact random path at `127.0.0.1`. It saves
 OAuth access and refresh tokens in the operating system's credential manager.
 The same credential-manager record keeps the per-deployment dynamic client
@@ -247,18 +247,18 @@ registration and callback port. No OAuth registration or token file is written
 to the filesystem.
 
 ```sh
-poof login
+poof auth login
 poof status
 ```
 
 Unset `POOF_ACCESS_CLIENT_ID` and `POOF_ACCESS_CLIENT_SECRET` before checking
 the OAuth login. A complete pair always selects service authentication, even
-after `poof login` saves an OAuth grant.
+after `poof auth login` saves an OAuth grant.
 
 Ordinary commands refresh an expiring token but never open a browser. When the
-grant expires, run `poof login` again. If another process owns the saved
+grant expires, run `poof auth login` again. If another process owns the saved
 callback port, stop it or replace the registration explicitly with
-`poof login --new-client`. Use `--no-open` to print the URL without launching a
+`poof auth login --new-client`. Use `--no-open` to print the URL without launching a
 browser.
 
 If a process exits while changing OAuth credentials, a later command may time
@@ -287,7 +287,7 @@ owner application before removing any human user's service credentials:
 1. From a request with no Access session, confirm the protected owner root `/`
    returns `401` with a Bearer `WWW-Authenticate` header and a same-origin
    `resource_metadata` URL.
-2. Run `poof login`, `poof status`, and each document command. If the token
+2. Run `poof auth login`, `poof status`, and each document command. If the token
    response includes `resource`, it must normalize exactly to
    `https://poof.5n7.me`.
 3. Leave the grant idle past the 15-minute access-token lifetime, then run
@@ -295,7 +295,7 @@ owner application before removing any human user's service credentials:
 4. Confirm an account outside the owner policy cannot authorize.
 5. Confirm the owner OAuth token cannot open the MCP hostname, the MCP grant
    cannot open `/api/*`, and the CI service token still reaches the owner API.
-6. Run `poof logout`; `poof status` must then require a new login.
+6. Run `poof auth logout`; `poof status` must then require a new login.
 
 Do not remove the old human service token until these checks pass. The client
 accepts a token response with no `resource`, as shown in some Cloudflare

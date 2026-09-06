@@ -362,10 +362,10 @@ Viewer pages (`/d/*`, `/v/*`) also send `Referrer-Policy: no-referrer` so links 
 The CLI is the usual path from AI output to a share link. It is written in TypeScript, lives in `cli/`, and runs through `npx`, `bunx`, or a compiled binary.
 
 ```
+poof auth login [--new-client] [--no-open]
+poof auth logout
 poof cat <doc-id> [--version <n>]
                                 # print the stored (rendered) HTML to stdout
-poof login [--new-client] [--no-open]
-poof logout
 poof ls                         # list documents
 poof push <file> [--title <t>] [--ttl <dur>] [--share [--share-ttl 1d]]
                                 # upload; prints /d/{id} URL; --share also prints /v/{token}
@@ -386,7 +386,7 @@ poof versions <doc-id>          # VER / KIND / CREATED / CURRENT, newest first, 
   authentication for CI or another headless job. One missing half is an error.
   Without the pair, the CLI uses Managed OAuth and never falls back to service
   authentication.
-- `login` discovers OAuth from the protected owner root's `401` challenge, follows RFC 9728
+- `auth login` discovers OAuth from the protected owner root's `401` challenge, follows RFC 9728
   and RFC 8414 metadata, registers a public client for the exact owner resource,
   and completes authorization code + PKCE S256 on an exact random callback path
   at `127.0.0.1`. The saved client registration, callback port, and optional
@@ -408,11 +408,11 @@ poof versions <doc-id>          # VER / KIND / CREATED / CURRENT, newest first, 
   browser. A rejected safe read gets one forced refresh and retry. Writes are
   never replayed automatically; after refreshing a rejected write, the CLI asks
   the caller to rerun it.
-- `logout` attempts RFC 7009 refresh-token revocation, then deletes local tokens
+- `auth logout` attempts RFC 7009 refresh-token revocation, then deletes local tokens
   even when revocation fails. A remote failure returns nonzero and says that the
   local credential is gone. `status` checks the selected credential against the
   live owner API without opening a browser. If a service pair remains in the
-  environment, login and logout say that service authentication still wins.
+  environment, `auth login` and `auth logout` say that service authentication still wins.
 - The CLI only talks to the JSON API; rendering stays server-side (see §8 fallback if that changes).
 - `kind` is inferred from the file extension (`.md` / `.html`) on both `push` and `update`, so a document may switch between Markdown and HTML from one version to the next.
 - **Title.** `push` uses the first Markdown `# heading`, then the file name. `update` keeps the existing title unless the caller passes `--title`. The CLI always resolves and sends a title for `push`, so the server's naming process (§8) does not run. That process handles documents pasted into the web UI and MCP `push` calls without a title (§11.4).
