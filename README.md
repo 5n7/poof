@@ -16,9 +16,9 @@ owner can view or restore earlier versions.
 ## Usage
 
 ```sh
-poof cat <doc-id>             # print the stored (rendered) HTML
 poof auth login               # authenticate in a browser
 poof auth logout              # revoke the OAuth grant and forget it locally
+poof cat <doc-id>             # print the stored (rendered) HTML
 poof ls                       # list documents
 poof push report.md --share   # upload + print a share URL (1d TTL)
 poof revoke <share-token>     # kill a share link now

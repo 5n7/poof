@@ -362,10 +362,10 @@ Viewer pages (`/d/*`, `/v/*`) also send `Referrer-Policy: no-referrer` so links 
 The CLI is the usual path from AI output to a share link. It is written in TypeScript, lives in `cli/`, and runs through `npx`, `bunx`, or a compiled binary.
 
 ```
-poof cat <doc-id> [--version <n>]
-                                # print the stored (rendered) HTML to stdout
 poof auth login [--new-client] [--no-open]
 poof auth logout
+poof cat <doc-id> [--version <n>]
+                                # print the stored (rendered) HTML to stdout
 poof ls                         # list documents
 poof push <file> [--title <t>] [--ttl <dur>] [--share [--share-ttl 1d]]
                                 # upload; prints /d/{id} URL; --share also prints /v/{token}
