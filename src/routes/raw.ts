@@ -1,7 +1,14 @@
 import { Hono } from "hono";
 
 import { attachmentDisposition } from "../lib/content";
-import { type ResolvedDocument, getLiveDocumentAt, getLiveDocumentByShareToken } from "../lib/db";
+import {
+	type ResolvedDocument,
+	getLiveDocumentAt,
+	getLiveDocumentByShareToken,
+	getVersionFile,
+	listVersionFiles,
+} from "../lib/db";
+import { linkDocumentFiles } from "../lib/file-links";
 import { RAW_HEADERS, uniform404, withHeaders } from "../lib/http";
 import { escapeHtml, renderMarkdown, wrapViewerHtml } from "../lib/render";
 import { nowSeconds } from "../lib/time";
@@ -16,9 +23,15 @@ import { verifyOwnerToken } from "../lib/tokens";
 export const rawRoutes = new Hono<{ Bindings: Env }>();
 
 rawRoutes.use("*", withHeaders(RAW_HEADERS));
+rawRoutes.use("/:token/*", async (c, next) => {
+	await next();
+	// Sandboxed HTML has an opaque origin. Its module scripts, fonts, and fetch
+	// requests still carry the bearer token, but require CORS to read local assets.
+	if (c.res.status === 200) c.res.headers.set("Access-Control-Allow-Origin", "*");
+});
 
-rawRoutes.get("/:token", async (c) => {
-	const token = c.req.param("token");
+rawRoutes.on("GET", ["/:token", "/:token/*"], async (c) => {
+	const token = c.req.param("token") ?? "";
 	const now = nowSeconds();
 
 	let doc: ResolvedDocument | null = null;
@@ -34,7 +47,22 @@ rawRoutes.get("/:token", async (c) => {
 	}
 	if (!doc) return uniform404(c);
 
-	const obj = await c.env.BLOBS.get(doc.r2_key);
+	const prefix = `/raw/${token}/`;
+	const pathname = new URL(c.req.url).pathname;
+	let path: string | undefined;
+	try {
+		path = pathname.startsWith(prefix) ? decodeURIComponent(pathname.slice(prefix.length)) : undefined;
+	} catch {
+		return uniform404(c);
+	}
+	if (
+		path !== undefined &&
+		(!path || path.includes("\\") || path.split("/").some((part) => !part || part === "." || part === ".."))
+	)
+		return uniform404(c);
+	const file = await getVersionFile(c.env.DB, doc.id, doc.version, path);
+	if (!file) return uniform404(c);
+	const obj = await c.env.BLOBS.get(file.r2_key);
 	if (!obj) return uniform404(c);
 
 	const format = c.req.query("format");
@@ -46,26 +74,47 @@ rawRoutes.get("/:token", async (c) => {
 		return new Response(obj.body, {
 			headers: {
 				"Content-Type": "application/octet-stream",
-				"Content-Disposition": attachmentDisposition(doc.filename),
+				"Content-Disposition": attachmentDisposition(file.filename ?? file.path),
 			},
 		});
 	}
-	if (doc.media_type === "image/svg+xml") {
+	if (file.media_type === "image/svg+xml") {
 		return new Response(obj.body, { headers: { "Content-Type": "image/svg+xml" } });
 	}
-	if (doc.kind === "html") {
-		return new Response(obj.body, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+	if (file.kind === "html") {
+		const response = new Response(obj.body, { headers: { "Content-Type": "text/html; charset=utf-8" } });
+		if (path === undefined) return response;
+		const files = await listVersionFiles(c.env.DB, doc.id, doc.version);
+		return linkDocumentFiles(
+			response,
+			token,
+			file.path,
+			files.map((entry) => entry.path),
+		);
 	}
 	const title = doc.version_title ?? doc.title;
-	if (doc.kind === "md" || doc.kind === "text") {
-		const source = await obj.text();
-		const body = doc.kind === "md" ? renderMarkdown(source) : `<pre><code>${escapeHtml(source)}</code></pre>`;
-		return new Response(wrapViewerHtml(title, body), { headers: { "Content-Type": "text/html; charset=utf-8" } });
+	if (path !== undefined && file.kind !== "md" && c.req.query("view") !== "1") {
+		return new Response(obj.body, { headers: { "Content-Type": file.media_type } });
 	}
-	if (/^(image\/(png|jpeg|gif|webp|avif|x-icon)|audio\/(mpeg|wav|ogg|mp4)|video\/(mp4|webm))$/.test(doc.media_type)) {
-		return new Response(obj.body, { headers: { "Content-Type": doc.media_type } });
+	if (file.kind === "md" || file.kind === "text") {
+		const source = await obj.text();
+		const body = file.kind === "md" ? renderMarkdown(source) : `<pre><code>${escapeHtml(source)}</code></pre>`;
+		const response = new Response(wrapViewerHtml(title, body), {
+			headers: { "Content-Type": "text/html; charset=utf-8" },
+		});
+		if (path === undefined) return response;
+		const files = await listVersionFiles(c.env.DB, doc.id, doc.version);
+		return linkDocumentFiles(
+			response,
+			token,
+			file.path,
+			files.map((entry) => entry.path),
+		);
+	}
+	if (/^(image\/(png|jpeg|gif|webp|avif|x-icon)|audio\/(mpeg|wav|ogg|mp4)|video\/(mp4|webm))$/.test(file.media_type)) {
+		return new Response(obj.body, { headers: { "Content-Type": file.media_type } });
 	}
 	await obj.body.cancel();
-	const body = `<h1>${escapeHtml(doc.filename ?? title)}</h1><p>${escapeHtml(doc.media_type)} · ${obj.size} bytes</p><p>This file has no browser preview. Use the download button to save the original file.</p>`;
+	const body = `<h1>${escapeHtml(file.filename ?? title)}</h1><p>${escapeHtml(file.media_type)} · ${obj.size} bytes</p><p>This file has no browser preview. Use the download button to save the original file.</p>`;
 	return new Response(wrapViewerHtml(title, body), { headers: { "Content-Type": "text/html; charset=utf-8" } });
 });

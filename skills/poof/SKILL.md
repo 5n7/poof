@@ -5,7 +5,7 @@ description: Share files via disposable links, through the poof MCP tools or the
 
 # poof document sharing
 
-poof stores a file unchanged in a private library and mints
+poof stores related files unchanged as one document in a private library and mints
 short-lived public share links. Write a document, push it, and send the
 recipient a URL. The URL expires on schedule or stops working when revoked.
 
@@ -49,24 +49,27 @@ Spelled as CLI invocations; each is also an MCP tool of the same name, with the
 same meaning.
 
 ```sh
-poof cat <doc-id> [--version <n>] [--raw]
+poof cat <doc-id> [--file <path>] [--version <n>] [--raw]
+poof files <doc-id> [--version <n>]
 poof ls
-poof push <file> [--title <t>] [--ttl 1h|1d|1w] [--share] [--share-ttl 1h|1d|1w]
+poof push <file-or-directory>... [--root <directory>] [--title <t>] [--ttl 1h|1d|1w] [--share] [--share-ttl 1h|1d|1w]
 poof revoke <share-token>
 poof rm <doc-id>
 poof rollback <doc-id> <version>
 poof share <doc-id> [--share-ttl 1h|1d|1w]
-poof update <doc-id> <file> [--title <t>]
+poof update <doc-id> [<file-or-directory>...] [--root <directory>] [--delete <path>]... [--title <t>]
 poof versions <doc-id>
 ```
 
+- `files` lists paths and file types for the current or selected version.
 - `cat` prints original Markdown/text or readable Markdown extracted from HTML.
-  Pass `--version <n>` for a past version. Use `--raw` to retrieve original bytes
+  Pass `--file <path>` to select a file and `--version <n>` for a past version. Use `--raw` to retrieve original bytes
   for editing HTML or downloading binary files. Default binary output gives
   metadata and a raw-download command.
 - `ls` lists documents (id, title, kind, current version, last updated,
   expires).
-- `push` uploads any file unchanged (type inferred from its filename and bytes) and prints the `/d/{id}` owner URL. With `--share` it
+- `push` uploads one or more files into one document. File types may be mixed.
+  It prints the `/d/{id}` owner URL. With `--share` it
   also issues a share link and prints the `/v/{token}` URL on a second line.
 - `--ttl` sets the document's own lifetime. Omitted means the document is
   kept forever; when it expires, the document and all its shares die.
@@ -74,20 +77,44 @@ poof versions <doc-id>
   expire; there is no forever share.
 - `revoke` kills one share token immediately (takes the `s_...` token, not
   the document id).
-- `rm` deletes a document, its stored blob, and all of its shares.
-- `rollback` makes a past version current again. Same instant effect on live
+- `rm` deletes a document, all stored files and versions, and all of its shares.
+- `rollback` restores the complete file set from a past version and keeps the current
+  document title. Same instant effect on live
   share links as `update`.
 - `share` issues an additional share link for an existing document.
-- `update` replaces a document's contents with a new version, keeping the
-  same `/d/{id}` and the same share links. Prints the `/d/{id}` URL, then
-  `v{n}` on a second line. The title is kept unless `--title` is given; the
-  kind may change between versions (`.md` → `.html` is fine).
+- `update` merges by path: matching files are replaced, new paths are appended,
+  and omitted files remain. Repeat `--delete <path>` for explicit removals.
+  A deletion path is required; use `--delete=-draft.md` for names beginning with a dash.
+  It prints the same `/d/{id}` URL, then `v{n}`. The title remains unless
+  `--title` is given. A document must retain at least one file.
 - `versions` lists a document's versions, newest first, with `*` on the
   current one. Pass one of its version numbers to `rollback`.
 
+## File paths and limits
+
+Keep related Markdown, HTML, and assets in one document so relative links work.
+A directory input stores its contents relative to that directory. Multiple
+inputs use their common parent. Use `--root` to choose the root explicitly and
+reuse that root for later updates, such as `poof update <id> adr/001.md --root .`.
+The first uploaded file opens by default; directories use sorted traversal.
+Directory traversal does not follow symbolic link entries. At most 100 files
+may remain in a document, and
+one upload may contain at most 10 MiB of decoded source bytes.
+
+An existing single-file document accepts the original replacement flow:
+`poof update <id> replacement.html` replaces its sole file, including its name.
+Pass `--root` for an explicit path when adding files to a single-file document.
+When a document already contains several files, a filename-only upload merges
+that name and retains the other files.
+
 ## MCP differences
 
-- `push` and `update` take `content` as a string. For binary files use
+- For multiple files, `push` and `update` take `files: [{path, content, encoding?}]`.
+  Each entry may set `kind`, `filename`, and `media_type`. Preserve nested paths.
+  `update` takes `delete_paths: ["obsolete.md"]` for explicit removal.
+  Omit top-level `content` when supplying `files`. Use `files` to list paths and
+  `cat` with `file: "adr/001.md"` to read one. Both accept a `version`.
+- The existing single-file flow takes `content` as a string. For binary files use
   `encoding: "base64"` and base64-encoded content. The 10 MiB cap applies after
   decoding. Set `filename` and optionally `media_type` to describe the file.
 - `kind` accepts `file`, `html`, `md`, or `text`. When omitted, the tools infer
@@ -95,8 +122,8 @@ poof versions <doc-id>
   for text or `file` for base64, and `update` keeps the current kind.
 - `push` without a `title` lets the server name the document from its own
   content, so writing one out and pushing it needs no title argument. It
-  falls back to the first `#` heading and then to `untitled`; the CLI, which
-  has a file, falls back to the file name instead.
+  falls back to the first `#` heading, then the supplied filename or file path,
+  and finally `untitled`. The CLI falls back to the file name.
 - `cat` converts HTML to readable Markdown before applying its 128 KiB cap.
   Use `raw: true` to read original text/HTML; binary files always return download
   metadata. A longer text comes back truncated,
@@ -109,11 +136,11 @@ poof versions <doc-id>
 Sharing a freshly written doc with someone:
 
 ```sh
-poof push report.md --share --share-ttl 1d
+poof push overview.md adr/ --share --share-ttl 1d
 ```
 
-MCP: `push` with the document text as `content`, `share: true`, and
-`share_ttl: "1d"`.
+MCP: `push` with each file as `{path, content}` in `files`, `share: true`,
+and `share_ttl: "1d"`.
 
 Give the recipient the `/v/...` line only. A title argument is rarely needed:
 the server names an untitled document from its content, and the CLI falls back
@@ -122,10 +149,10 @@ to the file name.
 To revise a shared document, edit its source and run:
 
 ```sh
-poof update <doc-id> report.md
+poof update <doc-id> adr/001.md --root .
 ```
 
-MCP: `update` with the same `id` and the revised text as `content`.
+MCP: `update` with the same `id` and `files: [{path: "adr/001.md", content: "..."}]`.
 
 The recipient sees the new content the next time they load the link they
 already have. Do not push a second document and do not re-send a URL.
@@ -148,5 +175,5 @@ descriptions.
   version number or that a history exists.
 - Fixing a document means revising the source and running `update` on the same
   document id. The same URL keeps working, so nothing has to be reissued or
-  re-sent. Use `push` only when it should genuinely be a separate document,
+  re-sent. Use `push` only when it should be a separate document,
   and `rm` when the old one should disappear.

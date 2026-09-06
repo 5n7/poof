@@ -1,16 +1,21 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 
+import { attachmentDisposition, defaultMediaType, inferFileBytes, isDocumentKind } from "../lib/content";
 import {
-	type DocumentKind,
-	attachmentDisposition,
-	defaultMediaType,
-	inferFileBytes,
-	isDocumentKind,
-} from "../lib/content";
-import { getLiveDocument, listDocuments, listShares, listVersions, revokeShare } from "../lib/db";
+	getLiveDocument,
+	getLiveDocumentAt,
+	listDocuments,
+	listShares,
+	listVersions,
+	listVersionFiles,
+	revokeShare,
+} from "../lib/db";
 import {
 	MAX_BYTES,
+	MAX_FILES,
+	DocumentInputError,
+	type NewFileInput,
 	addVersion,
 	createDocument,
 	deleteDocumentWithBlobs,
@@ -18,6 +23,7 @@ import {
 	readVersionContent,
 	rollbackDocument,
 } from "../lib/documents";
+import { MAX_UPLOAD_BYTES } from "../lib/files";
 import { API_CONTENT_HEADERS, isVersionString, uniform404, withHeaders } from "../lib/http";
 import { nowSeconds } from "../lib/time";
 import { resolveNewTitle } from "../lib/title";
@@ -26,18 +32,21 @@ import { parseTtl } from "../lib/tokens";
 /** All routes here sit behind `accessAuth` and `csrfProtection` (wired in index.ts). */
 export const apiRoutes = new Hono<{ Bindings: Env }>();
 
-/** Allow multipart boundaries and metadata without reducing the source-byte limit. */
+/** Fixed blocks bound allocation overhead from tiny transport chunks. */
 const UPLOAD_BUFFER_BYTES = 64 * 1024;
-const MAX_UPLOAD_BYTES = MAX_BYTES + UPLOAD_BUFFER_BYTES;
 
 interface Upload {
-	file: File;
+	files: NewFileInput[];
+	legacy: boolean;
+	delete_paths: string[];
 	title: string | null;
-	kind: DocumentKind;
-	media_type: string;
-	source: ArrayBuffer;
 	ttl: string | File | null;
 }
+
+apiRoutes.onError((error, c) => {
+	if (error instanceof DocumentInputError) return c.json({ error: error.message }, error.status);
+	throw error;
+});
 
 /**
  * Parse the upload multipart body shared by "create document" and "add
@@ -46,7 +55,7 @@ interface Upload {
  * blank; the create path then runs the naming chain (lib/title.ts), while on a
  * version upload "no title" means "keep the document's current one".
  */
-async function readUpload(c: Context<{ Bindings: Env }>): Promise<Upload | Response> {
+async function readUpload(c: Context<{ Bindings: Env }>, update = false): Promise<Upload | Response> {
 	const contentLength = Number(c.req.header("Content-Length") ?? "0");
 	if (contentLength > MAX_UPLOAD_BYTES) return c.text("Payload Too Large", 413);
 
@@ -85,22 +94,44 @@ async function readUpload(c: Context<{ Bindings: Env }>): Promise<Upload | Respo
 	}
 	if (buffer) chunks[chunks.length - 1] = buffer.subarray(0, used);
 	const form = await new Response(new Blob(chunks), { headers: c.req.raw.headers }).formData();
-	const file = form.get("file");
-	if (!(file instanceof File)) return c.json({ error: "file is required" }, 400);
-	if (file.size > MAX_BYTES) return c.text("Payload Too Large", 413);
-
-	const source = await file.arrayBuffer();
-	const inferred = inferFileBytes(file.name, file.type, source);
-	const kind = form.get("kind") ?? inferred.kind;
-	if (!isDocumentKind(kind)) {
-		return c.json({ error: "kind must be 'file', 'html', 'md', or 'text'" }, 400);
+	const uploaded = form.getAll("file");
+	const paths = form.getAll("path");
+	const removed = form.getAll("delete");
+	if (uploaded.length > MAX_FILES || removed.length > MAX_FILES)
+		return c.json({ error: `At most ${MAX_FILES} files are allowed.` }, 400);
+	if (paths.length && paths.length !== uploaded.length) return c.json({ error: "Each file needs one path." }, 400);
+	if ((!uploaded.length && (!update || !removed.length)) || uploaded.some((file) => !(file instanceof File)))
+		return c.json({ error: "file is required" }, 400);
+	if (paths.some((path) => typeof path !== "string") || removed.some((path) => typeof path !== "string"))
+		return c.json({ error: "Paths must be strings." }, 400);
+	const files: NewFileInput[] = [];
+	let bytes = 0;
+	for (let i = 0; i < uploaded.length; i++) {
+		const file = uploaded[i] as File;
+		bytes += file.size;
+		if (bytes > MAX_BYTES) return c.text("Payload Too Large", 413);
+		const source = await file.arrayBuffer();
+		const inferred = inferFileBytes(file.name, file.type, source);
+		const kind = form.get("kind") ?? inferred.kind;
+		if (!isDocumentKind(kind)) return c.json({ error: "kind must be 'file', 'html', 'md', or 'text'" }, 400);
+		const media_type = kind === inferred.kind ? inferred.media_type : defaultMediaType(kind);
+		files.push({
+			path: paths.length ? (paths[i] as string) : file.name,
+			filename: file.name,
+			kind,
+			media_type,
+			source,
+		});
 	}
-	const media_type = kind === inferred.kind ? inferred.media_type : defaultMediaType(kind);
-
 	const titleField = form.get("title");
 	const title = typeof titleField === "string" && titleField.trim() ? titleField.trim() : null;
-
-	return { file, title, kind, media_type, source, ttl: form.get("ttl") };
+	return {
+		files,
+		legacy: files.length === 1 && !paths.length && !removed.length,
+		delete_paths: removed as string[],
+		title,
+		ttl: form.get("ttl"),
+	};
 }
 
 apiRoutes.post("/documents", async (c) => {
@@ -116,33 +147,30 @@ apiRoutes.post("/documents", async (c) => {
 		expires_at = now + secs;
 	}
 
-	const source = upload.source;
-	// An absent or blank title means "name it for me". See readUpload.
-	// A present one is used verbatim, which is what keeps the CLI and every
-	// drag-dropped file naming itself. Ordering: after the TTL check above, so an
-	// `invalid ttl` 400 never spends a neuron; after readUpload's size guard, so
-	// the model never reads a document that is about to be rejected; and before
-	// createDocument, which records the title beside the original bytes.
+	const first = upload.files[0]!;
 	const title =
 		upload.title ??
-		(upload.kind === "md"
+		(upload.files.length === 1 && first.kind === "md"
 			? await resolveNewTitle(c.env, {
-					fallback: upload.file.name,
+					fallback: first.filename ?? first.path,
 					kind: "md",
-					source: new TextDecoder().decode(source),
+					source: new TextDecoder().decode(first.source as ArrayBuffer),
 				})
-			: upload.file.name.trim() || "untitled");
-	const id = await createDocument(c.env, now, {
-		title,
-		filename: upload.file.name,
-		kind: upload.kind,
-		media_type: upload.media_type,
-		source,
-		expires_at,
-	});
-
+			: first.filename?.trim() || "untitled");
+	const sources = upload.legacy ? first : { files: upload.files };
+	const id = await createDocument(c.env, now, { ...sources, title, expires_at });
 	return c.json(
-		{ id, title, kind: upload.kind, version: 1, created_at: now, updated_at: now, expires_at, url: `/d/${id}` },
+		{
+			id,
+			title,
+			kind: first.kind,
+			version: 1,
+			created_at: now,
+			updated_at: now,
+			expires_at,
+			file_count: upload.files.length,
+			url: `/d/${id}`,
+		},
 		201,
 	);
 });
@@ -166,25 +194,51 @@ apiRoutes.post("/documents/:id/versions", async (c) => {
 	const doc = await getLiveDocument(c.env.DB, id, now);
 	if (!doc) return uniform404(c);
 
-	const upload = await readUpload(c);
+	const upload = await readUpload(c, true);
 	if (upload instanceof Response) return upload;
-
-	const source = upload.source;
+	const sources = upload.legacy ? upload.files[0]! : { files: upload.files };
 	const added = await addVersion(c.env, doc, now, {
+		...sources,
 		title: upload.title,
-		filename: upload.file.name,
-		kind: upload.kind,
-		media_type: upload.media_type,
-		source,
+		delete_paths: upload.delete_paths,
 	});
-	// null = the document was deleted mid-request, which folds into the same 404
-	// as any other missing document.
 	if (!added) return uniform404(c);
-
+	const files = await listVersionFiles(c.env.DB, id, added.version);
 	return c.json(
-		{ id, version: added.version, kind: upload.kind, title: added.title, updated_at: now, url: `/d/${id}` },
+		{
+			id,
+			version: added.version,
+			kind: files[0]!.kind,
+			title: added.title,
+			updated_at: now,
+			file_count: files.length,
+			url: `/d/${id}`,
+		},
 		201,
 	);
+});
+
+apiRoutes.get("/documents/:id/files", async (c) => {
+	const raw = c.req.query("v");
+	if (raw !== undefined && !isVersionString(raw)) return c.json({ error: "invalid version" }, 400);
+	const doc = await getLiveDocumentAt(
+		c.env.DB,
+		c.req.param("id"),
+		raw === undefined ? null : Number(raw),
+		nowSeconds(),
+	);
+	if (!doc) return uniform404(c);
+	const files = await listVersionFiles(c.env.DB, doc.id, doc.version);
+	return c.json({
+		version: doc.version,
+		files: files.map(({ path, filename, kind, media_type, position }) => ({
+			path,
+			filename,
+			kind,
+			media_type,
+			position,
+		})),
+	});
 });
 
 apiRoutes.get("/documents/:id/versions", async (c) => {
@@ -222,7 +276,7 @@ apiRoutes.get("/documents/:id/content", async (c) => {
 	// documents can reach 10 MiB, so stream the body as /raw does.
 	const format = c.req.query("format");
 	if (format !== undefined && format !== "raw") return c.json({ error: "invalid format" }, 400);
-	const obj = await readVersionContent(c.env, id, asked, nowSeconds(), format === "raw");
+	const obj = await readVersionContent(c.env, id, asked, nowSeconds(), format === "raw", c.req.query("file"));
 	if (!obj) return uniform404(c);
 
 	return new Response(obj.body, {

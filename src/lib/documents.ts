@@ -1,6 +1,7 @@
 import { deleteBlobs } from "./batch";
 import { type DocumentKind, defaultMediaType } from "./content";
 import {
+	type DocumentFileRow,
 	type ResolvedDocument,
 	type ShareRow,
 	applyNewVersion,
@@ -9,16 +10,21 @@ import {
 	getLiveDocument,
 	getLiveDocumentAt,
 	getVersion,
+	getVersionFile,
 	insertDocument,
 	insertShare,
 	insertVersion,
+	listVersionFiles,
 	listVersionKeys,
 	nextVersion,
 	setCurrentVersion,
 	versionR2Key,
 } from "./db";
+import { DocumentInputError, MAX_BYTES, MAX_FILES, defaultFilePath, validateFilePath } from "./files";
 import { htmlToMarkdown } from "./html-to-markdown";
 import { newShareToken, parseTtl, randomToken } from "./tokens";
+
+export { DocumentInputError, MAX_BYTES, MAX_FILES } from "./files";
 
 /**
  * Shared write operations for the JSON API and MCP tools. Route files parse
@@ -34,9 +40,6 @@ import { newShareToken, parseTtl, randomToken } from "./tokens";
  * (`deleteDocumentWithBlobs`, whose DELETE reports whether a row was there).
  */
 
-/** Upload size cap (SPEC §9). */
-export const MAX_BYTES = 10 * 1024 * 1024; // 10 MiB
-
 /** Attempts at allocating a version number before giving up (see insertVersion). */
 const MAX_VERSION_ATTEMPTS = 3;
 
@@ -48,153 +51,174 @@ export function sourceBytes(source: string | ArrayBuffer): number {
 	return typeof source === "string" ? new TextEncoder().encode(source).length : source.byteLength;
 }
 
-/**
- * Refuse an oversized source before anything is rendered or written.
- *
- * Adapters check the size first so they can return their own error format. This
- * guard keeps later adapters from writing an oversized blob (SPEC §11.5).
- */
-function enforceMaxBytes(source: string | ArrayBuffer): void {
-	const bytes = sourceBytes(source);
-	if (bytes > MAX_BYTES) throw new Error(`document source is ${bytes} bytes, over the ${MAX_BYTES}-byte limit`);
-}
-
-export interface NewDocumentInput {
-	title: string;
+export interface NewFileInput {
+	path: string;
 	filename?: string;
 	kind: DocumentKind;
 	media_type?: string;
 	source: string | ArrayBuffer;
+}
+
+interface SingleSourceInput {
+	filename?: string;
+	kind: DocumentKind;
+	media_type?: string;
+	source: string | ArrayBuffer;
+	files?: never;
+}
+
+interface FileSetInput {
+	files: NewFileInput[];
+}
+
+export type NewDocumentInput = (SingleSourceInput | FileSetInput) & {
+	title: string;
 	expires_at: number | null;
-}
+};
 
-/**
- * Create a document and its version 1.
- *
- * Insert the rows BEFORE the blob: the weekly orphan sweep deletes any doc/blob
- * without a matching version row, so a blob that briefly exists without a row
- * could be swept mid-upload. If the put then fails, roll the rows back.
- */
-export async function createDocument(env: Env, now: number, input: NewDocumentInput): Promise<string> {
-	enforceMaxBytes(input.source);
-
-	const id = randomToken();
-	const r2_key = versionR2Key(id, 1);
-
-	await insertDocument(env.DB, {
-		id,
-		title: input.title,
-		filename: input.filename ?? null,
-		kind: input.kind,
-		media_type: input.media_type ?? defaultMediaType(input.kind),
-		r2_key,
-		created_at: now,
-		expires_at: input.expires_at,
-	});
-	try {
-		await env.BLOBS.put(r2_key, input.source);
-	} catch (err) {
-		await deleteDocument(env.DB, id).catch(() => {});
-		throw err;
-	}
-
-	return id;
-}
-
-export interface NewVersionInput {
+export type NewVersionInput = (SingleSourceInput | FileSetInput) & {
 	/** null keeps the document's current title. */
 	title: string | null;
-	filename?: string;
-	kind: DocumentKind;
-	media_type?: string;
-	source: string | ArrayBuffer;
-}
+	delete_paths?: string[];
+};
 
-/** The version an upload landed on, plus the title it is now filed under. */
 export interface NewVersion {
 	version: number;
 	title: string;
 }
 
-/**
- * Add a version to a live document in three phases. Stage the row before the
- * blob so cleanup cannot remove it. Move current_version only after the blob
- * exists so live links never point to a missing object.
- *
- * `doc` must already be resolved live by the caller, so that a missing document
- * is rejected before the caller spends anything on parsing its input. null here
- * means the document went away mid-request, which folds into that same "isn't
- * there" answer.
- */
+function validateFiles(files: NewFileInput[]): void {
+	if (files.length > MAX_FILES) throw new DocumentInputError(`A document supports at most ${MAX_FILES} files.`);
+	const paths = new Set<string>();
+	let bytes = 0;
+	for (const file of files) {
+		validateFilePath(file.path);
+		if (paths.has(file.path)) throw new DocumentInputError(`Duplicate file path: ${file.path}`);
+		paths.add(file.path);
+		bytes += sourceBytes(file.source);
+	}
+	if (bytes > MAX_BYTES)
+		throw new DocumentInputError(`Document upload is ${bytes} bytes, over the ${MAX_BYTES}-byte limit.`, 413);
+}
+
+function fileRow(id: string, version: number, file: NewFileInput, position: number): DocumentFileRow {
+	return {
+		document_id: id,
+		version,
+		path: file.path,
+		filename: file.filename ?? file.path,
+		kind: file.kind,
+		media_type: file.media_type ?? defaultMediaType(file.kind),
+		position,
+		r2_key: position === 0 ? versionR2Key(id, version) : `doc/${id}/v${version}/${position}`,
+	};
+}
+
+/** Stage every source reference before uploading, then publish the complete snapshot. */
+export async function createDocument(env: Env, now: number, input: NewDocumentInput): Promise<string> {
+	const files = input.files ?? [{ ...input, path: defaultFilePath(input.filename, input.kind) }];
+	validateFiles(files);
+	if (!files.length) throw new DocumentInputError("At least one file is required.");
+	const id = randomToken();
+	const rows = files.map((file, position) => fileRow(id, 1, file, position));
+	const first = rows[0]!;
+	await insertDocument(
+		env.DB,
+		{ ...first, id, title: input.title, created_at: now, expires_at: input.expires_at },
+		rows,
+		true,
+	);
+	try {
+		for (let i = 0; i < files.length; i++) await env.BLOBS.put(rows[i]!.r2_key, files[i]!.source);
+		if (!(await applyNewVersion(env.DB, id, 1, now, input.title, 0)))
+			throw new Error("Document disappeared during upload.");
+	} catch (err) {
+		await deleteBlobs(
+			env.BLOBS,
+			rows.map((row) => row.r2_key),
+		).catch(() => {});
+		await deleteDocument(env.DB, id).catch(() => {});
+		throw err;
+	}
+	return id;
+}
+
+/** Merge paths into an immutable snapshot; publishing fails if another writer moved the pointer. */
 export async function addVersion(
 	env: Env,
 	doc: ResolvedDocument,
 	now: number,
 	input: NewVersionInput,
 ): Promise<NewVersion | null> {
-	enforceMaxBytes(input.source);
-	// An absent title keeps the current one: retitling a document on every content
-	// fix (down to the <title> on the recipient's page) would be a surprise. The
-	// asymmetry with `createDocument`, whose callers run the naming chain on an
-	// absent title (SPEC §8), is deliberate. Auto-naming is create-only.
+	const previous = await listVersionFiles(env.DB, doc.id, doc.version);
+	const legacy = input.files === undefined;
+	const files = input.files ?? [
+		{
+			...input,
+			filename: input.filename ?? doc.filename ?? undefined,
+			media_type: input.media_type ?? (input.kind === doc.kind ? doc.media_type : defaultMediaType(input.kind)),
+			path: input.filename
+				? defaultFilePath(input.filename, input.kind)
+				: (previous[0]?.path ?? defaultFilePath(null, input.kind)),
+		},
+	];
+	validateFiles(files);
+	const deleted = new Set<string>();
+	for (const path of input.delete_paths ?? []) {
+		validateFilePath(path);
+		if (deleted.has(path)) throw new DocumentInputError(`Duplicate deleted path: ${path}`);
+		if (!previous.some((file) => file.path === path)) throw new DocumentInputError(`File does not exist: ${path}`);
+		if (files.some((file) => file.path === path))
+			throw new DocumentInputError(`Cannot upload and delete the same path: ${path}`);
+		deleted.add(path);
+	}
+	if (!files.length && !deleted.size) throw new DocumentInputError("Upload or delete at least one file.");
+	const retained = legacy && previous.length === 1 ? [] : previous.filter((file) => !deleted.has(file.path));
+	const paths = retained.map((file) => file.path);
+	for (const file of files) if (!paths.includes(file.path)) paths.push(file.path);
+	if (!paths.length) throw new DocumentInputError("A document must retain at least one file.");
+	if (paths.length > MAX_FILES) throw new DocumentInputError(`A document supports at most ${MAX_FILES} files.`);
 	const title = input.title ?? doc.title;
-
-	// Phase 1: stage the row. It precedes the blob, and since current_version has
-	// not moved yet every reader still sees the old version. The number is
-	// MAX(version) + 1. After a rollback current_version + 1 would collide.
 	let version = 0;
-	let r2_key = "";
+	let rows: DocumentFileRow[] = [];
+	let writes: { row: DocumentFileRow; source: string | ArrayBuffer }[] = [];
 	for (let attempt = 1; ; attempt++) {
 		version = await nextVersion(env.DB, doc.id);
-		r2_key = versionR2Key(doc.id, version);
-		const row = {
-			document_id: doc.id,
-			version,
-			r2_key,
-			title,
-			filename: input.filename ?? doc.filename,
-			kind: input.kind,
-			media_type: input.media_type ?? (input.kind === doc.kind ? doc.media_type : defaultMediaType(input.kind)),
-			created_at: now,
-		};
-		if (await insertVersion(env.DB, row)) break;
-		// A competing request took this version number. Allocate another.
-		if (attempt >= MAX_VERSION_ATTEMPTS) throw new Error(`could not allocate a version for document ${doc.id}`);
+		writes = [];
+		rows = paths.map((path, position) => {
+			const file = files.find((item) => item.path === path);
+			if (file) {
+				const row = fileRow(doc.id, version, file, position);
+				writes.push({ row, source: file.source });
+				return row;
+			}
+			return { ...retained.find((item) => item.path === path)!, version, position };
+		});
+		const first = rows[0]!;
+		if (await insertVersion(env.DB, { ...first, title, created_at: now, ready: 0 }, rows)) break;
+		if (attempt >= MAX_VERSION_ATTEMPTS)
+			throw new DocumentInputError("Document changed during upload. Retry the update.", 409);
 	}
-
-	// Phase 2: the blob. Nothing user-visible has moved, so a failure here just
-	// drops the staged row.
-	try {
-		await env.BLOBS.put(r2_key, input.source);
-	} catch (err) {
+	const discard = async () => {
+		await deleteBlobs(
+			env.BLOBS,
+			writes.map(({ row }) => row.r2_key),
+		).catch(() => {});
 		await deleteVersion(env.DB, doc.id, version).catch(() => {});
-		throw err;
-	}
-
-	const discardStaged = async () => {
-		await Promise.all([
-			deleteVersion(env.DB, doc.id, version).catch(() => {}),
-			env.BLOBS.delete(r2_key).catch(() => {}),
-		]);
 	};
-
-	// Phase 3 moves the pointer with one guarded UPDATE after the blob
-	// exists. Readers see either the old version or the new one, never
-	// a pointer to a missing blob.
-	let applied: boolean;
 	try {
-		applied = await applyNewVersion(env.DB, doc.id, version, now, input.title);
+		for (const { row, source } of writes) await env.BLOBS.put(row.r2_key, source);
+		if (!(await applyNewVersion(env.DB, doc.id, version, now, input.title, doc.current_version))) {
+			if (!(await getLiveDocument(env.DB, doc.id, now))) {
+				await discard();
+				return null;
+			}
+			throw new DocumentInputError("Document changed during upload. Retry the update.", 409);
+		}
 	} catch (err) {
-		await discardStaged();
+		await discard();
 		throw err;
 	}
-	// false only if the document was deleted mid-request (its version rows went
-	// with it), which folds into the same "not found" as any missing document.
-	if (!applied) {
-		await discardStaged();
-		return null;
-	}
-
 	return { version, title };
 }
 
@@ -220,13 +244,12 @@ export async function rollbackDocument(
 		return { current_version: doc.current_version, updated_at: doc.updated_at };
 	}
 
-	// A staged row is committed before its blob (phase 1 → 2 above), so a crash in
-	// that window leaves a version row without a blob, but it looks like
-	// any other version in the history. current_version must never land on one:
-	// that would break this read and every live share link. Confirming the
-	// blob costs one R2 round trip on a cold owner-only path.
+	// Pending versions are excluded by getVersion. Verify every source still exists before restoring.
 	const target = await getVersion(env.DB, doc.id, version);
-	if (!target || !(await env.BLOBS.head(target.r2_key))) return null;
+	if (!target) return null;
+	const files = await listVersionFiles(env.DB, doc.id, version);
+	if (!files.length) return null;
+	for (const file of files) if (!(await env.BLOBS.head(file.r2_key))) return null;
 
 	// Only move the pointer. No blob needs copying or cleanup.
 	const ok = await setCurrentVersion(env.DB, doc.id, version, now);
@@ -299,24 +322,27 @@ export async function readVersionContent(
 	version: number | null,
 	now: number,
 	raw = false,
+	path?: string,
 ): Promise<VersionContent | null> {
 	const doc = await getLiveDocumentAt(env.DB, id, version, now);
 	if (!doc) return null;
-	const obj = await env.BLOBS.get(doc.r2_key);
+	const file = await getVersionFile(env.DB, id, doc.version, path);
+	if (!file) return null;
+	const obj = await env.BLOBS.get(file.r2_key);
 	if (!obj) return null;
 	const metadata = {
-		filename: doc.filename,
-		media_type: doc.media_type,
-		binary: doc.kind === "file",
+		filename: file.filename,
+		media_type: file.media_type,
+		binary: file.kind === "file",
 		source_size: obj.size,
 	};
-	if (raw || (doc.kind !== "html" && doc.kind !== "file")) {
+	if (raw || (file.kind !== "html" && file.kind !== "file")) {
 		return { ...metadata, body: obj.body, size: obj.size };
 	}
 	let content: string;
-	if (doc.kind === "file") {
+	if (file.kind === "file") {
 		await obj.body.cancel();
-		content = `File: ${doc.filename ?? doc.title}\nMedia type: ${doc.media_type}\nSize: ${obj.size} bytes\nBinary content. Use poof cat ${id} --raw${version === null ? "" : ` --version ${version}`} to retrieve the stored file.\n`;
+		content = `File: ${file.filename ?? doc.title}\nMedia type: ${file.media_type}\nSize: ${obj.size} bytes\nBinary content. Use poof cat ${id} --raw --file '${file.path.replaceAll("'", "'\"'\"'")}'${version === null ? "" : ` --version ${version}`} to retrieve the stored file.\n`;
 	} else {
 		content = htmlToMarkdown(await obj.text());
 	}

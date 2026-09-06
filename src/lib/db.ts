@@ -1,4 +1,5 @@
 import { type DocumentKind, defaultMediaType } from "./content";
+import { defaultFilePath } from "./files";
 
 export interface DocumentRow {
 	id: string;
@@ -16,6 +17,7 @@ export interface VersionMetadata {
 }
 
 export interface VersionRow extends VersionMetadata {
+	ready?: 0 | 1;
 	document_id: string;
 	version: number;
 	r2_key: string;
@@ -49,6 +51,17 @@ export interface NewDocument extends VersionMetadata {
 	expires_at: number | null;
 }
 
+export interface DocumentFileRow {
+	document_id: string;
+	version: number;
+	path: string;
+	filename: string | null;
+	kind: DocumentKind;
+	media_type: string;
+	r2_key: string;
+	position: number;
+}
+
 export interface ShareRow {
 	token: string;
 	document_id: string;
@@ -67,7 +80,7 @@ const SUMMARY_COLUMNS = `d.id, d.title, d.created_at, d.updated_at, d.current_ve
 	dv.kind AS kind`;
 
 const CURRENT_JOIN = `JOIN document_version dv
-	ON dv.document_id = d.id AND dv.version = d.current_version`;
+	ON dv.document_id = d.id AND dv.version = d.current_version AND dv.ready = 1`;
 
 /**
  * R2 key for a newly written version. Read paths use
@@ -87,18 +100,23 @@ function isUniqueViolation(err: unknown): boolean {
 }
 
 /** Insert a document and its version 1 in one batch (= one transaction). */
-export async function insertDocument(db: D1Database, doc: NewDocument): Promise<void> {
+export async function insertDocument(
+	db: D1Database,
+	doc: NewDocument,
+	files?: DocumentFileRow[],
+	pending = false,
+): Promise<void> {
 	await db.batch([
 		db
 			.prepare(
 				`INSERT INTO document (id, title, created_at, updated_at, current_version, expires_at)
-					VALUES (?, ?, ?, ?, 1, ?)`,
+					VALUES (?, ?, ?, ?, ?, ?)`,
 			)
-			.bind(doc.id, doc.title, doc.created_at, doc.created_at, doc.expires_at),
+			.bind(doc.id, doc.title, doc.created_at, doc.created_at, pending ? 0 : 1, doc.expires_at),
 		db
 			.prepare(
-				`INSERT INTO document_version (document_id, version, kind, r2_key, created_at, filename, media_type, title)
-					VALUES (?, 1, ?, ?, ?, ?, ?, ?)`,
+				`INSERT INTO document_version (document_id, version, kind, r2_key, created_at, filename, media_type, title, ready)
+					VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)`,
 			)
 			.bind(
 				doc.id,
@@ -108,7 +126,9 @@ export async function insertDocument(db: D1Database, doc: NewDocument): Promise<
 				doc.filename ?? null,
 				doc.media_type ?? defaultMediaType(doc.kind),
 				doc.title,
+				pending ? 0 : 1,
 			),
+		...(files ?? [legacyFile({ ...doc, document_id: doc.id, version: 1 })]).map((file) => fileInsert(db, file)),
 	]);
 }
 
@@ -190,7 +210,7 @@ export async function getLiveDocumentAtVersion(
 		.prepare(
 			`SELECT ${RESOLVED_COLUMNS}
 			FROM document d
-			JOIN document_version dv ON dv.document_id = d.id AND dv.version = ?
+			JOIN document_version dv ON dv.document_id = d.id AND dv.version = ? AND dv.ready = 1
 			WHERE d.id = ? AND (d.expires_at IS NULL OR d.expires_at >= ?)`,
 		)
 		.bind(version, id, now)
@@ -230,28 +250,82 @@ export async function nextVersion(db: D1Database, id: string): Promise<number> {
 	return row?.next ?? 1;
 }
 
-/**
- * Stage a version row. Return false when (document_id, version) is taken. The
- * composite PK makes a lost update impossible, so a racing writer loses
- * here and can retry with a freshly allocated number.
- */
-export async function insertVersion(db: D1Database, row: VersionRow): Promise<boolean> {
+function legacyFile(row: VersionRow): DocumentFileRow {
+	return {
+		document_id: row.document_id,
+		version: row.version,
+		path: defaultFilePath(row.filename, row.kind),
+		filename: row.filename ?? null,
+		kind: row.kind,
+		media_type: row.media_type ?? defaultMediaType(row.kind),
+		r2_key: row.r2_key,
+		position: 0,
+	};
+}
+
+function fileInsert(db: D1Database, file: DocumentFileRow): D1PreparedStatement {
+	return db
+		.prepare(
+			"INSERT INTO document_file (document_id, version, path, filename, kind, media_type, r2_key, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		)
+		.bind(
+			file.document_id,
+			file.version,
+			file.path,
+			file.filename,
+			file.kind,
+			file.media_type,
+			file.r2_key,
+			file.position,
+		);
+}
+
+export async function listVersionFiles(db: D1Database, id: string, version: number): Promise<DocumentFileRow[]> {
+	const { results } = await db
+		.prepare("SELECT * FROM document_file WHERE document_id = ? AND version = ? ORDER BY position, path")
+		.bind(id, version)
+		.all<DocumentFileRow>();
+	return results;
+}
+
+export async function getVersionFile(
+	db: D1Database,
+	id: string,
+	version: number,
+	path?: string,
+): Promise<DocumentFileRow | null> {
+	return path === undefined
+		? db
+				.prepare("SELECT * FROM document_file WHERE document_id = ? AND version = ? ORDER BY position, path LIMIT 1")
+				.bind(id, version)
+				.first<DocumentFileRow>()
+		: db
+				.prepare("SELECT * FROM document_file WHERE document_id = ? AND version = ? AND path = ?")
+				.bind(id, version, path)
+				.first<DocumentFileRow>();
+}
+
+/** Reserve a version and all its file references atomically. False means the number was taken. */
+export async function insertVersion(db: D1Database, row: VersionRow, files?: DocumentFileRow[]): Promise<boolean> {
 	try {
-		await db
-			.prepare(
-				"INSERT INTO document_version (document_id, version, kind, r2_key, created_at, filename, media_type, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-			)
-			.bind(
-				row.document_id,
-				row.version,
-				row.kind,
-				row.r2_key,
-				row.created_at,
-				row.filename ?? null,
-				row.media_type ?? defaultMediaType(row.kind),
-				row.title ?? null,
-			)
-			.run();
+		await db.batch([
+			db
+				.prepare(
+					"INSERT INTO document_version (document_id, version, kind, r2_key, created_at, filename, media_type, title, ready) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+				)
+				.bind(
+					row.document_id,
+					row.version,
+					row.kind,
+					row.r2_key,
+					row.created_at,
+					row.filename ?? null,
+					row.media_type ?? defaultMediaType(row.kind),
+					row.title ?? null,
+					row.ready ?? 1,
+				),
+			...(files ?? [legacyFile(row)]).map((file) => fileInsert(db, file)),
+		]);
 		return true;
 	} catch (err) {
 		if (isUniqueViolation(err)) return false;
@@ -262,7 +336,9 @@ export async function insertVersion(db: D1Database, row: VersionRow): Promise<bo
 /** All versions of a document, newest first. */
 export async function listVersions(db: D1Database, id: string): Promise<VersionRow[]> {
 	const { results } = await db
-		.prepare("SELECT * FROM document_version WHERE document_id = ? ORDER BY version DESC")
+		.prepare(
+			"SELECT document_id, version, kind, r2_key, created_at, filename, media_type, title FROM document_version WHERE document_id = ? AND ready = 1 ORDER BY version DESC",
+		)
 		.bind(id)
 		.all<VersionRow>();
 	return results;
@@ -270,7 +346,9 @@ export async function listVersions(db: D1Database, id: string): Promise<VersionR
 
 export async function getVersion(db: D1Database, id: string, version: number): Promise<VersionRow | null> {
 	return db
-		.prepare("SELECT * FROM document_version WHERE document_id = ? AND version = ?")
+		.prepare(
+			"SELECT document_id, version, kind, r2_key, created_at, filename, media_type, title FROM document_version WHERE document_id = ? AND version = ? AND ready = 1",
+		)
 		.bind(id, version)
 		.first<VersionRow>();
 }
@@ -278,34 +356,32 @@ export async function getVersion(db: D1Database, id: string, version: number): P
 /** List blob keys before deleting a row because the FK cascade removes its versions. */
 export async function listVersionKeys(db: D1Database, id: string): Promise<string[]> {
 	const { results } = await db
-		.prepare("SELECT r2_key FROM document_version WHERE document_id = ?")
+		.prepare("SELECT DISTINCT r2_key FROM document_file WHERE document_id = ?")
 		.bind(id)
 		.all<{ r2_key: string }>();
 	return results.map((row) => row.r2_key);
 }
 
-/**
- * Switch to an uploaded version with one guarded UPDATE, so readers
- * see either the old version or the new one. `title` of null keeps the current
- * title. Return false when the version does not exist. The EXISTS guard keeps
- * current_version pointing at a real row, an invariant no FK can express
- * because the two tables reference each other.
- */
+/** Publish a complete snapshot atomically, optionally requiring an unchanged current pointer. */
 export async function applyNewVersion(
 	db: D1Database,
 	id: string,
 	version: number,
 	now: number,
 	title: string | null,
+	expectedVersion?: number,
 ): Promise<boolean> {
-	const res = await db
-		.prepare(
-			`UPDATE document SET current_version = ?, updated_at = ?, title = COALESCE(?, title)
-			WHERE id = ? AND EXISTS (SELECT 1 FROM document_version WHERE document_id = document.id AND version = ?)`,
-		)
-		.bind(version, now, title, id, version)
-		.run();
-	return (res.meta.changes ?? 0) > 0;
+	const [res] = await db.batch([
+		db
+			.prepare(`UPDATE document SET current_version = ?, updated_at = ?, title = COALESCE(?, title)
+			WHERE id = ? AND (? IS NULL OR current_version = ?) AND EXISTS (SELECT 1 FROM document_version WHERE document_id = document.id AND version = ?)`)
+			.bind(version, now, title, id, expectedVersion ?? null, expectedVersion ?? null, version),
+		db
+			.prepare(`UPDATE document_version SET ready = 1 WHERE document_id = ? AND version = ?
+			AND EXISTS (SELECT 1 FROM document WHERE id = ? AND current_version = ?)`)
+			.bind(id, version, id, version),
+	]);
+	return (res!.meta.changes ?? 0) > 0;
 }
 
 /** Move the pointer to an existing version (rollback). false when it does not exist. */
@@ -313,7 +389,7 @@ export async function setCurrentVersion(db: D1Database, id: string, version: num
 	const res = await db
 		.prepare(
 			`UPDATE document SET current_version = ?, updated_at = ?
-			WHERE id = ? AND EXISTS (SELECT 1 FROM document_version WHERE document_id = document.id AND version = ?)`,
+			WHERE id = ? AND EXISTS (SELECT 1 FROM document_version WHERE document_id = document.id AND version = ? AND ready = 1)`,
 		)
 		.bind(version, now, id, version)
 		.run();

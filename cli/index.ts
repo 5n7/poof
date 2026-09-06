@@ -2,8 +2,6 @@
 // Interactive and headless client for the poof JSON API.
 
 import { defineCommand, runMain } from "citty";
-import { readFile } from "node:fs/promises";
-import { basename } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
@@ -21,6 +19,7 @@ import {
 } from "./api";
 import { loginOAuth, logoutOAuth, oauthStatus } from "./auth";
 import { openBrowser } from "./browser";
+import { appendFiles, collectFiles, deletionPaths } from "./files";
 import {
 	loginSelectionWarning,
 	logoutMessage,
@@ -93,6 +92,7 @@ const cat = defineCommand({
 			description: "Document id to print.",
 			required: true,
 		},
+		file: { type: "string", description: "File path within the document (default: first file)." },
 		raw: {
 			type: "boolean",
 			description: "Print original stored bytes, including HTML or binary files.",
@@ -111,6 +111,7 @@ const cat = defineCommand({
 			const params = new URLSearchParams();
 			if (args.version !== undefined) params.set("v", args.version);
 			if (args.raw) params.set("format", "raw");
+			if (args.file !== undefined) params.set("file", args.file);
 			const query = params.size ? `?${params}` : "";
 			const body = await apiStream(cfg, "GET", p`/api/documents/${args["doc-id"]}/content` + query);
 			if (!body) return;
@@ -119,6 +120,28 @@ const cat = defineCommand({
 			await pipeline(Readable.fromWeb(body), process.stdout, { end: false }).catch((err: NodeJS.ErrnoException) => {
 				if (err.code !== "EPIPE") throw err;
 			});
+		}),
+});
+
+const files = defineCommand({
+	meta: { name: "files", description: "List file paths in a document version." },
+	args: {
+		"doc-id": { type: "positional", required: true, description: "Document id to inspect." },
+		version: { type: "string", description: "Version to inspect (default: current)." },
+	},
+	run: ({ args }) =>
+		attempt(async () => {
+			if (args.version !== undefined) requireVersion(args.version);
+			const query = args.version === undefined ? "" : `?v=${args.version}`;
+			const result = await api<{ files: { path: string; kind: string; media_type: string }[] }>(
+				loadConfig(),
+				"GET",
+				p`/api/documents/${args["doc-id"]}/files` + query,
+			);
+			printTable(
+				["PATH", "KIND", "MEDIA TYPE"],
+				result.files.map((file) => [file.path, file.kind, file.media_type]),
+			);
 		}),
 });
 
@@ -219,14 +242,15 @@ const ls = defineCommand({
 const push = defineCommand({
 	meta: {
 		name: "push",
-		description: "Upload any file unchanged; prints the /d/{id} viewer URL.",
+		description: "Upload files or directories into one document; prints the /d/{id} viewer URL.",
 	},
 	args: {
 		file: {
 			type: "positional",
-			description: "File to upload.",
+			description: "Files or directories to upload. Accepts additional positional paths.",
 			required: true,
 		},
+		root: { type: "string", description: "Store paths relative to this directory." },
 		title: {
 			type: "string",
 			description: "Document title (default: first '# ' heading or filename).",
@@ -251,25 +275,18 @@ const push = defineCommand({
 	},
 	run: ({ args }) =>
 		attempt(async () => {
-			// Preserve file bytes, including binary data and text encoding.
-			let content: Uint8Array<ArrayBuffer>;
-			try {
-				content = new Uint8Array(await readFile(args.file));
-			} catch (err) {
-				fail(`cannot read file '${args.file}': ${(err as Error).message}`);
-			}
-
-			const filename = basename(args.file);
+			const upload = await collectFiles(args._, args.root);
+			const first = upload.files[0];
 			const title =
 				args.title ??
-				(/\.(md|markdown)$/i.test(filename)
-					? (firstMarkdownHeading(new TextDecoder().decode(content)) ?? filename)
-					: filename);
+				(/\.(md|markdown)$/i.test(first.filename)
+					? (firstMarkdownHeading(new TextDecoder().decode(first.content)) ?? first.filename)
+					: first.filename);
 
 			const cfg = loadConfig();
 
 			const form = new FormData();
-			form.append("file", new Blob([content]), filename);
+			appendFiles(form, upload);
 			form.append("title", title);
 			if (args.ttl) form.append("ttl", args.ttl);
 
@@ -404,9 +421,7 @@ const status = defineCommand({
 const update = defineCommand({
 	meta: {
 		name: "update",
-		description:
-			"Replace a document's contents with a new version, keeping its /d/{id} and share links. " +
-			"The file type is inferred from its filename.",
+		description: "Merge uploaded files by path into a new version, keeping other files and all share links.",
 	},
 	args: {
 		"doc-id": {
@@ -416,28 +431,28 @@ const update = defineCommand({
 		},
 		file: {
 			type: "positional",
-			description: "File to upload as the new version.",
-			required: true,
+			description: "Files or directories to upload. Accepts additional positional paths.",
+			required: false,
 		},
+		root: { type: "string", description: "Store paths relative to this directory." },
+		delete: { type: "string", description: "File path to remove. Repeat for multiple files." },
 		title: {
 			type: "string",
 			description: "New document title (default: keep the current one).",
 			valueHint: "t",
 		},
 	},
-	run: ({ args }) =>
+	run: ({ args, rawArgs }) =>
 		attempt(async () => {
-			let content: Uint8Array<ArrayBuffer>;
-			try {
-				content = new Uint8Array(await readFile(args.file));
-			} catch (err) {
-				fail(`cannot read file '${args.file}': ${(err as Error).message}`);
-			}
+			const removed = deletionPaths(rawArgs);
+			const upload = await collectFiles(args._.slice(1), args.root);
+			if (!upload.files.length && !removed.length) throw new Error("provide files to upload or --delete paths");
 
 			const cfg = loadConfig();
 
 			const form = new FormData();
-			form.append("file", new Blob([content]), basename(args.file));
+			appendFiles(form, upload);
+			for (const path of removed) form.append("delete", path);
 			// Do not infer a title during updates. Omitting the field keeps the current
 			// title. The user must pass --title to rename the document.
 			if (args.title) form.append("title", args.title);
@@ -485,7 +500,7 @@ const main = defineCommand({
 			"Only 'poof auth login' opens a browser. A complete POOF_ACCESS_CLIENT_ID and POOF_ACCESS_CLIENT_SECRET " +
 			"pair selects headless service auth.",
 	},
-	subCommands: { auth, cat, ls, push, revoke, rm, rollback, share, status, update, versions },
+	subCommands: { auth, cat, ls, files, push, revoke, rm, rollback, share, status, update, versions },
 });
 
 runMain(main);
