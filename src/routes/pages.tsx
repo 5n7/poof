@@ -288,12 +288,8 @@ const fileInput = document.getElementById("file");
 let dragDepth = 0;
 async function uploadFile(file, named) {
 	const name = file.name || "pasted.md";
-	// Extension → kind. Mirror of kindFromExtension (cli/index.ts) and the
-	// server's kind check (api.ts). Keep all three in sync.
-	const kind = /\\.html?$/i.test(name) ? "html" : "md";
 	const fd = new FormData();
 	fd.set("file", file, name);
-	fd.set("kind", kind);
 	if (named && dropEl.dataset.withTitle) fd.set("title", name);
 	const res = await fetch(dropEl.dataset.endpoint, { method: "POST", body: fd });
 	if (res.ok) {
@@ -455,7 +451,12 @@ const Layout: FC<PropsWithChildren<{ title: string }>> = ({ title, children }) =
 // Never add `allow-same-origin`.
 const ViewerShell: FC<PropsWithChildren<{ src: string; banner?: Child }>> = ({ src, banner, children }) => (
 	<div class="viewer">
-		<div class="topbar">{children}</div>
+		<div class="topbar">
+			{children}
+			<a class="tb-ver" href={`${src}?format=raw`} download>
+				Download
+			</a>
+		</div>
 		{banner}
 		<iframe class="frame" sandbox="allow-scripts allow-popups" src={src} />
 	</div>
@@ -558,12 +559,12 @@ export async function libraryPage(c: Ctx) {
 				<div style="text-align:center">
 					<div class="drop-icon">↓</div>
 					<div class="drop-title">Drop it into poof</div>
-					<div class="drop-sub">.md / .html · up to 10 MB · dropped files keep their filename</div>
+					<div class="drop-sub">Any file · up to 10 MB · dropped files keep their filename</div>
 				</div>
 			</div>
 
 			<div id="modal-root" />
-			<input type="file" id="file" accept=".md,.markdown,.html,.htm" style="display:none" />
+			<input type="file" id="file" style="display:none" />
 			<script dangerouslySetInnerHTML={{ __html: LIBRARY_SCRIPT }} />
 		</Layout>,
 	);
@@ -621,11 +622,11 @@ export async function ownerViewerPage(c: Ctx<"/d/:id">) {
 				<div style="text-align:center">
 					<div class="drop-icon">↓</div>
 					<div class="drop-title">Drop a new version</div>
-					<div class="drop-sub">.md / .html · up to 10 MB · replaces the live content</div>
+					<div class="drop-sub">Any file · up to 10 MB · replaces the live content</div>
 				</div>
 			</div>
 			<div id="modal-root" />
-			<input type="file" id="file" accept=".md,.markdown,.html,.htm" style="display:none" />
+			<input type="file" id="file" style="display:none" />
 			<script dangerouslySetInnerHTML={{ __html: VIEWER_SCRIPT }} />
 		</Layout>,
 	);

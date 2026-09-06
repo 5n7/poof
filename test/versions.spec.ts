@@ -41,7 +41,7 @@ interface ListRow {
 }
 
 interface UploadOpts {
-	kind?: "md" | "html";
+	kind?: "html" | "md";
 	title?: string;
 	ttl?: string;
 	name?: string;
@@ -130,7 +130,7 @@ async function viewerPage(path: string): Promise<string> {
 
 /** The o_ token the owner viewer minted into its iframe src. */
 function ownerTokenIn(html: string): string {
-	const match = html.match(/\/raw\/(o_[^"]+)/);
+	const match = html.match(/<iframe[^>]*src="\/raw\/(o_[^"]+)/);
 	expect(match).not.toBeNull();
 	return match![1];
 }
@@ -203,20 +203,21 @@ describe("GET /api/documents/:id/versions", () => {
 });
 
 describe("GET /api/documents/:id/content", () => {
-	it("serves exactly what a share link serves, following the pointer through updates and rollbacks", async () => {
+	it("serves source while share links render it, following updates and rollbacks", async () => {
 		const doc = await createDoc("# v1 content", { title: "Cat" });
 		const token = await issueShare(doc.id);
-		expect(await contentText(doc.id)).toBe(await rawText(token));
+		expect(await contentText(doc.id)).toBe("# v1 content");
+		expect(await rawText(token)).toContain("<h1>v1 content</h1>");
 
 		await addVersion(doc.id, "# v2 content");
 		const after = await contentText(doc.id);
-		expect(after).toBe(await rawText(token));
-		expect(after).toContain("<h1>v2 content</h1>");
+		expect(await rawText(token)).toContain("<h1>v2 content</h1>");
+		expect(after).toContain("# v2 content");
 
 		expect((await rollback(doc.id, 1)).status).toBe(200);
 		const rolled = await contentText(doc.id);
-		expect(rolled).toBe(await rawText(token));
-		expect(rolled).toContain("<h1>v1 content</h1>");
+		expect(await rawText(token)).toContain("<h1>v1 content</h1>");
+		expect(rolled).toContain("# v1 content");
 	});
 
 	it("pins a past version with ?v=N while the default stays on the current one", async () => {
@@ -224,9 +225,9 @@ describe("GET /api/documents/:id/content", () => {
 		await addVersion(doc.id, "# second");
 
 		const pinned = await contentText(doc.id, "?v=1");
-		expect(pinned).toContain("<h1>first</h1>");
+		expect(pinned).toContain("# first");
 		expect(pinned).not.toContain("second");
-		expect(await contentText(doc.id)).toContain("<h1>second</h1>");
+		expect(await contentText(doc.id)).toContain("# second");
 	});
 
 	it("serves the same bytes with and without a ?v= naming the current version", async () => {
@@ -235,7 +236,7 @@ describe("GET /api/documents/:id/content", () => {
 
 		const pinned = await contentText(doc.id, "?v=2");
 		expect(pinned).toBe(await contentText(doc.id));
-		expect(pinned).toContain("<h1>second</h1>");
+		expect(pinned).toContain("# second");
 	});
 
 	it("still serves a version above current_version after a rollback", async () => {
@@ -243,21 +244,21 @@ describe("GET /api/documents/:id/content", () => {
 		await addVersion(doc.id, "# second");
 		expect((await rollback(doc.id, 1)).status).toBe(200);
 
-		expect(await contentText(doc.id)).toContain("<h1>first</h1>");
+		expect(await contentText(doc.id)).toContain("# first");
 		// A rollback moves only the pointer, so versions above it remain readable.
-		expect(await contentText(doc.id, "?v=2")).toContain("<h1>second</h1>");
+		expect(await contentText(doc.id, "?v=2")).toContain("# second");
 	});
 
-	it("returns the md wrapper for an md version and the html verbatim for an html one", async () => {
+	it("returns Markdown source and readable HTML content", async () => {
 		const doc = await createDoc("# md one", { title: "Cat kinds" });
 		const md = await contentText(doc.id);
-		expect(md).toContain("<h1>md one</h1>");
-		expect(md).toContain("markdown-body");
+		expect(md).toContain("# md one");
+		expect(md).toBe("# md one");
 
 		await addVersion(doc.id, "<p>raw</p>", { kind: "html" });
-		expect(await contentText(doc.id)).toBe("<p>raw</p>");
-		// The md version is still reachable behind the pin, wrapper and all.
-		expect(await contentText(doc.id, "?v=1")).toContain("markdown-body");
+		expect((await contentText(doc.id)).trim()).toBe("raw");
+		// The original Markdown version remains reachable behind the pin.
+		expect(await contentText(doc.id, "?v=1")).toBe("# md one");
 	});
 
 	it("400s for a malformed ?v=", async () => {
@@ -301,7 +302,7 @@ describe("GET /api/documents/:id/content", () => {
 		expect(res.status).toBe(404);
 		expect(await res.text()).toBe("Not Found");
 		// The current version still returns its original bytes.
-		expect(await contentText(id)).toBe("<html><body>doc</body></html>");
+		expect((await contentText(id)).trim()).toBe("doc");
 	});
 
 	it("serves untrusted HTML as inert text, never as markup", async () => {
@@ -309,8 +310,8 @@ describe("GET /api/documents/:id/content", () => {
 		const doc = await createDoc(source, { kind: "html", title: "Cat headers" });
 		const res = await contentRes(doc.id);
 		expect(res.status).toBe(200);
-		// The response body stays unchanged. Its headers make the script inert.
-		expect(await res.text()).toBe(source);
+		// HTML formatting and executable scripts are absent from the readable body.
+		expect((await res.text()).trim()).toBe("hi");
 		expect(res.headers.get("Content-Type")).toBe("text/plain; charset=utf-8");
 		expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
 		expect(res.headers.get("Cache-Control")).toBe("no-store");
@@ -539,7 +540,7 @@ describe("POST /api/documents/:id/versions", () => {
 
 		const cases: [() => FormData, number, string][] = [
 			[missingFile, 400, JSON.stringify({ error: "file is required" })],
-			[badKind, 400, JSON.stringify({ error: "kind must be 'md' or 'html'" })],
+			[badKind, 400, JSON.stringify({ error: "kind must be 'file', 'html', 'md', or 'text'" })],
 			[oversize, 413, "Payload Too Large"],
 		];
 

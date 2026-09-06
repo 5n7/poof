@@ -30,17 +30,17 @@ export const defaultApiRuntime: ApiRuntime = { fetch, oauthAccessToken };
 export interface DocumentRow {
 	id: string;
 	title: string;
-	kind: "md" | "html";
+	kind: "file" | "html" | "md" | "text";
+	current_version: number;
 	created_at: number;
 	updated_at: number;
-	current_version: number;
 	expires_at: number | null;
 }
 
 /** One history entry returned by the API. `r2_key` stays on the server. */
 export interface VersionRow {
 	version: number;
-	kind: "md" | "html";
+	kind: "file" | "html" | "md" | "text";
 	created_at: number;
 }
 
@@ -51,11 +51,11 @@ export interface VersionsResult {
 
 export interface UpdateResult {
 	id: string;
-	version: number;
-	kind: "md" | "html";
-	title: string;
-	updated_at: number;
 	url: string;
+	version: number;
+	title: string;
+	kind: "file" | "html" | "md" | "text";
+	updated_at: number;
 }
 
 export interface RollbackResult {

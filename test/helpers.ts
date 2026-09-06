@@ -1,6 +1,7 @@
 import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:test";
 
 import worker from "../src/index";
+import type { DocumentKind } from "../src/lib/content";
 import {
 	deleteVersion,
 	insertDocument,
@@ -47,6 +48,12 @@ export async function fetchWorker(
 	return res;
 }
 
+function defaultSource(kind: DocumentKind, text: string): string {
+	if (kind === "md") return `# ${text}`;
+	if (kind === "html") return `<html><body>${text}</body></html>`;
+	return text;
+}
+
 /**
  * Seed a document row through the real insert path, keeping the column list in
  * `src/lib/db`. Writes an R2 blob unless `body` is null and returns the R2 key.
@@ -59,7 +66,7 @@ export async function seedDoc(
 	id: string,
 	opts: {
 		title?: string;
-		kind?: "md" | "html";
+		kind?: DocumentKind;
 		createdAt?: number;
 		expiresAt?: number | null;
 		body?: string | null;
@@ -71,7 +78,7 @@ export async function seedDoc(
 	const createdAt = opts.createdAt ?? 0;
 	const kind = opts.kind ?? "html";
 	const r2Key = opts.r2Key ?? (version === 1 ? `doc/${id}.html` : versionR2Key(id, version));
-	if (opts.body !== null) await env.BLOBS.put(r2Key, opts.body ?? "<html><body>doc</body></html>");
+	if (opts.body !== null) await env.BLOBS.put(r2Key, opts.body ?? defaultSource(kind, "doc"));
 	await insertDocument(env.DB, {
 		id,
 		title: opts.title ?? id,
@@ -98,11 +105,11 @@ export async function seedDoc(
 export async function seedVersion(
 	id: string,
 	version: number,
-	opts: { kind?: "md" | "html"; body?: string | null; createdAt?: number; setCurrent?: boolean } = {},
+	opts: { kind?: DocumentKind; body?: string | null; createdAt?: number; setCurrent?: boolean } = {},
 ): Promise<string> {
 	const createdAt = opts.createdAt ?? 0;
 	const r2Key = versionR2Key(id, version);
-	if (opts.body !== null) await env.BLOBS.put(r2Key, opts.body ?? `<html><body>v${version}</body></html>`);
+	if (opts.body !== null) await env.BLOBS.put(r2Key, opts.body ?? defaultSource(opts.kind ?? "html", `v${version}`));
 	await insertVersion(env.DB, {
 		document_id: id,
 		version,

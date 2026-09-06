@@ -396,7 +396,7 @@ async function generateAiTitle(env: Env, source: string): Promise<string | null>
  */
 export async function resolveNewTitle(
 	env: Env,
-	input: { fallback: string; kind: "md" | "html"; source: string },
+	input: { fallback: string; kind: "html" | "md"; source: string },
 ): Promise<string> {
 	// A caller's fallback is not guaranteed usable, and an empty title is an empty
 	// library row and an empty browser tab. Neither adapter is known to pass a

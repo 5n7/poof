@@ -6,7 +6,7 @@
 
 <p align="center">Disposable viewer &amp; sharing for AI-generated documents.</p>
 
-Push a Markdown or HTML file and get a URL. Cloudflare Access protects the
+Push any file and get a URL. Cloudflare Access protects the
 library and owner views. Share links (`/v/{token}`) are public, always expire,
 and can be revoked at any time.
 
@@ -18,7 +18,8 @@ owner can view or restore earlier versions.
 ```sh
 poof auth login               # authenticate in a browser
 poof auth logout              # revoke the OAuth grant and forget it locally
-poof cat <doc-id>             # print the stored (rendered) HTML
+poof cat <doc-id>             # print source text; HTML becomes Markdown
+poof cat <doc-id> --raw > file # download original bytes
 poof ls                       # list documents
 poof push report.md --share   # upload + print a share URL (1d TTL)
 poof revoke <share-token>     # kill a share link now
@@ -47,8 +48,11 @@ it. The same naming process handles an MCP `push` without a title.
 
 Cloudflare Workers with Hono, D1, R2, Cloudflare Access, and Workers AI. The
 deployment fits within their free tiers.
-Documents are rendered to HTML at upload time and served inside a sandboxed
-iframe with a CSP `sandbox` response header as the primary security boundary.
+Files retain their original bytes in storage. The viewer renders Markdown and
+text on demand, displays supported media, and offers downloads for other files.
+HTML runs inside a sandboxed iframe with a CSP `sandbox` response header as the
+primary security boundary. `cat` extracts readable Markdown from HTML and omits
+scripts and styles.
 
 ## Setup
 

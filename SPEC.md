@@ -14,7 +14,7 @@ View AI-generated Markdown and HTML design documents or memos in a browser. Most
 
 ### In scope
 
-- Upload Markdown / HTML documents and view them in the browser
+- Upload any file unchanged; render supported formats in the browser and download others
 - Personal library (list view, authenticated, owner-only)
 - Per-document disposable share links (unlisted URL + TTL), with manual revocation
 - **In-place document update**: replace the contents while keeping the same `/d/{id}` and the same already-issued share links
@@ -103,8 +103,11 @@ Migration `0002` moved `kind` and `r2_key` from this table into `document_versio
 CREATE TABLE document_version (
   document_id TEXT    NOT NULL REFERENCES document(id) ON DELETE CASCADE,
   version     INTEGER NOT NULL,      -- 1-based, allocated MAX(version)+1
-  kind        TEXT    NOT NULL,      -- 'html' | 'md'
-  r2_key      TEXT    NOT NULL,      -- rendered HTML blob in R2
+  kind        TEXT    NOT NULL,      -- 'file' | 'html' | 'md' | 'text'
+  r2_key      TEXT    NOT NULL,      -- original source blob in R2
+  filename    TEXT,
+  media_type  TEXT NOT NULL,
+  title       TEXT,                 -- title captured for this version
   created_at  INTEGER NOT NULL,
   PRIMARY KEY (document_id, version)
 );
@@ -117,7 +120,7 @@ CREATE INDEX idx_document_version_r2_key ON document_version(r2_key);
 The code enforces three rules that the schema cannot express:
 
 1. **`current_version` is a pointer, not a maximum.** After a rollback it trails `MAX(version)`. New versions therefore use `MAX(version) + 1`, never `current_version + 1`. Using the pointer would collide with recorded history after a rollback. The composite primary key turns that collision into an error, and the writer retries with a fresh number. Every document has at least one version. An `EXISTS` clause on the pointer update ensures that `current_version` names a real row.
-2. **R2 keys are read, never derived.** New versions, including version 1 of a new document, use `doc/{id}/v{n}.html`. Version 1 rows created before versioning retain the flat `doc/{id}.html` key. The migration backfilled these rows without copying or rewriting objects. The cron's `doc/` prefix covers both key shapes. They cannot collide because one has `.html` directly after the id and the other has `/`.
+2. **R2 keys are read, never derived.** New versions, including version 1 of a new document, use a unique source key recorded in the version row. Version 1 rows created before versioning retain the flat `doc/{id}.html` key. The migration backfilled these rows without copying or rewriting objects. The cron's `doc/` prefix covers both key shapes. They cannot collide because one has `.html` directly after the id and the other has `/`.
 3. **Rollback moves the pointer and copies nothing.** A restored version keeps its original row and blob, so the history stays a faithful record of what was actually uploaded and no two rows ever share an `r2_key`.
 
 `expires_at` applies to the **document**. When it passes, the document and all versions expire together. Versions have no individual TTL.
@@ -199,7 +202,7 @@ Nonexistent, expired, and revoked tokens all return the **same status (404)** wi
 
 ### 6.4 No sanitization
 
-HTML uploads run arbitrary JavaScript by design. Sanitizing only Markdown-derived HTML would create inconsistent behavior without improving the security boundary. **The system treats every document as an untrusted HTML blob and relies on the CSP sandbox.** It has no sanitizer dependency.
+HTML uploads run arbitrary JavaScript by design. Sanitizing only Markdown-derived HTML would create inconsistent behavior without improving the security boundary. **The system treats rendered documents as untrusted and relies on the CSP sandbox.** It has no sanitizer dependency.
 
 ### 6.5 Two hostnames, two Access applications
 
@@ -275,28 +278,49 @@ Two details the versioned schema forces:
 - The sweep reads its reference set from **`document_version.r2_key`**, not `document`. Otherwise it would treat every non-current version as an orphan. It reads a document's version keys **before** deleting the row because the foreign-key cascade also deletes `document_version` rows.
 - **`src/lib/batch.ts`** chunks the larger delete and sweep operations. D1 accepts at most 100 bound parameters per statement. An R2 listing page can contain 1000 keys, and `delete()` accepts at most 1000 keys per call.
 
-## 8. Rendering pipeline (write-time, single path)
+## 8. Source storage and rendering
 
-Free-tier Workers allow 10ms CPU per request, so rendering happens **once per version at write time**, never at view time:
+Each version stores one original source object in R2. Uploads preserve bytes,
+including binary files, byte-order marks, and line endings. The version records
+its filename, media type, and display kind.
 
 ```
 [Upload / update]
-  md   → markdown-it → wrap in viewer template → store final HTML in R2
-  html → store as-is in R2
-        (everything converges to "one HTML blob per version")
+  any file → store original bytes in R2
 
 [View]
-  resolve the version → fetch blob from R2 → serve with sandbox headers. Near-zero CPU.
+  Markdown → markdown-it → viewer template
+  HTML → serve original markup inside the sandbox
+  text → escaped preformatted viewer
+  supported media → browser preview
+  PDF and other files without previews → file details and a download link
+
+[cat]
+  Markdown / text → original source
+  HTML → readable Markdown without scripts or styles
+  binary → metadata and a download command or URL
+  format=raw → original stored bytes
 ```
 
-- **Converter.** `markdown-it` provides CommonMark, tables, and strikethrough. There is no sanitizer (§6.4). Typical documents of tens of kilobytes render in well under 10ms. If a document exceeds the CPU budget, move Markdown rendering into the clients and send final HTML. The API already accepts `kind` and raw content, so this change would not break it.
-- **Viewer template.** Markdown uses minimal GitHub-style CSS and a small inline loader. HTML uploads remain unchanged. The loader fetches client-side libraries only when the document needs them.
-  - Mermaid fences render as escaped `<pre class="mermaid">` elements. If those elements exist, the loader fetches an SRI-pinned mermaid.js file from a CDN.
-  - If code blocks exist, the loader fetches highlight.js in the same way.
-  - Both libraries run inside the sandbox.
-- **Per version.** An update renders and stores a new blob without changing existing blobs. Rollback renders nothing (§5). Because each version stores its own `kind`, an update may switch a document between Markdown and HTML.
+- Markdown supports CommonMark, tables, strikethrough, Mermaid fences, and code
+  highlighting. The viewer loads Mermaid and highlight.js only when needed.
+- HTML extraction preserves headings, links, lists, tables, and code while
+  omitting document wrappers and non-content scripts/styles. It parses HTML
+  without executing it or fetching linked resources.
+- Every version carries its own display and source metadata. Updates can change
+  file types, and rollback restores the selected version without copying blobs.
+- Rendering happens on reads. Large Markdown or HTML documents can use more
+  Worker CPU than the previous pre-rendered storage model.
 
-**Automatic titling** lives in `src/lib/title.ts` and runs before rendering. Markdown stores the title in the blob's `<title>`, so a later `waitUntil` callback cannot set it. The Workers AI call is therefore synchronous.
+Remove every previously stored Markdown version and its blob before rollout.
+Those versions contain rendered HTML, and this implementation expects Markdown
+source. Preserve HTML versions and restore a remaining version if the current
+version was removed. Delete a document and its shares only when no versions remain.
+This is a one-time cleanup outside the schema migration.
+
+Automatic titling lives in `src/lib/title.ts` and runs synchronously for untitled
+Markdown uploads before storing the new version. Other file types use the file
+name as their fallback title.
 
 The naming process runs only when `title` is absent or blank. A supplied title is used verbatim. `POST /api/documents` and the MCP `push` tool both use this fallback order:
 
@@ -317,31 +341,31 @@ The parser takes the first non-empty line and removes `Title:` labels, Markdown 
 
 The parser preserves a trailing `?` and the ideographic space U+3000. It removes invisible format characters because `U+202E`, for example, can reverse the displayed direction of the rest of a library row. ZWNJ and ZWJ remain because they carry meaning in Persian, Devanagari, and emoji sequences.
 
-HTML uploads skip Workers AI. Extracting text from arbitrary HTML would require sanitizer-like parsing, and poof has no sanitizer (§6.4). For untitled Markdown, the Worker sends the first 2000 characters to Workers AI within Cloudflare. The `<document>` delimiter reduces prompt injection ambiguity but is not a security boundary. A document can influence its own title, which is safe because the renderer HTML-escapes the title and D1 stores it in a `TEXT` column.
+HTML and other non-Markdown uploads skip Workers AI and fall back to the filename. For untitled Markdown, the Worker sends the first 2000 characters to Workers AI within Cloudflare. The `<document>` delimiter reduces prompt injection ambiguity but is not a security boundary. A document can influence its own title, which is safe because the renderer HTML-escapes the title and D1 stores it in a `TEXT` column.
 
 ## 9. HTTP routes
 
 Every route below is on `poof.5n7.me` except `POST /mcp`, which is on `mcp.poof.5n7.me` and is the only path that hostname serves (§6.5). Each hostname has its own Access application, so "Access" in the table means a different audience for the two.
 
-| Route                                                | Auth                         | Purpose                                                             |
-| ---------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------- |
-| `GET /`                                              | Access                       | Library list (newest first), upload UI                              |
-| `POST /api/documents`                                | Access (incl. service token) | Upload; file + kind + optional title; 10MB cap; creates version 1   |
-| `GET /api/documents`                                 | Access                       | List documents (incl. `current_version`, `updated_at`; no `r2_key`) |
-| `DELETE /api/documents/:id`                          | Access                       | Delete document (+every version's blob, cascades shares)            |
-| `POST /api/documents/:id/versions`                   | Access (incl. service token) | Add a version and make it live; body = file + kind + optional title |
-| `GET /api/documents/:id/versions`                    | Access                       | List versions (newest first) + `current_version`; no `r2_key`       |
-| `GET /api/documents/:id/content`                     | Access                       | Raw stored HTML of the current version; `?v=N` pins a past one      |
-| `POST /api/documents/:id/versions/:version/rollback` | Access                       | Point the document at an existing version                           |
-| `POST /api/documents/:id/shares`                     | Access                       | Issue share (TTL param) → returns `/v/{token}` URL                  |
-| `GET /api/documents/:id/shares`                      | Access                       | List active shares for a document                                   |
-| `DELETE /api/shares/:token`                          | Access                       | Revoke (`revoked=1`, immediate)                                     |
-| `POST /mcp`                                          | Access, MCP application      | MCP server (Streamable HTTP): nine tools over the same core (§11)   |
-| `GET /d/:id`                                         | Access                       | Private viewer page (mints `o_` token, embeds iframe)               |
-| `GET /d/:id?v=N`                                     | Access                       | Read-only view of version N (banner, no Share, no uploader)         |
-| `GET /v/:token`                                      | none                         | Public shared viewer page; **always the current version**           |
-| `GET /raw/:token`                                    | none (token is the auth)     | Raw HTML blob with sandbox headers (§6)                             |
-| Cron (weekly)                                        | N/A                          | Cleanup (§7)                                                        |
+| Route                                                | Auth                         | Purpose                                                               |
+| ---------------------------------------------------- | ---------------------------- | --------------------------------------------------------------------- |
+| `GET /`                                              | Access                       | Library list (newest first), upload UI                                |
+| `POST /api/documents`                                | Access (incl. service token) | Upload; file + optional kind/title; 10MB cap; creates version 1       |
+| `GET /api/documents`                                 | Access                       | List documents (incl. `current_version`, `updated_at`; no `r2_key`)   |
+| `DELETE /api/documents/:id`                          | Access                       | Delete document (+every version's blob, cascades shares)              |
+| `POST /api/documents/:id/versions`                   | Access (incl. service token) | Add a version and make it live; body = file + optional kind/title     |
+| `GET /api/documents/:id/versions`                    | Access                       | List versions (newest first) + `current_version`; no `r2_key`         |
+| `GET /api/documents/:id/content`                     | Access                       | Readable content; `?format=raw` returns source; `?v=N` pins a version |
+| `POST /api/documents/:id/versions/:version/rollback` | Access                       | Point the document at an existing version                             |
+| `POST /api/documents/:id/shares`                     | Access                       | Issue share (TTL param) → returns `/v/{token}` URL                    |
+| `GET /api/documents/:id/shares`                      | Access                       | List active shares for a document                                     |
+| `DELETE /api/shares/:token`                          | Access                       | Revoke (`revoked=1`, immediate)                                       |
+| `POST /mcp`                                          | Access, MCP application      | MCP server (Streamable HTTP): nine tools over the same core (§11)     |
+| `GET /d/:id`                                         | Access                       | Private viewer page (mints `o_` token, embeds iframe)                 |
+| `GET /d/:id?v=N`                                     | Access                       | Read-only view of version N (banner, no Share, no uploader)           |
+| `GET /v/:token`                                      | none                         | Public shared viewer page; **always the current version**             |
+| `GET /raw/:token`                                    | none (token is the auth)     | Rendered content with sandbox headers; `?format=raw` downloads source |
+| Cron (weekly)                                        | N/A                          | Cleanup (§7)                                                          |
 
 Version routes follow these rules:
 
@@ -349,7 +373,7 @@ Version routes follow these rules:
 - Writes have three phases. The Worker stages the row, puts the blob, and performs one guarded `UPDATE` as the atomic cutover. Readers therefore see either the old version or the new version, never a pointer to a missing blob.
 - Rollback uses the `…/versions/:version/rollback` path instead of a `PATCH` to `current_version`. The route verifies that the target exists and matches the verb used by the CLI and UI. A malformed `:version` returns `400 {error:"invalid version"}`. A valid but unknown version returns the standard 404. Rolling back to the live version is an idempotent no-op and does not change `updated_at`.
 - `GET …/content` reads its version pin from `?v=N`, while `/raw` rejects that parameter (§6.2). A token authorizes `/raw`, so accepting a version in the URL would let share holders enumerate history. Access authorizes `…/content`, and its URL grants no additional access. A malformed `v` returns `400 {error:"invalid version"}`, and an unknown version returns the standard 404.
-- `GET …/content` sends `text/plain; charset=utf-8`, `nosniff`, and a bare `sandbox` CSP. Its body contains untrusted HTML on the real origin. These headers make browsers render it as text instead of executing markup (§6.1).
+- `GET …/content` sends `text/plain; charset=utf-8`, `nosniff`, and a bare `sandbox` CSP. It returns source text or extracted Markdown. With `?format=raw`, it sends `application/octet-stream` and an attachment filename so arbitrary source bytes cannot execute on the owner origin (§6.1).
 - `/d/{id}?v=N` is a page rather than an API, so a malformed `v` returns the standard 404 instead of 400. If `v` names the live version, the request uses the normal viewer instead of a read-only view.
 - **Auto-naming applies only to creation.** On `POST /api/documents`, an absent `title` starts the naming process from §8. A supplied title is used verbatim. On `POST …/versions`, an absent `title` keeps the current title. Updates must not silently rename the document or change the recipient page's `<title>`. MCP `push` and `update` follow the same rule (§11.4).
 
@@ -365,7 +389,8 @@ The CLI is the usual path from AI output to a share link. It is written in TypeS
 poof auth login [--new-client] [--no-open]
 poof auth logout
 poof cat <doc-id> [--version <n>]
-                                # print the stored (rendered) HTML to stdout
+                                # print source text or readable Markdown extracted from HTML
+poof cat <doc-id> --raw          # original bytes, suitable for redirecting to a file
 poof ls                         # list documents
 poof push <file> [--title <t>] [--ttl <dur>] [--share [--share-ttl 1d]]
                                 # upload; prints /d/{id} URL; --share also prints /v/{token}
@@ -414,12 +439,12 @@ poof versions <doc-id>          # VER / KIND / CREATED / CURRENT, newest first, 
   live owner API without opening a browser. If a service pair remains in the
   environment, `auth login` and `auth logout` say that service authentication still wins.
 - The CLI only talks to the JSON API; rendering stays server-side (see §8 fallback if that changes).
-- `kind` is inferred from the file extension (`.md` / `.html`) on both `push` and `update`, so a document may switch between Markdown and HTML from one version to the next.
+- Uploads accept any extension and preserve file bytes. The server infers display kind from the filename, media type, and text detection. Each version can use a different file type.
 - **Title.** `push` uses the first Markdown `# heading`, then the file name. `update` keeps the existing title unless the caller passes `--title`. The CLI always resolves and sends a title for `push`, so the server's naming process (§8) does not run. That process handles documents pasted into the web UI and MCP `push` calls without a title (§11.4).
 - `ls` columns are `ID TITLE KIND VER UPDATED EXPIRES`. `VER` is `current_version`. `UPDATED` replaces the old `CREATED` to keep six columns. For an unchanged document, `updated_at === created_at`. `poof versions` shows the original creation time in version 1's `created_at`.
 - `rollback` validates the version number locally before spending a round-trip, and prints `rolled back {id} to v{n}`.
-- `cat` prints **rendered HTML, not Markdown source**. The system retains only the rendered blob (§8), so Markdown comes back inside the viewer template. Do not pass this output to `update`; doing so would replace the document with its rendering and lose the source. The CLI validates `--version` locally and writes the body to stdout without adding a trailing newline. `poof cat {id} > out.html` is therefore byte-identical to the `/raw` response.
-- The API returns `cat` content as `text/plain`, even though the body contains HTML. The response comes from the real `poof.5n7.me` origin and must remain inert if opened in a browser (§6.1, §9). The content type does not affect the CLI.
+- `cat` prints original Markdown/text or readable Markdown extracted from HTML. Binary files return metadata and a raw-download command. Use `--raw` for exact stored bytes, including HTML and binary downloads. The CLI validates `--version` locally, combines it with `--raw`, and streams stdout without a trailing newline.
+- The API serves normal `cat` output as inert `text/plain`; raw downloads use `application/octet-stream` with attachment headers.
 
 ## 11. MCP server
 
@@ -453,19 +478,19 @@ The CLI still talks only to the owner JSON API. Its OAuth grant comes from the o
 
 The nine tools use the CLI subcommand names from §10. Clients add their own namespace. For example, Claude Code exposes `push` as `mcp__poof__push`.
 
-| Tool       | Input                                                                                     | Result                                                                |
-| ---------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `cat`      | document id, optional version                                                             | The stored (rendered) HTML of that version, capped at 128 KiB (§11.4) |
-| `ls`       | none                                                                                      | Documents, newest first, as `poof ls` shows them                      |
-| `push`     | content, kind, optional title, document TTL, share flag + share TTL                       | New document: `/d/{id}` URL, plus a `/v/{token}` URL when shared      |
-| `revoke`   | share token                                                                               | The share is dead on the next request                                 |
-| `rm`       | document id                                                                               | Document, every version's blob, and all its shares deleted            |
-| `rollback` | document id, version                                                                      | That version becomes current; no blob written                         |
-| `share`    | document id, optional share TTL (`1h` / `1d` / `1w`)                                      | A `/v/{token}` URL                                                    |
-| `update`   | document id, content, optional kind (default: the document's current one), optional title | New version, live immediately; same `/d/{id}` and same share links    |
-| `versions` | document id                                                                               | Version history, newest first, with the current one marked            |
+| Tool       | Input                                                                                     | Result                                                                     |
+| ---------- | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `cat`      | document id, optional version                                                             | Readable content, capped at 128 KiB after conversion; optional raw (§11.4) |
+| `ls`       | none                                                                                      | Documents, newest first, as `poof ls` shows them                           |
+| `push`     | content, kind, optional title, document TTL, share flag + share TTL                       | New document: `/d/{id}` URL, plus a `/v/{token}` URL when shared           |
+| `revoke`   | share token                                                                               | The share is dead on the next request                                      |
+| `rm`       | document id                                                                               | Document, every version's blob, and all its shares deleted                 |
+| `rollback` | document id, version                                                                      | That version becomes current; no blob written                              |
+| `share`    | document id, optional share TTL (`1h` / `1d` / `1w`)                                      | A `/v/{token}` URL                                                         |
+| `update`   | document id, content, optional kind (default: the document's current one), optional title | New version, live immediately; same `/d/{id}` and same share links         |
+| `versions` | document id                                                                               | Version history, newest first, with the current one marked                 |
 
-The tools follow the CLI semantics. Both use the same `md` and `html` kinds, 10 MiB cap, 1h/1d/1w share TTLs, 1-day default, and library/share URL model from §3.
+The tools follow the CLI semantics. Both support `file`, `html`, `md`, and `text` kinds, 10 MiB cap, 1h/1d/1w share TTLs, 1-day default, and library/share URL model from §3.
 
 Expected failures return **tool results, not exceptions**. An unknown id, expired document, or oversized input produces a one-sentence `isError` text block that tells the caller what to do next.
 
@@ -475,25 +500,21 @@ Tool calls have already passed Access (§11.2), and the owner can inspect the wh
 
 ### 11.4 Where the tools differ from the CLI
 
-**Content instead of a path.** The Worker cannot access the caller's filesystem, so MCP `push` and `update` accept document **content as a string**. They cannot infer `kind` from a file extension and instead accept `md` or `html`.
+**Content instead of a path.** MCP `push` and `update` accept a `content` string. Text uses the default `encoding: "utf8"`; binary files use `encoding: "base64"`. Invalid base64 is rejected, and the upload cap counts decoded bytes. Optional `filename` and `media_type` fields supply file metadata.
 
-When MCP `push` omits `title`, it uses the server-side naming process from §8. Workers AI runs first, then the first `#` heading, then `untitled`. The API uses the same module but ends with the file name because it receives one. An omitted title on `update` keeps the current title (§9).
-
-**Omitted `kind`.** The tools use the best available evidence. `push` has no file extension or document history, so it defaults to `md`. `update` inherits the document's current kind. An explicit `kind` can still switch a document between Markdown and HTML because §5 stores it per version. The CLI always has a file extension and needs no fallback.
-
-Defaulting `update` to `md` would silently reinterpret HTML as Markdown when the caller omits `kind`. The resulting version would be valid and immediately visible through every share link (§3). Inheriting the current kind avoids that failure. The enum rejects misspelled values such as `markdown` or `txt` before the handler runs.
+An explicit `kind` chooses `file`, `html`, `md`, or `text`. Otherwise supplied metadata determines the kind. Without metadata, `push` defaults to `md` for text or `file` for base64; `update` keeps the current kind. Untitled Markdown uses the naming process in §8, ending with the filename or `untitled`. Other kinds use the filename or `untitled` directly. An omitted update title preserves the current title.
 
 **Absolute URLs.** Tool results return full owner and share URLs, such as `https://poof.5n7.me/d/{id}`. The JSON API returns relative paths (§9), which the CLI joins to `POOF_URL`. MCP clients have no equivalent variable and often paste tool output directly into messages or comments.
 
 They are built from `OWNER_HOST`, **not from the request origin**. The server answers on `mcp.poof.5n7.me`, which serves no `/d` or `/v` path (§6.5), so a URL built from the request would hand the model, and then the recipient it was passed to, a link that 404s. Only the scheme and any port come from the request, which keeps `wrangler dev` producing `http://localhost:8787` URLs.
 
-**Bounded `cat` output.** The tool caps output at **128 KiB**. Smaller documents return unchanged. Larger ones return the beginning of the blob plus a notice with the total size and absolute owner-only `/d/{id}` URL.
+**Bounded `cat` output.** The tool converts HTML to readable Markdown, then caps text at **128 KiB** of UTF-8. Smaller results return in full. Larger ones return the beginning of the text plus a notice with the input size, output limit, and absolute owner-only `/d/{id}` URL.
 
 `poof cat` and `GET /api/documents/:id/content` remain uncapped streams (§9). Writing a 10 MiB document to a file or terminal is reasonable, but placing it in a model's context is not. The limit therefore belongs in the MCP adapter, not the shared core (§11.5).
 
-For `wrapViewerHtml` output, the beginning contains reader-visible content. Truncation usually drops the Mermaid and highlight.js loader at the end (§8). The adapter pulls the stream to the limit and then cancels it, so it never buffers the full oversized blob.
+The cap counts emitted UTF-8 bytes after decoding, including replacement characters for invalid input, and avoids splitting a character. HTML parsing reads the full source before conversion, so styles cannot consume the output budget and hide the document body. `raw: true` returns original text/HTML under the same cap. Binary files always return metadata and an owner-only raw download URL instead of binary content.
 
-**Tool descriptions include the cautions.** The server's `instructions` block tells the model that `/d/{id}` is owner-only, `/v/{token}` is a secret, revisions use `update` on the existing id, updates and rollbacks affect every live share link immediately, and shared documents must contain no secrets. Individual tool descriptions repeat the warning relevant to that operation. In particular, `cat` returns rendered output rather than source and must not feed an `update`.
+**Tool descriptions include the cautions.** The server's `instructions` block tells the model that `/d/{id}` is owner-only, `/v/{token}` is a secret, revisions use `update` on the existing id, updates and rollbacks affect every live share link immediately, and shared documents must contain no secrets. Individual tool descriptions repeat the warning relevant to that operation. For HTML edits, `cat` with `raw: true` retrieves source markup; default `cat` output is a readable extraction.
 
 ### 11.5 One core, two adapters
 
@@ -507,12 +528,12 @@ The tools do not call the Worker's `/api/*` routes over HTTP. Doing so would add
 
 ## 12. Main flows
 
-1. **Upload (web, CLI, or MCP `push`)** → render if MD → insert `document` + version 1 rows → store blob in R2 → return URL.
+1. **Upload (web, CLI, or MCP `push`)** → preserve source → insert `document` + version 1 rows → store blob in R2 → return URL.
 2. **Library view** → `/` lists `ORDER BY created_at DESC` → `/d/{id}` embeds sandboxed iframe via minted `o_` token.
 3. **Issue share** → insert `share` row → return `poof.5n7.me/v/{token}`.
 4. **Shared view** → `/v/{token}` validates share (404 on any failure) → joins to the document's **current** version → sandboxed iframe → `/raw/s_{token}` → R2 blob.
 5. **Revoke** → `revoked=1` → next request 404s immediately.
-6. **Update** → `poof update {id} file.md` (or the `update` tool, or drop/⌘V on `/d/{id}`) → render → stage version `MAX+1` → put blob → move `current_version` → **every existing share link serves the new content on its next load** with the same token.
+6. **Update** → `poof update {id} file.md` (or the `update` tool, or drop/⌘V on `/d/{id}`) → stage version `MAX+1` → put blob → move `current_version` → **every existing share link serves the new content on its next load** with the same token.
 7. **Rollback** → `poof versions {id}` to pick a number (or the versions modal on `/d/{id}`) → `poof rollback {id} N` → one guarded `UPDATE` of the pointer, no blob written → live share links follow immediately, and a later update is numbered `MAX+1`, not `N+1`.
 
 ## 13. Future work (explicitly not now)
@@ -520,7 +541,6 @@ The tools do not call the Worker's `/api/*` routes over HTTP. Doing so would add
 - **Physically separate serving origin** such as `poof-v.5n7.me` if third-party sharing grows. This would isolate cookies in addition to the CSP sandbox and require one extra Workers route.
 - **Share-side auth** (passcode or Access allowlist) if unlisted+TTL stops being enough.
 - **Per-share version pinning.** A share could keep serving the version against which it was issued. The schema can support this with a nullable `share.version`, but it conflicts with §3's rule that an existing link shows fixes. A pinned share could silently diverge from the document.
-- **Retain source blobs** beside rendered blobs. This would allow `poof cat --source {id} > report.md`, local editing, and `poof update`. Today §8 stores only rendered HTML, so CLI and MCP `cat` cannot recover Markdown (§11.4). The change would add an R2 object per version and a schema column. It can wait until server-side source editing is needed.
 - **Version diffs** in the owner UI (v2 vs v3). Needs a diff renderer and a second read path, and so far reading the two versions side by side has been enough.
 - **KV read-through cache** for the public path (§5).
 
@@ -532,27 +552,27 @@ Workers AI is the only metered addition. Auto-naming uses about 3 to 5 neurons f
 
 ## 15. Decision summary
 
-| Item              | Decision                                                                                                                                                                                                                                                                                     |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Share model       | Unlisted URL + TTL; `share` as its own entity; revocation in initial scope                                                                                                                                                                                                                   |
-| Versioning        | Document = stable identity + ordered immutable versions; `document_version` is the only source of truth for blobs; `current_version` is a pointer, next = `MAX+1`                                                                                                                            |
-| Share on update   | Shares **follow the current version**. An update reaches every live link without reissuing it. Per-share pinning is out of scope (§13).                                                                                                                                                      |
-| Rollback          | `POST …/versions/:version/rollback`; pointer move only, no blob copied; already-current is an idempotent no-op                                                                                                                                                                               |
-| Version viewing   | Owner-only: `/d/{id}?v=N` (read-only, behind Access) via an `o_` token with the version **inside the signed payload**; `/raw` never accepts a `v` query param                                                                                                                                |
-| Security boundary | **CSP `sandbox allow-scripts allow-popups` response header** on `/raw/*`, plus the iframe `sandbox` attribute. Never add `allow-same-origin`.                                                                                                                                                |
-| Delivery path     | Single public `/raw/{token}` endpoint; `s_` share tokens (D1) + `o_` owner tokens (HMAC, ~10 min)                                                                                                                                                                                            |
-| Sanitization      | None; all docs treated as untrusted blobs, sandbox is the boundary                                                                                                                                                                                                                           |
-| Rendering         | Write-time `markdown-it` in the Worker; Mermaid + highlight.js lazily loaded client-side inside the sandbox                                                                                                                                                                                  |
-| Titling           | Create-only when `title` is absent: Workers AI → first `#` heading → client fallback. `/api` uses the file name, and MCP `push` uses `untitled`. It runs synchronously because rendering writes the title into the blob. Failures use the next fallback.                                     |
-| Errors            | Uniform 404 for missing/expired/revoked                                                                                                                                                                                                                                                      |
-| Tokens            | `crypto.getRandomValues`, 128-bit, base64url                                                                                                                                                                                                                                                 |
-| Host isolation    | One Worker, two hostnames dispatched before routing: `poof.5n7.me` serves the web, API, and public paths; `mcp.poof.5n7.me` serves `POST /mcp` and nothing else. Any other host gets 404. Blank or duplicated host vars answer 503 (§6.5).                                                   |
-| MCP server        | Worker-hosted at `POST mcp.poof.5n7.me/mcp` with Streamable HTTP (`@hono/mcp`). It creates a server per request and issues no session id because isolates are not sticky. The path is exact; other methods return `405` with `Allow: POST` and the server offers no SSE stream.              |
-| MCP auth          | Its own Access application and AUD tag, authenticated with Managed OAuth (authorization code + PKCE) and **no Service Auth policy**, enforced again in-Worker by refusing service-token assertions, plus the shared CSRF guard.                                                              |
-| MCP tools         | Nine, named after the CLI subcommands; `push`/`update` take content, not a file path; an omitted `kind` means `md` on `push` and the document's current kind on `update`; `cat` capped at 128 KiB; results carry absolute `OWNER_HOST` URLs; one shared core in `src/lib/`, two adapters     |
-| Auth              | Cloudflare Access on both hostnames, each validated against its own AUD; separate Managed OAuth grants for the interactive CLI and MCP clients, optional owner-app service token for CI, bypass on `poof.5n7.me/v/*` `/raw/*`                                                                |
-| JWT verification  | `Cf-Access-Jwt-Assertion` only, RS256 against the team JWKS, pinned `iss`, route-specific `aud`, and required `exp` / `iat` / `sub` / `type: "app"`. `nbf` is checked when present but never required. `/mcp` additionally requires an identity assertion and refuses service tokens (§6.6). |
-| Infra / stack     | Cloudflare Workers + R2 + D1 + Access; TypeScript + Hono + wrangler + vitest-pool-workers                                                                                                                                                                                                    |
-| Provisioning      | Idempotent `scripts/bootstrap.sh` + `docs/SETUP.md` + `docs/MCP-OAUTH-RUNBOOK.md`; no Terraform until environments multiply; `workers_dev` disabled; Access JWT verified in-Worker                                                                                                           |
-| TTL defaults      | Library: none; shares: 1 day (1h/1d/1w selectable)                                                                                                                                                                                                                                           |
-| Headers           | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex` on viewer/raw paths                                                                                                                                                                                                                  |
+| Item              | Decision                                                                                                                                                                                                                                                                                                                   |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Share model       | Unlisted URL + TTL; `share` as its own entity; revocation in initial scope                                                                                                                                                                                                                                                 |
+| Versioning        | Document = stable identity + ordered immutable versions; `document_version` is the only source of truth for blobs; `current_version` is a pointer, next = `MAX+1`                                                                                                                                                          |
+| Share on update   | Shares **follow the current version**. An update reaches every live link without reissuing it. Per-share pinning is out of scope (§13).                                                                                                                                                                                    |
+| Rollback          | `POST …/versions/:version/rollback`; pointer move only, no blob copied; already-current is an idempotent no-op                                                                                                                                                                                                             |
+| Version viewing   | Owner-only: `/d/{id}?v=N` (read-only, behind Access) via an `o_` token with the version **inside the signed payload**; `/raw` never accepts a `v` query param                                                                                                                                                              |
+| Security boundary | **CSP `sandbox allow-scripts allow-popups` response header** on `/raw/*`, plus the iframe `sandbox` attribute. Never add `allow-same-origin`.                                                                                                                                                                              |
+| Delivery path     | Single public `/raw/{token}` endpoint; `s_` share tokens (D1) + `o_` owner tokens (HMAC, ~10 min)                                                                                                                                                                                                                          |
+| Sanitization      | None; all docs treated as untrusted blobs, sandbox is the boundary                                                                                                                                                                                                                                                         |
+| Rendering         | View-time `markdown-it` in the Worker; Mermaid + highlight.js lazily loaded client-side inside the sandbox                                                                                                                                                                                                                 |
+| Titling           | Create-only when `title` is absent: Workers AI → first `#` heading → client fallback. `/api` uses the file name, and MCP `push` uses `untitled`. It runs synchronously so the create response contains the selected title. Failures use the next fallback.                                                                 |
+| Errors            | Uniform 404 for missing/expired/revoked                                                                                                                                                                                                                                                                                    |
+| Tokens            | `crypto.getRandomValues`, 128-bit, base64url                                                                                                                                                                                                                                                                               |
+| Host isolation    | One Worker, two hostnames dispatched before routing: `poof.5n7.me` serves the web, API, and public paths; `mcp.poof.5n7.me` serves `POST /mcp` and nothing else. Any other host gets 404. Blank or duplicated host vars answer 503 (§6.5).                                                                                 |
+| MCP server        | Worker-hosted at `POST mcp.poof.5n7.me/mcp` with Streamable HTTP (`@hono/mcp`). It creates a server per request and issues no session id because isolates are not sticky. The path is exact; other methods return `405` with `Allow: POST` and the server offers no SSE stream.                                            |
+| MCP auth          | Its own Access application and AUD tag, authenticated with Managed OAuth (authorization code + PKCE) and **no Service Auth policy**, enforced again in-Worker by refusing service-token assertions, plus the shared CSRF guard.                                                                                            |
+| MCP tools         | Nine, named after the CLI subcommands; `push`/`update` take content, not a file path; file metadata determines omitted `kind`, falling back to md/file on push and current kind on update; `cat` capped at 128 KiB after conversion; results carry absolute `OWNER_HOST` URLs; one shared core in `src/lib/`, two adapters |
+| Auth              | Cloudflare Access on both hostnames, each validated against its own AUD; separate Managed OAuth grants for the interactive CLI and MCP clients, optional owner-app service token for CI, bypass on `poof.5n7.me/v/*` `/raw/*`                                                                                              |
+| JWT verification  | `Cf-Access-Jwt-Assertion` only, RS256 against the team JWKS, pinned `iss`, route-specific `aud`, and required `exp` / `iat` / `sub` / `type: "app"`. `nbf` is checked when present but never required. `/mcp` additionally requires an identity assertion and refuses service tokens (§6.6).                               |
+| Infra / stack     | Cloudflare Workers + R2 + D1 + Access; TypeScript + Hono + wrangler + vitest-pool-workers                                                                                                                                                                                                                                  |
+| Provisioning      | Idempotent `scripts/bootstrap.sh` + `docs/SETUP.md` + `docs/MCP-OAUTH-RUNBOOK.md`; no Terraform until environments multiply; `workers_dev` disabled; Access JWT verified in-Worker                                                                                                                                         |
+| TTL defaults      | Library: none; shares: 1 day (1h/1d/1w selectable)                                                                                                                                                                                                                                                                         |
+| Headers           | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex` on viewer/raw paths                                                                                                                                                                                                                                                |

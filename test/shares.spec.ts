@@ -141,7 +141,7 @@ describe("share lifecycle through the API", () => {
 		expect(dHtml).toContain('sandbox="allow-scripts allow-popups"');
 
 		// Extract the minted o_ token from the iframe src and fetch it.
-		const match = dHtml.match(/\/raw\/(o_[^"]+)/);
+		const match = dHtml.match(/<iframe[^>]*src="\/raw\/(o_[^"]+)"/);
 		expect(match).not.toBeNull();
 		const oToken = match![1];
 		const rawRes = await SELF.fetch(`${BASE}/raw/${oToken}`);

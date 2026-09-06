@@ -1,4 +1,5 @@
 import { deleteBlobs } from "./batch";
+import { type DocumentKind, defaultMediaType } from "./content";
 import {
 	type ResolvedDocument,
 	type ShareRow,
@@ -16,12 +17,12 @@ import {
 	setCurrentVersion,
 	versionR2Key,
 } from "./db";
-import { renderMarkdown, wrapViewerHtml } from "./render";
+import { htmlToMarkdown } from "./html-to-markdown";
 import { newShareToken, parseTtl, randomToken } from "./tokens";
 
 /**
  * Shared write operations for the JSON API and MCP tools. Route files parse
- * input and format responses. This module owns the render, blob, and row order
+ * input and format responses. This module owns the source, blob, and row order
  * defined in SPEC §9.
  *
  * Two calling conventions live here and the split is deliberate. A function that
@@ -29,7 +30,7 @@ import { newShareToken, parseTtl, randomToken } from "./tokens";
  * (`addVersion`, `rollbackDocument`), so an adapter can reject a missing
  * document before it spends anything on parsing the request body. One that only
  * needs the document to exist takes an id and checks it by
- * resolving it (`issueShare`, `readVersionBlob`) or by reading it off the write
+ * resolving it (`issueShare`, `readVersionContent`) or by reading it off the write
  * (`deleteDocumentWithBlobs`, whose DELETE reports whether a row was there).
  */
 
@@ -43,8 +44,8 @@ const MAX_VERSION_ATTEMPTS = 3;
  * Return a document source's UTF-8 byte length. Adapters use this to enforce the
  * same `MAX_BYTES` limit. `/api` can use `File.size` directly.
  */
-export function sourceBytes(source: string): number {
-	return new TextEncoder().encode(source).length;
+export function sourceBytes(source: string | ArrayBuffer): number {
+	return typeof source === "string" ? new TextEncoder().encode(source).length : source.byteLength;
 }
 
 /**
@@ -53,21 +54,18 @@ export function sourceBytes(source: string): number {
  * Adapters check the size first so they can return their own error format. This
  * guard keeps later adapters from writing an oversized blob (SPEC §11.5).
  */
-function enforceMaxBytes(source: string): void {
+function enforceMaxBytes(source: string | ArrayBuffer): void {
 	const bytes = sourceBytes(source);
 	if (bytes > MAX_BYTES) throw new Error(`document source is ${bytes} bytes, over the ${MAX_BYTES}-byte limit`);
 }
 
-/** Render one version's source to the HTML stored in R2 (SPEC §8). */
-function renderVersion(source: string, kind: "md" | "html", title: string): string {
-	return kind === "md" ? wrapViewerHtml(title, renderMarkdown(source)) : source;
-}
-
 export interface NewDocumentInput {
-	expires_at: number | null;
-	kind: "md" | "html";
-	source: string;
 	title: string;
+	filename?: string;
+	kind: DocumentKind;
+	media_type?: string;
+	source: string | ArrayBuffer;
+	expires_at: number | null;
 }
 
 /**
@@ -79,7 +77,6 @@ export interface NewDocumentInput {
  */
 export async function createDocument(env: Env, now: number, input: NewDocumentInput): Promise<string> {
 	enforceMaxBytes(input.source);
-	const html = renderVersion(input.source, input.kind, input.title);
 
 	const id = randomToken();
 	const r2_key = versionR2Key(id, 1);
@@ -87,13 +84,15 @@ export async function createDocument(env: Env, now: number, input: NewDocumentIn
 	await insertDocument(env.DB, {
 		id,
 		title: input.title,
+		filename: input.filename ?? null,
 		kind: input.kind,
+		media_type: input.media_type ?? defaultMediaType(input.kind),
 		r2_key,
 		created_at: now,
 		expires_at: input.expires_at,
 	});
 	try {
-		await env.BLOBS.put(r2_key, html);
+		await env.BLOBS.put(r2_key, input.source);
 	} catch (err) {
 		await deleteDocument(env.DB, id).catch(() => {});
 		throw err;
@@ -103,16 +102,18 @@ export async function createDocument(env: Env, now: number, input: NewDocumentIn
 }
 
 export interface NewVersionInput {
-	kind: "md" | "html";
-	source: string;
 	/** null keeps the document's current title. */
 	title: string | null;
+	filename?: string;
+	kind: DocumentKind;
+	media_type?: string;
+	source: string | ArrayBuffer;
 }
 
 /** The version an upload landed on, plus the title it is now filed under. */
 export interface NewVersion {
-	title: string;
 	version: number;
+	title: string;
 }
 
 /**
@@ -137,7 +138,6 @@ export async function addVersion(
 	// asymmetry with `createDocument`, whose callers run the naming chain on an
 	// absent title (SPEC §8), is deliberate. Auto-naming is create-only.
 	const title = input.title ?? doc.title;
-	const html = renderVersion(input.source, input.kind, title);
 
 	// Phase 1: stage the row. It precedes the blob, and since current_version has
 	// not moved yet every reader still sees the old version. The number is
@@ -147,7 +147,16 @@ export async function addVersion(
 	for (let attempt = 1; ; attempt++) {
 		version = await nextVersion(env.DB, doc.id);
 		r2_key = versionR2Key(doc.id, version);
-		const row = { document_id: doc.id, version, kind: input.kind, r2_key, created_at: now };
+		const row = {
+			document_id: doc.id,
+			version,
+			r2_key,
+			title,
+			filename: input.filename ?? doc.filename,
+			kind: input.kind,
+			media_type: input.media_type ?? (input.kind === doc.kind ? doc.media_type : defaultMediaType(input.kind)),
+			created_at: now,
+		};
 		if (await insertVersion(env.DB, row)) break;
 		// A competing request took this version number. Allocate another.
 		if (attempt >= MAX_VERSION_ATTEMPTS) throw new Error(`could not allocate a version for document ${doc.id}`);
@@ -156,7 +165,7 @@ export async function addVersion(
 	// Phase 2: the blob. Nothing user-visible has moved, so a failure here just
 	// drops the staged row.
 	try {
-		await env.BLOBS.put(r2_key, html);
+		await env.BLOBS.put(r2_key, input.source);
 	} catch (err) {
 		await deleteVersion(env.DB, doc.id, version).catch(() => {});
 		throw err;
@@ -186,7 +195,7 @@ export async function addVersion(
 		return null;
 	}
 
-	return { title, version };
+	return { version, title };
 }
 
 /** Where a document's pointer ended up, and when it last moved. */
@@ -274,20 +283,43 @@ export async function deleteDocumentWithBlobs(env: Env, id: string): Promise<boo
 	return existed;
 }
 
-/**
- * Return the stored HTML read by `poof cat` and the MCP `cat` tool.
- * `version` of null resolves to the current one. null when the document, the
- * version, or (for a version staged without its blob) the blob is not there.
- *
- * Keep the body undecoded so the API can stream documents up to 10 MiB.
- */
-export async function readVersionBlob(
+export interface VersionContent {
+	filename: string | null;
+	media_type: string;
+	binary: boolean;
+	body: ReadableStream<Uint8Array>;
+	size: number;
+	source_size: number;
+}
+
+/** Read source or an AI-friendly text representation after resolving authorization. */
+export async function readVersionContent(
 	env: Env,
 	id: string,
 	version: number | null,
 	now: number,
-): Promise<R2ObjectBody | null> {
+	raw = false,
+): Promise<VersionContent | null> {
 	const doc = await getLiveDocumentAt(env.DB, id, version, now);
 	if (!doc) return null;
-	return env.BLOBS.get(doc.r2_key);
+	const obj = await env.BLOBS.get(doc.r2_key);
+	if (!obj) return null;
+	const metadata = {
+		filename: doc.filename,
+		media_type: doc.media_type,
+		binary: doc.kind === "file",
+		source_size: obj.size,
+	};
+	if (raw || (doc.kind !== "html" && doc.kind !== "file")) {
+		return { ...metadata, body: obj.body, size: obj.size };
+	}
+	let content: string;
+	if (doc.kind === "file") {
+		await obj.body.cancel();
+		content = `File: ${doc.filename ?? doc.title}\nMedia type: ${doc.media_type}\nSize: ${obj.size} bytes\nBinary content. Use poof cat ${id} --raw${version === null ? "" : ` --version ${version}`} to retrieve the stored file.\n`;
+	} else {
+		content = htmlToMarkdown(await obj.text());
+	}
+	const bytes = new TextEncoder().encode(content);
+	return { ...metadata, body: new Response(bytes).body!, size: bytes.byteLength };
 }

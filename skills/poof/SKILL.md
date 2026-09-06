@@ -1,11 +1,11 @@
 ---
 name: poof
-description: Share Markdown/HTML documents via disposable links, through the poof MCP tools or the poof CLI. Use when asked to share a document, report, or generated doc with someone as a URL, or to manage previously shared poof documents (list, re-share, revoke, delete).
+description: Share files via disposable links, through the poof MCP tools or the poof CLI. Use when asked to share a document, report, or generated doc with someone as a URL, or to manage previously shared poof documents (list, re-share, revoke, delete).
 ---
 
 # poof document sharing
 
-poof stores a Markdown or HTML document in a private library and mints
+poof stores a file unchanged in a private library and mints
 short-lived public share links. Write a document, push it, and send the
 recipient a URL. The URL expires on schedule or stops working when revoked.
 
@@ -49,7 +49,7 @@ Spelled as CLI invocations; each is also an MCP tool of the same name, with the
 same meaning.
 
 ```sh
-poof cat <doc-id> [--version <n>]
+poof cat <doc-id> [--version <n>] [--raw]
 poof ls
 poof push <file> [--title <t>] [--ttl 1h|1d|1w] [--share] [--share-ttl 1h|1d|1w]
 poof revoke <share-token>
@@ -60,16 +60,13 @@ poof update <doc-id> <file> [--title <t>]
 poof versions <doc-id>
 ```
 
-- `cat` prints a document's stored HTML to stdout. Pass `--version <n>` for a
-  past version. The output is **rendered** HTML, not the Markdown that produced
-  it. poof keeps only the rendering. Use it to verify what a recipient sees.
-  Never `cat` a document and feed the result back through `update`: that
-  replaces the document with its own rendering and destroys the Markdown. To
-  change a document, revise the source you wrote and `update` from that.
+- `cat` prints original Markdown/text or readable Markdown extracted from HTML.
+  Pass `--version <n>` for a past version. Use `--raw` to retrieve original bytes
+  for editing HTML or downloading binary files. Default binary output gives
+  metadata and a raw-download command.
 - `ls` lists documents (id, title, kind, current version, last updated,
   expires).
-- `push` uploads a `.md`/`.markdown` or `.html`/`.htm` file (kind inferred
-  from the extension) and prints the `/d/{id}` owner URL. With `--share` it
+- `push` uploads any file unchanged (type inferred from its filename and bytes) and prints the `/d/{id}` owner URL. With `--share` it
   also issues a share link and prints the `/v/{token}` URL on a second line.
 - `--ttl` sets the document's own lifetime. Omitted means the document is
   kept forever; when it expires, the document and all its shares die.
@@ -90,19 +87,20 @@ poof versions <doc-id>
 
 ## MCP differences
 
-- `push` and `update` take the document **content as a string**, not a file
-  path. The server runs on the Worker and cannot see your filesystem. The
-  content you just wrote is what you pass; no file has to exist.
-- With no path there is no extension to infer `kind` from, so it is an
-  explicit `md` | `html` argument. `push` defaults to `md`. On `update`,
-  omitting it **keeps the document's current kind**. Pass `kind` only when
-  the document should switch between Markdown and HTML.
+- `push` and `update` take `content` as a string. For binary files use
+  `encoding: "base64"` and base64-encoded content. The 10 MiB cap applies after
+  decoding. Set `filename` and optionally `media_type` to describe the file.
+- `kind` accepts `file`, `html`, `md`, or `text`. When omitted, the tools infer
+  it from supplied file metadata. Without metadata, `push` defaults to `md`
+  for text or `file` for base64, and `update` keeps the current kind.
 - `push` without a `title` lets the server name the document from its own
   content, so writing one out and pushing it needs no title argument. It
   falls back to the first `#` heading and then to `untitled`; the CLI, which
   has a file, falls back to the file name instead.
-- `cat` output is capped at 128 KiB. A longer document comes back truncated,
-  with a notice giving its real size and its `/d/{id}` URL.
+- `cat` converts HTML to readable Markdown before applying its 128 KiB cap.
+  Use `raw: true` to read original text/HTML; binary files always return download
+  metadata. A longer text comes back truncated,
+  with a notice giving the input size, output limit, and its `/d/{id}` URL.
 - URLs come back absolute and ready to paste; the CLI prints paths against
   `POOF_URL`.
 

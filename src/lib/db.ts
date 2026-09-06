@@ -1,38 +1,49 @@
+import { type DocumentKind, defaultMediaType } from "./content";
+
 export interface DocumentRow {
 	id: string;
 	title: string;
+	current_version: number;
 	created_at: number;
 	updated_at: number;
-	current_version: number;
 	expires_at: number | null;
 }
 
-export interface VersionRow {
+export interface VersionMetadata {
+	title?: string | null;
+	filename?: string | null;
+	media_type?: string;
+}
+
+export interface VersionRow extends VersionMetadata {
 	document_id: string;
 	version: number;
-	kind: "md" | "html";
 	r2_key: string;
+	kind: DocumentKind;
 	created_at: number;
 }
 
 /** A document joined to one version. */
 export interface ResolvedDocument extends DocumentRow {
 	version: number;
-	kind: "md" | "html";
 	r2_key: string;
+	version_title: string | null;
+	filename: string | null;
+	kind: DocumentKind;
+	media_type: string;
 	version_created_at: number;
 }
 
 /** List projection: no r2_key (nothing outside the blob paths needs it). */
 export interface DocumentSummary extends DocumentRow {
-	kind: "md" | "html";
+	kind: DocumentKind;
 }
 
 /** A brand-new document plus the contents of its version 1. */
-export interface NewDocument {
+export interface NewDocument extends VersionMetadata {
 	id: string;
 	title: string;
-	kind: "md" | "html";
+	kind: DocumentKind;
 	r2_key: string;
 	created_at: number;
 	expires_at: number | null;
@@ -49,7 +60,8 @@ export interface ShareRow {
 // Never `SELECT d.*, dv.*`. Both tables have a `created_at` and D1 silently
 // keeps one of them. Every joined read projects its columns explicitly.
 const RESOLVED_COLUMNS = `d.id, d.title, d.created_at, d.updated_at, d.current_version, d.expires_at,
-	dv.version AS version, dv.kind AS kind, dv.r2_key AS r2_key, dv.created_at AS version_created_at`;
+	dv.version AS version, dv.kind AS kind, dv.r2_key AS r2_key, dv.created_at AS version_created_at,
+	dv.filename, dv.media_type, dv.title AS version_title`;
 
 const SUMMARY_COLUMNS = `d.id, d.title, d.created_at, d.updated_at, d.current_version, d.expires_at,
 	dv.kind AS kind`;
@@ -85,10 +97,18 @@ export async function insertDocument(db: D1Database, doc: NewDocument): Promise<
 			.bind(doc.id, doc.title, doc.created_at, doc.created_at, doc.expires_at),
 		db
 			.prepare(
-				`INSERT INTO document_version (document_id, version, kind, r2_key, created_at)
-					VALUES (?, 1, ?, ?, ?)`,
+				`INSERT INTO document_version (document_id, version, kind, r2_key, created_at, filename, media_type, title)
+					VALUES (?, 1, ?, ?, ?, ?, ?, ?)`,
 			)
-			.bind(doc.id, doc.kind, doc.r2_key, doc.created_at),
+			.bind(
+				doc.id,
+				doc.kind,
+				doc.r2_key,
+				doc.created_at,
+				doc.filename ?? null,
+				doc.media_type ?? defaultMediaType(doc.kind),
+				doc.title,
+			),
 	]);
 }
 
@@ -218,8 +238,19 @@ export async function nextVersion(db: D1Database, id: string): Promise<number> {
 export async function insertVersion(db: D1Database, row: VersionRow): Promise<boolean> {
 	try {
 		await db
-			.prepare("INSERT INTO document_version (document_id, version, kind, r2_key, created_at) VALUES (?, ?, ?, ?, ?)")
-			.bind(row.document_id, row.version, row.kind, row.r2_key, row.created_at)
+			.prepare(
+				"INSERT INTO document_version (document_id, version, kind, r2_key, created_at, filename, media_type, title) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			)
+			.bind(
+				row.document_id,
+				row.version,
+				row.kind,
+				row.r2_key,
+				row.created_at,
+				row.filename ?? null,
+				row.media_type ?? defaultMediaType(row.kind),
+				row.title ?? null,
+			)
 			.run();
 		return true;
 	} catch (err) {
