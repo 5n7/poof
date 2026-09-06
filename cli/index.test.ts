@@ -23,16 +23,17 @@ async function run(
 	return { exitCode, stdout: new TextDecoder().decode(stdoutBytes), stdoutBytes, stderr };
 }
 
-test("top-level help lists explicit authentication commands", async () => {
+test("top-level help lists auth and keeps status at the top level", async () => {
 	const result = await run(["--help"]);
 	expect(result.exitCode).toBe(0);
-	expect(result.stdout).toContain("login|logout|ls");
-	expect(result.stdout).toContain("Only 'poof login' opens a browser");
+	expect(result.stdout).toContain("auth|cat|ls");
+	expect(result.stdout).toContain("share|status|update");
+	expect(result.stdout).toContain("Only 'poof auth login' opens a browser");
 	expect(result.stderr).toBe("");
 });
 
 test("login refuses non-TTY execution unless --no-open is explicit", async () => {
-	const result = await run(["login"]);
+	const result = await run(["auth", "login"]);
 	expect(result.exitCode).toBe(1);
 	expect(result.stdout).toBe("");
 	expect(result.stderr).toContain("pass --no-open");
@@ -40,18 +41,41 @@ test("login refuses non-TTY execution unless --no-open is explicit", async () =>
 });
 
 test("--no-open bypasses the TTY guard without opening a browser", async () => {
-	const result = await run(["login", "--no-open"], { POOF_URL: "https://127.0.0.1:1" });
+	const result = await run(["auth", "login", "--no-open"], { POOF_URL: "https://127.0.0.1:1" });
 	expect(result.exitCode).toBe(1);
 	expect(result.stdout).toBe("");
 	expect(result.stderr).not.toContain("login requires a terminal");
 	expect(result.stderr).not.toContain("Authorize poof");
 });
 
-test("login help documents --no-open", async () => {
-	const result = await run(["login", "--help"]);
+test("auth login help documents its options", async () => {
+	const result = await run(["auth", "login", "--help"]);
 	expect(result.exitCode).toBe(0);
 	expect(result.stdout).toContain("--no-open");
+	expect(result.stdout).toContain("--new-client");
 });
+
+test("auth help lists authentication subcommands", async () => {
+	const result = await run(["auth", "--help"]);
+	expect(result.exitCode).toBe(0);
+	expect(result.stdout).toContain("login|logout");
+	expect(result.stderr).toBe("");
+});
+
+test("auth logout help describes grant revocation", async () => {
+	const result = await run(["auth", "logout", "--help"]);
+	expect(result.exitCode).toBe(0);
+	expect(result.stdout).toContain("Revoke the OAuth grant");
+	expect(result.stderr).toBe("");
+});
+
+for (const command of ["login", "logout"]) {
+	test(`${command} is not a top-level command`, async () => {
+		const result = await run([command]);
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toContain(`Unknown command ${command}`);
+	});
+}
 
 test("push and update upload original bytes for every file extension", async () => {
 	const uploads: { path: string; filename: string; bytes: number[]; kind: string | File | null }[] = [];

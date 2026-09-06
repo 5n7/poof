@@ -33,7 +33,7 @@ The `poof` command must be on PATH (or run `bun <repo>/cli/index.ts`), with
 `POOF_URL` set to the deployment, such as `https://poof.5n7.me`.
 
 Run `poof status`. If it says the OAuth login is missing or expired, ask the
-user to run `poof login`; ordinary document commands never open a browser.
+user to run `poof auth login`; ordinary document commands never open a browser.
 
 CI and other headless jobs may set both `POOF_ACCESS_CLIENT_ID` and
 `POOF_ACCESS_CLIENT_SECRET`. A complete pair selects service authentication.
