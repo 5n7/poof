@@ -32,7 +32,7 @@ export interface DocumentRow {
 	current_version: number;
 	expires_at: number | null;
 	id: string;
-	kind: "md" | "html" | "text" | "file";
+	kind: "file" | "html" | "md" | "text";
 	title: string;
 	updated_at: number;
 }
@@ -40,7 +40,7 @@ export interface DocumentRow {
 /** One history entry returned by the API. `r2_key` stays on the server. */
 export interface VersionRow {
 	created_at: number;
-	kind: "md" | "html" | "text" | "file";
+	kind: "file" | "html" | "md" | "text";
 	version: number;
 }
 
@@ -51,7 +51,7 @@ export interface VersionsResult {
 
 export interface UpdateResult {
 	id: string;
-	kind: "md" | "html" | "text" | "file";
+	kind: "file" | "html" | "md" | "text";
 	title: string;
 	updated_at: number;
 	url: string;

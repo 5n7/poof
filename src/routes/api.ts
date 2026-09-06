@@ -93,7 +93,7 @@ async function readUpload(c: Context<{ Bindings: Env }>): Promise<Upload | Respo
 	const inferred = inferFileBytes(file.name, file.type, source);
 	const kind = form.get("kind") ?? inferred.kind;
 	if (!isDocumentKind(kind)) {
-		return c.json({ error: "kind must be 'md', 'html', 'text', or 'file'" }, 400);
+		return c.json({ error: "kind must be 'file', 'html', 'md', or 'text'" }, 400);
 	}
 	const media_type = kind === inferred.kind ? inferred.media_type : defaultMediaType(kind);
 

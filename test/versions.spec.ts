@@ -41,7 +41,7 @@ interface ListRow {
 }
 
 interface UploadOpts {
-	kind?: "md" | "html";
+	kind?: "html" | "md";
 	title?: string;
 	ttl?: string;
 	name?: string;
@@ -540,7 +540,7 @@ describe("POST /api/documents/:id/versions", () => {
 
 		const cases: [() => FormData, number, string][] = [
 			[missingFile, 400, JSON.stringify({ error: "file is required" })],
-			[badKind, 400, JSON.stringify({ error: "kind must be 'md', 'html', 'text', or 'file'" })],
+			[badKind, 400, JSON.stringify({ error: "kind must be 'file', 'html', 'md', or 'text'" })],
 			[oversize, 413, "Payload Too Large"],
 		];
 

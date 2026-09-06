@@ -103,7 +103,7 @@ Migration `0002` moved `kind` and `r2_key` from this table into `document_versio
 CREATE TABLE document_version (
   document_id TEXT    NOT NULL REFERENCES document(id) ON DELETE CASCADE,
   version     INTEGER NOT NULL,      -- 1-based, allocated MAX(version)+1
-  kind        TEXT    NOT NULL,      -- 'html' | 'md' | 'text' | 'file'
+  kind        TEXT    NOT NULL,      -- 'file' | 'html' | 'md' | 'text'
   r2_key      TEXT    NOT NULL,      -- original source blob in R2
   filename    TEXT,
   media_type  TEXT NOT NULL,
@@ -490,7 +490,7 @@ The nine tools use the CLI subcommand names from §10. Clients add their own nam
 | `update`   | document id, content, optional kind (default: the document's current one), optional title | New version, live immediately; same `/d/{id}` and same share links         |
 | `versions` | document id                                                                               | Version history, newest first, with the current one marked                 |
 
-The tools follow the CLI semantics. Both support `md`, `html`, `text`, and `file` kinds, 10 MiB cap, 1h/1d/1w share TTLs, 1-day default, and library/share URL model from §3.
+The tools follow the CLI semantics. Both support `file`, `html`, `md`, and `text` kinds, 10 MiB cap, 1h/1d/1w share TTLs, 1-day default, and library/share URL model from §3.
 
 Expected failures return **tool results, not exceptions**. An unknown id, expired document, or oversized input produces a one-sentence `isError` text block that tells the caller what to do next.
 
@@ -502,7 +502,7 @@ Tool calls have already passed Access (§11.2), and the owner can inspect the wh
 
 **Content instead of a path.** MCP `push` and `update` accept a `content` string. Text uses the default `encoding: "utf8"`; binary files use `encoding: "base64"`. Invalid base64 is rejected, and the upload cap counts decoded bytes. Optional `filename` and `media_type` fields supply file metadata.
 
-An explicit `kind` chooses `md`, `html`, `text`, or `file`. Otherwise supplied metadata determines the kind. Without metadata, `push` defaults to `md` for text or `file` for base64; `update` keeps the current kind. Untitled Markdown uses the naming process in §8, ending with the filename or `untitled`. Other kinds use the filename or `untitled` directly. An omitted update title preserves the current title.
+An explicit `kind` chooses `file`, `html`, `md`, or `text`. Otherwise supplied metadata determines the kind. Without metadata, `push` defaults to `md` for text or `file` for base64; `update` keeps the current kind. Untitled Markdown uses the naming process in §8, ending with the filename or `untitled`. Other kinds use the filename or `untitled` directly. An omitted update title preserves the current title.
 
 **Absolute URLs.** Tool results return full owner and share URLs, such as `https://poof.5n7.me/d/{id}`. The JSON API returns relative paths (§9), which the CLI joins to `POOF_URL`. MCP clients have no equivalent variable and often paste tool output directly into messages or comments.
 

@@ -27,7 +27,7 @@ interface ListRow {
 }
 
 interface UploadOpts {
-	kind?: "md" | "html";
+	kind?: "html" | "md";
 	title?: string;
 	name?: string;
 }

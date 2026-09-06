@@ -1,4 +1,4 @@
-export type DocumentKind = "md" | "html" | "text" | "file";
+export type DocumentKind = "file" | "html" | "md" | "text";
 
 export interface FileType {
 	kind: DocumentKind;
@@ -60,7 +60,7 @@ const TYPES: Record<string, string> = {
 };
 
 export function isDocumentKind(value: unknown): value is DocumentKind {
-	return value === "md" || value === "html" || value === "text" || value === "file";
+	return value === "file" || value === "html" || value === "md" || value === "text";
 }
 
 export function isTextMediaType(value: string): boolean {
@@ -99,7 +99,7 @@ export function inferFileBytes(filename: string, mediaType: string, source: Arra
 }
 
 export function defaultMediaType(kind: DocumentKind): string {
-	return { md: "text/markdown", html: "text/html", text: "text/plain", file: "application/octet-stream" }[kind];
+	return { file: "application/octet-stream", html: "text/html", md: "text/markdown", text: "text/plain" }[kind];
 }
 
 /** Keep download names in a quoted ASCII fallback plus an encoded UTF-8 parameter. */

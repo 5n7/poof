@@ -90,7 +90,7 @@ poof versions <doc-id>
 - `push` and `update` take `content` as a string. For binary files use
   `encoding: "base64"` and base64-encoded content. The 10 MiB cap applies after
   decoding. Set `filename` and optionally `media_type` to describe the file.
-- `kind` accepts `md`, `html`, `text`, or `file`. When omitted, the tools infer
+- `kind` accepts `file`, `html`, `md`, or `text`. When omitted, the tools infer
   it from supplied file metadata. Without metadata, `push` defaults to `md`
   for text or `file` for base64, and `update` keeps the current kind.
 - `push` without a `title` lets the server name the document from its own

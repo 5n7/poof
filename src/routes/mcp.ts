@@ -34,7 +34,7 @@ import { TTL_KEYS, ttlToSeconds } from "../lib/tokens";
  */
 export const mcpRoutes = new Hono<{ Bindings: Env }>();
 
-const KIND = z.enum(["md", "html", "text", "file"]);
+const KIND = z.enum(["file", "html", "md", "text"]);
 const SOURCE_FIELDS = {
 	encoding: z
 		.enum(["utf8", "base64"])
