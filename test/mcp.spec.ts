@@ -7,8 +7,8 @@ import { MCP_BASE, MCP_CALL, OWNER_BASE, fetchWorker, seedDoc } from "./helpers"
 // `MCP_BASE` is where the endpoint answers; `OWNER_BASE` is the owner host whose
 // `/d`, `/v`, and `/raw` paths the tool results point at.
 
-/** The nine tools, named after the CLI subcommands (SPEC §10). */
-const TOOL_NAMES = ["cat", "ls", "push", "revoke", "rm", "rollback", "share", "update", "versions"];
+/** The document tools, named after the CLI subcommands (SPEC §10). */
+const TOOL_NAMES = ["cat", "files", "ls", "push", "revoke", "rm", "rollback", "share", "update", "versions"];
 
 interface ToolAnnotations {
 	destructiveHint?: boolean;
@@ -119,7 +119,7 @@ describe("MCP endpoint", () => {
 		expect(result.instructions).toContain("Never hand this URL to a recipient");
 	});
 
-	it("lists all nine tools with descriptions", async () => {
+	it("lists all document tools with descriptions", async () => {
 		const { result } = await rpc<{ tools: { description: string; name: string }[] }>("tools/list");
 		expect(result.tools.map((t) => t.name).sort()).toEqual(TOOL_NAMES);
 		for (const tool of result.tools) expect(tool.description.length).toBeGreaterThan(0);
@@ -133,7 +133,7 @@ describe("MCP endpoint", () => {
 
 		// The other two hints are defined only when readOnlyHint is false, so these
 		// must not state them: an absent hint is not the same claim as a false one.
-		for (const name of ["cat", "ls", "versions"]) {
+		for (const name of ["cat", "files", "ls", "versions"]) {
 			expect(annotationsOf(name), name).toMatchObject({ readOnlyHint: true });
 			expect(annotationsOf(name), name).not.toHaveProperty("destructiveHint");
 			expect(annotationsOf(name), name).not.toHaveProperty("idempotentHint");
@@ -711,5 +711,58 @@ describe("MCP behind Access (DEV_DISABLE_ACCESS unset)", () => {
 
 		expect(res.status).toBe(403);
 		expect(await res.text()).toBe("Forbidden");
+	});
+});
+
+describe("MCP file sets", () => {
+	it("creates mixed files, merges by path, deletes explicitly, and restores a snapshot", async () => {
+		const body = await callTool("push", {
+			title: "Design",
+			files: [
+				{ path: "overview.md", content: "# Overview\n\n[ADR](adr/001.html)" },
+				{ path: "adr/001.html", content: "<h1>Decision</h1>" },
+				{ path: "assets/logo.png", content: "AP+AQQ==", encoding: "base64" },
+			],
+		});
+		const id = createdId(body);
+		expect(await callTool("files", { id })).toContain("adr/001.html\thtml\ttext/html");
+		expect(await callTool("cat", { id, file: "adr/001.html", raw: true })).toBe("<h1>Decision</h1>");
+		expect(await callTool("cat", { id, file: "assets/logo.png" })).toContain("file=assets%2Flogo.png");
+		await callTool("update", {
+			id,
+			files: [
+				{ path: "adr/001.html", content: "<h1>Revised</h1>" },
+				{ path: "adr/002.md", content: "# Second" },
+			],
+		});
+		expect(await callTool("cat", { id, file: "overview.md" })).toContain("# Overview");
+		expect(await callTool("cat", { id, file: "adr/001.html", raw: true })).toBe("<h1>Revised</h1>");
+		expect(await callTool("files", { id, version: 1 })).not.toContain("adr/002.md");
+		await callTool("update", { id, delete_paths: ["assets/logo.png"] });
+		expect(await callTool("files", { id })).not.toContain("assets/logo.png");
+		expect(await callToolExpectingError("cat", { id, file: "assets/logo.png" })).toContain("No file");
+		await callTool("rollback", { id, version: 1 });
+		expect(await callTool("files", { id })).toContain("assets/logo.png");
+		expect(await callTool("files", { id })).not.toContain("adr/002.md");
+		expect(await callTool("cat", { id, file: "adr/001.html", raw: true })).toBe("<h1>Decision</h1>");
+	});
+
+	it("rejects ambiguous, empty, duplicate, unsafe, or undecodable file inputs", async () => {
+		expect(await callToolExpectingError("push", { content: "x", files: [{ path: "a.md", content: "x" }] })).toContain(
+			"either content or files",
+		);
+		expect(await callToolExpectingError("push", { files: [] })).toContain("At least one file");
+		expect(await callToolExpectingError("push", { files: [{ path: "../a.md", content: "x" }] })).toContain("path");
+		expect(
+			await callToolExpectingError("push", {
+				files: [
+					{ path: "a.md", content: "x" },
+					{ path: "a.md", content: "y" },
+				],
+			}),
+		).toContain("Duplicate");
+		expect(
+			await callToolExpectingError("push", { files: [{ path: "a.png", content: "!", encoding: "base64" }] }),
+		).toContain("base64");
 	});
 });

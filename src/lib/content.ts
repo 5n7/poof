@@ -31,6 +31,7 @@ const TYPES: Record<string, string> = {
 	m4a: "audio/mp4",
 	markdown: "text/markdown",
 	md: "text/markdown",
+	mjs: "text/javascript",
 	mp3: "audio/mpeg",
 	mp4: "video/mp4",
 	ogg: "audio/ogg",

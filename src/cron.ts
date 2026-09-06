@@ -36,7 +36,7 @@ export async function runCleanup(
 		const keys: string[] = [];
 		for (const batch of idBatches) {
 			const { results } = await env.DB.prepare(
-				`SELECT r2_key FROM document_version WHERE document_id IN (${placeholders(batch.length)})`,
+				`SELECT DISTINCT r2_key FROM document_file WHERE document_id IN (${placeholders(batch.length)})`,
 			)
 				.bind(...batch)
 				.all<{ r2_key: string }>();
@@ -50,8 +50,8 @@ export async function runCleanup(
 		}
 	}
 
-	// 3. Orphan sweep for R2 objects under doc/ with no document_version row. The
-	// reference set is document_version, not document. Otherwise every blob of a
+	// 3. Orphan sweep for R2 objects under doc/ with no document_file row. The
+	// reference set is document_file, not document. Otherwise every blob of a
 	// non-current version would look orphaned and be deleted. Both key shapes
 	// arrive here (legacy flat `doc/{id}.html` from the backfill and nested
 	// `doc/{id}/v{n}.html`); R2 keys are flat strings, so one prefix covers both.
@@ -66,7 +66,7 @@ export async function runCleanup(
 			const known = new Set<string>();
 			for (const batch of chunk(keys, D1_MAX_BINDINGS)) {
 				const { results } = await env.DB.prepare(
-					`SELECT r2_key FROM document_version WHERE r2_key IN (${placeholders(batch.length)})`,
+					`SELECT DISTINCT r2_key FROM document_file WHERE r2_key IN (${placeholders(batch.length)})`,
 				)
 					.bind(...batch)
 					.all<{ r2_key: string }>();

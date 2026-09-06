@@ -1,7 +1,7 @@
 import type { Context } from "hono";
 import type { Child, FC, PropsWithChildren } from "hono/jsx";
 
-import type { ResolvedDocument } from "../lib/db";
+import type { DocumentFileRow, ResolvedDocument } from "../lib/db";
 import {
 	getLiveDocument,
 	getLiveDocumentAt,
@@ -9,7 +9,10 @@ import {
 	listDocumentsWithShares,
 	listShares,
 	listVersions,
+	listVersionFiles,
 } from "../lib/db";
+import { rawFileUrl, viewerFileUrl } from "../lib/file-links";
+import { MAX_BYTES, MAX_FILES } from "../lib/files";
 import { applyHeaders, isVersionString, uniform404, VIEWER_HEADERS } from "../lib/http";
 import { nowSeconds } from "../lib/time";
 import { mintOwnerToken } from "../lib/tokens";
@@ -27,6 +30,17 @@ const FAVICON_PNG =
 	"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAC40lEQVR4AcxWX0iTURT/bW3lwinZg6G2lQ/9eRBJe1IkB1pPQhhCkW+SRgQ99qC5jYGkoPXQW++BD5EJmj5tezQIIZfENrYoEYTY6GHNjbWvcy6fN76xzblvbY577j33nO/+fr97d74/RuT82tou9Le02FytrXYvjUolTMVy5VCJqUYAkbmy2ayXMk5FUfpprEhTsZyEzxvSCJECKMkJZ0UYi4OwEOYSVwkBVSQXpNRJEUIAB8iq3Zxcb0Z199UmF3xUb/1Gg8FwQ8xq0DG3Ua3QGtADzH1QAzURwKTHW4DFYsH29mdhy8vvMDs7g3D4K3Z2vmFraxO9vT28CV1W9ARMJhMaGxuFdXd3YXT0PlgUFQ+ampqwuPgGdrvt/wnIRU6n01hZ+YBMJiNSLMTjcQu/3K7oCeSCDg3dxvj4Q0xOPpOpzs5O6ZfjlCyAdx0IfBEcq6trYuSuocHKg8barAbcungCV88eDn/4FSo03bOqBySTSenz3yAn5IxcMcF7z4JXg6ewfKcOT66bKVq4lSzAbDbDZjsvkAYHB8TIXSKR4EHaVM9J6bPzuMsMe0NhmsIZXp1jS0tvMTHxAHNzz2UmGo1K/0ydAadNciqdc/UG6ec6RxLQ3NyM6ekpWK31EsfjmZF+fF9B4GdWztlJ03Rz7w+7ea1kAfF4HJFIRAMyP/8CGxsfNbGnvjQ+7RErRaO/FDxaTyFdmB8lC+Ai7OtzwOEYwNjYONrbL2Fh4SXRaFswlsXd9/u4/Po3bi4m4f9RhJ2WliyArhUtGAxhbW0dqVRKzAt1WaVQRhs/sgDtcv2zogL44ROLxcAWCoX1s+VBKCqAHzgdHdfANjw8kme5/hB/kvn0w5SHQE9RH3+S+ctbrn8V3Vl+I/1qdgK7u99dRvq6YQH6XurlHYbgFEXISghDBGisRnOrnP+ehGqgGiIkOe9UnAA7bCyCjF9dbq5Qjuk1Xq9iuaneHITv4tiB/QUAAP//NJmctQAAAAZJREFUAwAtzvtXfUxb5gAAAABJRU5ErkJggg==";
 
 const PAGE_CSS = `
+.file-tabs { display: flex; flex: 0 0 auto; overflow-x: auto; border-bottom: 1px solid #e6e6eb; padding: 0 16px; background: #fafafa; scrollbar-width: thin; }
+.file-tab { flex: 0 0 auto; padding: 12px 14px; border-bottom: 2px solid transparent; color: #62626b; font-size: 12px; white-space: nowrap; }
+.file-tab:hover { color: #1a1a1e; background: #f1f1f5; }
+.file-tab[aria-current="page"] { color: #9a4a12; border-bottom-color: ${ACCENT}; background: #fff; font-weight: 600; }
+.single-file-nav { display: none; }
+.folder-link { display: block; margin: 12px auto 0; border: 0; background: none; color: #62626b; font: inherit; font-size: 12px; cursor: pointer; padding: 8px; text-decoration: underline; text-underline-offset: 3px; }
+button:disabled { cursor: wait; opacity: .5; }
+button:focus-visible, a:focus-visible { outline: 2px solid #b45309; outline-offset: 3px; }
+@media (max-width: 640px) { .topbar { flex-wrap: wrap; } .tb-title { flex: 1; min-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .topbar .spacer { display: none; } .tb-chip { width: 100%; } .file-tabs { padding: 0 4px; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; } }
+
 html, body { height: 100%; }
 body { margin: 0; background: #fafafa; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; color: #1a1a1e; }
 a { color: #d97706; text-decoration: none; }
@@ -63,10 +77,10 @@ a.gh svg { width: 16px; height: 16px; display: block; }
 .menu-item.del { color: #c2483f; }
 .menu-item.del:hover { background: #fdf0ef; }
 .line { border-top: 1px solid #e6e6eb; margin: 0 -10px; }
-.hint { font-size: 12px; color: #b3b3bb; margin-top: 28px; text-align: center; cursor: pointer; }
+.hint { border: 0; background: none; font-family: inherit; padding: 8px; font-size: 12px; color: #62626b; margin-top: 28px; text-align: center; cursor: pointer; }
 .hint:hover { color: #8b8b94; }
 
-.viewer { display: flex; flex-direction: column; flex: 1; min-height: 100vh; background: #fff; }
+.viewer { display: flex; flex-direction: column; flex: 1; height: 100dvh; min-height: 0; background: #fff; }
 .topbar { display: flex; align-items: center; gap: 10px; padding: 9px 16px; border-bottom: 1px solid #e6e6eb; background: #fafafa; position: sticky; top: 0; z-index: 10; }
 .back { color: #8b8b94; font-size: 14px; padding: 2px 8px; border-radius: 6px; cursor: pointer; }
 .back:hover { background: #e6e6eb; color: #1a1a1e; }
@@ -77,7 +91,7 @@ a.gh svg { width: 16px; height: 16px; display: block; }
 .tb-ver:hover { border-color: #c9c9d1; color: #1a1a1e; }
 .share-btn { background: ${ACCENT}; color: #fff; font-size: 12px; font-weight: 600; padding: 5px 14px; border-radius: 7px; cursor: pointer; border: 0; font-family: inherit; }
 .share-btn:hover { background: ${ACCENT_HOVER}; }
-.frame { flex: 1; border: 0; width: 100%; }
+.frame { flex: 1; min-height: 0; border: 0; width: 100%; }
 .banner { display: flex; align-items: center; gap: 12px; padding: 8px 16px; font-size: 12px; color: #6e6e76; background: oklch(0.68 0.17 52 / .08); border-bottom: 1px solid oklch(0.68 0.17 52 / .3); }
 .banner-act { font-size: 12px; font-weight: 500; color: oklch(0.55 0.17 52); cursor: pointer; white-space: nowrap; }
 
@@ -280,47 +294,96 @@ window.addEventListener("keydown", function (e) { if (e.key === "Escape") closeM
 // The viewer content sits in a sandboxed iframe on an opaque origin. Its drag
 // events never reach this document, so a drop only registers over the topbar,
 // banner, or margins. ⌘V still works whenever
-// focus is outside the iframe. Use the "Upload new version" button in the
+// focus is outside the iframe. Use the "Add or update files" button in the
 // versions modal instead.
 const UPLOAD_JS = `
 const dropEl = document.getElementById("drop");
 const fileInput = document.getElementById("file");
+const folderInput = document.getElementById("folder");
 let dragDepth = 0;
-async function uploadFile(file, named) {
-	const name = file.name || "pasted.md";
-	const fd = new FormData();
-	fd.set("file", file, name);
-	if (named && dropEl.dataset.withTitle) fd.set("title", name);
-	const res = await fetch(dropEl.dataset.endpoint, { method: "POST", body: fd });
-	if (res.ok) {
-		// Report the stored title, not the submitted name. When no
-		// title was sent the server named the document itself (lib/title.ts), and that
-		// result is the one thing worth seeing before the redirect below.
-		const doc = await res.json().catch(function () { return {}; });
-		toast(doc && doc.title ? "Uploaded \\u2014 " + doc.title : "Uploaded");
-		// Drop any ?v= pin so both pages land on the current version.
-		setTimeout(function () { location.href = location.pathname; }, 600);
+let uploading = false;
+function countFile(file, budget) {
+	budget.count++; budget.bytes += file.size;
+	if (budget.count > ${MAX_FILES}) throw new Error("Select at most ${MAX_FILES} files.");
+	if (budget.bytes > ${MAX_BYTES}) throw new Error("Keep each upload under 10 MB.");
+}
+async function uploadFiles(files, named) {
+	if (!files.length || uploading) return;
+	uploading = true;
+	const controls = document.querySelectorAll("[data-upload], [data-folder]");
+	controls.forEach(function (control) { control.disabled = true; });
+	toast("Uploading " + files.length + (files.length === 1 ? " file…" : " files…"));
+	try {
+		const budget = { count: 0, bytes: 0 };
+		files.forEach(function (entry) { countFile(entry.file || entry, budget); });
+		const fd = new FormData();
+		files.forEach(function (entry) {
+			const file = entry.file || entry;
+			fd.append("file", file, file.name || "pasted.md");
+			fd.append("path", entry.path || file.webkitRelativePath || file.name || "pasted.md");
+		});
+		if (named && dropEl.dataset.withTitle) fd.set("title", (files[0].file || files[0]).name);
+		const res = await fetch(dropEl.dataset.endpoint, { method: "POST", body: fd });
+		if (!res.ok) throw new Error(await res.text());
+		const doc = await res.json();
+		toast("Uploaded " + files.length + (files.length === 1 ? " file" : " files"));
+		const url = new URL(location.href);
+		url.searchParams.delete("v");
+		if (dropEl.dataset.withTitle && doc.id) { url.pathname = "/d/" + doc.id; url.search = ""; }
+		location.href = url.href;
+	} catch (error) {
+		toast(error.message || "Upload failed. Try again.");
+	} finally {
+		uploading = false;
+		controls.forEach(function (control) { control.disabled = false; });
 	}
-	else toast(await res.text());
+}
+async function readEntry(entry, prefix, budget) {
+	if (entry.isFile) {
+		const file = await new Promise(function (resolve, reject) { entry.file(resolve, reject); });
+		countFile(file, budget);
+		return [{ file: file, path: prefix + entry.name }];
+	}
+	if (!entry.isDirectory) return [];
+	const reader = entry.createReader();
+	let files = [];
+	while (true) {
+		const entries = await new Promise(function (resolve, reject) { reader.readEntries(resolve, reject); });
+		if (!entries.length) break;
+		for (const child of entries) files = files.concat(await readEntry(child, prefix + entry.name + "/", budget));
+	}
+	return files;
 }
 if (dropEl && fileInput) {
 	window.addEventListener("dragenter", function (e) { e.preventDefault(); dragDepth++; dropEl.style.display = "grid"; });
 	window.addEventListener("dragleave", function (e) { e.preventDefault(); dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) dropEl.style.display = "none"; });
 	window.addEventListener("dragover", function (e) { e.preventDefault(); });
-	window.addEventListener("drop", function (e) {
+	window.addEventListener("drop", async function (e) {
 		e.preventDefault(); dragDepth = 0; dropEl.style.display = "none";
-		const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-		if (f) uploadFile(f, true);
+		try {
+			const items = Array.from(e.dataTransfer.items || []);
+			const entries = items.map(function (item) { return item.webkitGetAsEntry && item.webkitGetAsEntry(); }).filter(Boolean);
+			let files = [];
+			const budget = { count: 0, bytes: 0 };
+			for (const entry of entries) files = files.concat(await readEntry(entry, "", budget));
+			if (!entries.length) files = Array.from(e.dataTransfer.files || []);
+			if (entries.length === 1 && entries[0].isDirectory) files = files.map(function (entry) { return { file: entry.file, path: entry.path.slice(entries[0].name.length + 1) }; });
+			await uploadFiles(files, true);
+		} catch (error) { toast(error.message || "Could not read the dropped files. Try selecting them instead."); }
 	});
 	window.addEventListener("paste", function (e) {
-		const f = e.clipboardData && e.clipboardData.files && e.clipboardData.files[0];
-		if (f) { uploadFile(f, true); return; }
-		const text = e.clipboardData && e.clipboardData.getData("text");
-		if (text) uploadFile(new File([text], "pasted.md", { type: "text/markdown" }), false);
+		if (e.target.closest("input, textarea, [contenteditable]")) return;
+		const files = Array.from(e.clipboardData.files || []);
+		if (files.length) { e.preventDefault(); uploadFiles(files, true); return; }
+		const text = e.clipboardData.getData("text");
+		if (text) { e.preventDefault(); uploadFiles([new File([text], "pasted.md", { type: "text/markdown" })], false); }
 	});
 	const hint = document.getElementById("hint");
 	if (hint) hint.addEventListener("click", function () { fileInput.click(); });
-	fileInput.addEventListener("change", function () { const f = fileInput.files[0]; if (f) uploadFile(f, true); fileInput.value = ""; });
+	document.querySelectorAll("[data-upload]").forEach(function (control) { control.addEventListener("click", function () { fileInput.click(); }); });
+	document.querySelectorAll("[data-folder]").forEach(function (control) { control.addEventListener("click", function () { folderInput.click(); }); });
+	fileInput.addEventListener("change", function () { uploadFiles(Array.from(fileInput.files), true); fileInput.value = ""; });
+	if (folderInput) folderInput.addEventListener("change", function () { uploadFiles(Array.from(folderInput.files).map(function (file) { return { file: file, path: file.webkitRelativePath.split("/").slice(1).join("/") }; }), true); folderInput.value = ""; });
 }`;
 
 const LIBRARY_JS = `
@@ -394,10 +457,9 @@ async function openVersions(docId) {
 	const head = el("div", "modal-head");
 	head.append(el("span", "modal-title-main", "Versions"));
 	head.append(el("span", "spacer"));
-	// Dropping onto the viewer barely works over a sandboxed iframe (see
-	// UPLOAD_JS), so this button is how a new version usually gets uploaded.
 	if (fileInput) {
-		const up = el("span", "create-btn", "Upload new version");
+		const up = el("button", "create-btn", "Add or update files");
+		up.type = "button";
 		up.addEventListener("click", function () { fileInput.click(); });
 		head.append(up);
 	}
@@ -430,7 +492,39 @@ const vr = document.getElementById("ver-restore");
 if (vr) vr.addEventListener("click", function () { restoreVersion(vr.dataset.id, Number(vr.dataset.version)); });`;
 
 const LIBRARY_SCRIPT = CORE_JS + UPLOAD_JS + LIBRARY_JS;
-const VIEWER_SCRIPT = CORE_JS + UPLOAD_JS + VERSIONS_JS + VIEWER_JS;
+const FILES_JS = `
+const frame = document.getElementById("document-frame");
+if (frame) {
+	function revealSelectedFile() {
+		const selected = document.querySelector(".file-tab[aria-current=page]");
+		if (selected) selected.scrollIntoView({ block: "nearest", inline: "nearest" });
+	}
+	revealSelectedFile();
+	window.addEventListener("resize", revealSelectedFile);
+	if (location.hash) frame.src += location.hash;
+	window.addEventListener("message", function (event) {
+		if (event.source !== frame.contentWindow || !event.data || event.data.type !== "poof:file") return;
+		const links = Array.from(document.querySelectorAll("[data-file-path]"));
+		const link = links.find(function (item) { return item.dataset.filePath === event.data.path; });
+		if (!link) return;
+		const url = new URL(link.href);
+		if (typeof event.data.hash === "string" && event.data.hash.startsWith("#")) url.hash = event.data.hash;
+		location.href = url.href;
+	});
+}
+const removeFile = document.getElementById("remove-file");
+if (removeFile) removeFile.addEventListener("click", async function () {
+	if (!confirm("Remove " + removeFile.dataset.path + " from this document? Earlier versions keep the file.")) return;
+	removeFile.disabled = true;
+	try {
+		const body = new FormData(); body.append("delete", removeFile.dataset.path);
+		const res = await fetch("/api/documents/" + removeFile.dataset.id + "/versions", { method: "POST", body: body });
+		if (!res.ok) throw new Error(await res.text());
+		location.href = location.pathname;
+	} catch (error) { toast(error.message || "Could not remove the file. Try again."); removeFile.disabled = false; }
+});`;
+
+const VIEWER_SCRIPT = CORE_JS + UPLOAD_JS + VERSIONS_JS + VIEWER_JS + FILES_JS;
 
 const Layout: FC<PropsWithChildren<{ title: string }>> = ({ title, children }) => (
 	<html lang="en">
@@ -449,7 +543,16 @@ const Layout: FC<PropsWithChildren<{ title: string }>> = ({ title, children }) =
 // Shared viewer scaffold: topbar (contents vary per page) above the sandboxed
 // iframe. The sandbox attribute enforces the security boundary (SPEC §6.1).
 // Never add `allow-same-origin`.
-const ViewerShell: FC<PropsWithChildren<{ src: string; banner?: Child }>> = ({ src, banner, children }) => (
+const ViewerShell: FC<
+	PropsWithChildren<{
+		src: string;
+		banner?: Child;
+		files: DocumentFileRow[];
+		selected: DocumentFileRow;
+		base: string;
+		version?: number;
+	}>
+> = ({ src, banner, files, selected, base, version, children }) => (
 	<div class="viewer">
 		<div class="topbar">
 			{children}
@@ -458,7 +561,26 @@ const ViewerShell: FC<PropsWithChildren<{ src: string; banner?: Child }>> = ({ s
 			</a>
 		</div>
 		{banner}
-		<iframe class="frame" sandbox="allow-scripts allow-popups" src={src} />
+		<nav class={files.length > 1 ? "file-tabs" : "single-file-nav"} aria-label="Document files">
+			{files.map((file) => (
+				<a
+					class="file-tab"
+					href={viewerFileUrl(base, file.path, version)}
+					data-file-path={file.path}
+					aria-current={file.path === selected.path ? "page" : undefined}
+					title={file.path}
+				>
+					{file.path}
+				</a>
+			))}
+		</nav>
+		<iframe
+			id="document-frame"
+			title={selected.path}
+			class="frame"
+			sandbox="allow-scripts allow-popups"
+			src={`${src}?view=1`}
+		/>
 	</div>
 );
 
@@ -549,9 +671,12 @@ export async function libraryPage(c: Ctx) {
 						})}
 						<div class="line" />
 					</div>
-					<div class="hint" id="hint">
-						Drop a file anywhere, paste with ⌘V, or click here
-					</div>
+					<button type="button" class="hint" id="hint">
+						Drop files anywhere, paste with ⌘V, or select files
+					</button>
+					<button type="button" class="folder-link" data-folder>
+						Upload a folder
+					</button>
 				</div>
 			</div>
 
@@ -559,12 +684,13 @@ export async function libraryPage(c: Ctx) {
 				<div style="text-align:center">
 					<div class="drop-icon">↓</div>
 					<div class="drop-title">Drop it into poof</div>
-					<div class="drop-sub">Any file · up to 10 MB · dropped files keep their filename</div>
+					<div class="drop-sub">Any format · up to 10 MB per upload · one document</div>
 				</div>
 			</div>
 
 			<div id="modal-root" />
-			<input type="file" id="file" style="display:none" />
+			<input type="file" id="file" multiple style="display:none" />
+			<input type="file" id="folder" multiple webkitdirectory="" style="display:none" />
 			<script dangerouslySetInnerHTML={{ __html: LIBRARY_SCRIPT }} />
 		</Layout>,
 	);
@@ -590,10 +716,14 @@ export async function ownerViewerPage(c: Ctx<"/d/:id">) {
 	// content as a read-only dead end.
 	if (asked !== null && asked !== doc.current_version) return pinnedViewerPage(c, doc);
 
-	const [shares, oToken] = await Promise.all([
+	const [shares, oToken, files] = await Promise.all([
 		listShares(c.env.DB, id, now),
 		mintOwnerToken(id, c.env.OWNER_TOKEN_SECRET),
+		listVersionFiles(c.env.DB, id, doc.version),
 	]);
+	const selected =
+		c.req.query("file") === undefined ? files[0] : files.find((file) => file.path === c.req.query("file"));
+	if (!selected) return uniform404(c);
 	let chip: string | null = null;
 	if (shares.length) {
 		const soonest = Math.min(...shares.map((s) => s.expires_at));
@@ -602,7 +732,7 @@ export async function ownerViewerPage(c: Ctx<"/d/:id">) {
 	applyHeaders(c, VIEWER_HEADERS);
 	return c.html(
 		<Layout title={doc.title}>
-			<ViewerShell src={`/raw/${oToken}`}>
+			<ViewerShell src={rawFileUrl(oToken, selected.path)} files={files} selected={selected} base={`/d/${id}`}>
 				<a href="/" class="back">
 					←
 				</a>
@@ -610,6 +740,17 @@ export async function ownerViewerPage(c: Ctx<"/d/:id">) {
 				<span class="tb-title">{doc.title}</span>
 				<span class="spacer" />
 				{chip ? <span class="tb-chip">{chip}</span> : null}
+				<button type="button" class="tb-ver" data-upload>
+					Add files
+				</button>
+				<button type="button" class="tb-ver" data-folder>
+					Upload folder
+				</button>
+				{files.length > 1 ? (
+					<button type="button" class="tb-ver remove-file" id="remove-file" data-id={id} data-path={selected.path}>
+						Remove file
+					</button>
+				) : null}
 				{/* Shown even at v1: it is how the history and "you can add a version" are discoverable. */}
 				<button type="button" id="ver-btn" class="tb-ver" data-id={id}>
 					v{doc.current_version}
@@ -621,12 +762,13 @@ export async function ownerViewerPage(c: Ctx<"/d/:id">) {
 			<div class="drop" id="drop" style="display:none" data-endpoint={`/api/documents/${id}/versions`}>
 				<div style="text-align:center">
 					<div class="drop-icon">↓</div>
-					<div class="drop-title">Drop a new version</div>
-					<div class="drop-sub">Any file · up to 10 MB · replaces the live content</div>
+					<div class="drop-title">Add or update files</div>
+					<div class="drop-sub">Files with the same path are updated. Other files stay.</div>
 				</div>
 			</div>
 			<div id="modal-root" />
-			<input type="file" id="file" style="display:none" />
+			<input type="file" id="file" multiple style="display:none" />
+			<input type="file" id="folder" multiple webkitdirectory="" style="display:none" />
 			<script dangerouslySetInnerHTML={{ __html: VIEWER_SCRIPT }} />
 		</Layout>,
 	);
@@ -639,15 +781,23 @@ export async function ownerViewerPage(c: Ctx<"/d/:id">) {
  * "drop a file while looking at v2" has no meaning).
  */
 async function pinnedViewerPage(c: Ctx<"/d/:id">, doc: ResolvedDocument) {
-	const [versions, oToken] = await Promise.all([
+	const [versions, oToken, files] = await Promise.all([
 		listVersions(c.env.DB, doc.id),
 		mintOwnerToken(doc.id, c.env.OWNER_TOKEN_SECRET, 600, doc.version),
+		listVersionFiles(c.env.DB, doc.id, doc.version),
 	]);
+	const selected =
+		c.req.query("file") === undefined ? files[0] : files.find((file) => file.path === c.req.query("file"));
+	if (!selected) return uniform404(c);
 	applyHeaders(c, VIEWER_HEADERS);
 	return c.html(
 		<Layout title={doc.title}>
 			<ViewerShell
-				src={`/raw/${oToken}`}
+				src={rawFileUrl(oToken, selected.path)}
+				files={files}
+				selected={selected}
+				base={`/d/${doc.id}`}
+				version={doc.version}
 				banner={
 					<div class="banner">
 						<span>Viewing version {doc.version} · read-only</span>
@@ -685,16 +835,21 @@ export async function publicViewerPage(c: Ctx<"/v/:token">) {
 	if (!share) return uniform404(c);
 	const doc = await getLiveDocument(c.env.DB, share.document_id, now);
 	if (!doc) return uniform404(c);
+	const files = await listVersionFiles(c.env.DB, doc.id, doc.version);
+	const selected =
+		c.req.query("file") === undefined ? files[0] : files.find((file) => file.path === c.req.query("file"));
+	if (!selected) return uniform404(c);
 
 	applyHeaders(c, VIEWER_HEADERS);
 	return c.html(
 		<Layout title={doc.title}>
-			<ViewerShell src={`/raw/${token}`}>
+			<ViewerShell src={rawFileUrl(token, selected.path)} files={files} selected={selected} base={`/v/${token}`}>
 				<span class="tb-brand">poof</span>
 				<span class="tb-title">{doc.title}</span>
 				<span class="spacer" />
 				<span class="tb-chip">expires in {formatRemaining(share.expires_at - now)}</span>
 			</ViewerShell>
+			<script dangerouslySetInnerHTML={{ __html: FILES_JS }} />
 		</Layout>,
 	);
 }

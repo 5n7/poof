@@ -6,9 +6,18 @@ import type { Context } from "hono";
 import { z } from "zod";
 
 import { defaultMediaType, inferFileBytes } from "../lib/content";
-import { type ShareRow, getLiveDocument, listDocuments, listVersions, revokeShare } from "../lib/db";
+import {
+	type ShareRow,
+	getLiveDocument,
+	getLiveDocumentAt,
+	listDocuments,
+	listVersionFiles,
+	listVersions,
+	revokeShare,
+} from "../lib/db";
 import {
 	MAX_BYTES,
+	MAX_FILES,
 	addVersion,
 	createDocument,
 	deleteDocumentWithBlobs,
@@ -43,6 +52,52 @@ const SOURCE_FIELDS = {
 	filename: z.string().optional().describe("Original filename, also used to infer the file type."),
 	media_type: z.string().optional().describe("Media type for a file without a recognized extension."),
 };
+const INPUT_FILE = z.object({
+	path: z.string().describe("Relative path within the document, including directories for relative links."),
+	content: z.string().describe("Original source text, or base64 bytes when encoding is base64."),
+	...SOURCE_FIELDS,
+	kind: KIND.optional(),
+});
+const FILES = z
+	.array(INPUT_FILE)
+	.max(MAX_FILES)
+	.optional()
+	.describe("Files to add or replace by path. Use this instead of top-level content for a multi-file document.");
+
+function decodeFile(file: z.infer<typeof INPUT_FILE>) {
+	if (file.encoding === "base64" && file.content.length > 4 * Math.ceil(MAX_BYTES / 3)) {
+		throw new Error(`Content exceeds the ${MAX_BYTES}-byte limit.`);
+	}
+	const source = decodeSource(file.content, file.encoding);
+	if (source === null) throw new Error(`Content for ${JSON.stringify(file.path)} is not valid base64.`);
+	if (sourceBytes(source) > MAX_BYTES) throw new Error(`Content exceeds the ${MAX_BYTES}-byte limit.`);
+	const filename = file.filename ?? file.path.split("/").at(-1)!;
+	const inferred = inferFileBytes(
+		file.path,
+		file.media_type ?? "",
+		typeof source === "string" ? new TextEncoder().encode(source).buffer : source,
+	);
+	const kind = file.kind ?? inferred.kind;
+	return {
+		path: file.path,
+		filename,
+		kind,
+		source,
+		media_type: kind === inferred.kind ? inferred.media_type : defaultMediaType(kind),
+	};
+}
+
+/** Stop decoding as soon as the complete upload exceeds the shared byte limit. */
+function decodeFiles(files: z.infer<typeof INPUT_FILE>[]) {
+	let bytes = 0;
+	return files.map((file) => {
+		const decoded = decodeFile(file);
+		bytes += sourceBytes(decoded.source);
+		if (bytes > MAX_BYTES) throw new Error(`Document upload exceeds the ${MAX_BYTES}-byte limit.`);
+		return decoded;
+	});
+}
+
 // Build this enum from the same table as `parseTtl` to keep them in sync.
 const TTL = z.enum(TTL_KEYS);
 
@@ -54,6 +109,8 @@ const INSTRUCTIONS = `poof stores original files and mints short-lived public sh
 Poof returns two URL types. Do not mix them up:
 - /d/{id} is the owner view, behind Cloudflare Access. Only the owner can open it. Never hand this URL to a recipient; it will not work for them.
 - /v/{token} is the public share view. Anyone holding it can read the document, with no login, until it expires or is revoked. Treat the URL itself as the secret: prefer short share TTLs, and revoke when access should end early.
+
+A document can contain multiple files of mixed types. Use files with relative paths to keep linked Markdown, HTML, and assets together. update merges by path and retains unmentioned files; delete_paths explicitly removes files. rollback restores the complete file set. Use files to discover paths and cat with file to read one.
 
 To share a new document, call push with share: true and send only the /v/ line. To revise it, call update with the same id. Existing /d/ and /v/ URLs will keep working. Do not create a second document for a revision.
 
@@ -193,7 +250,7 @@ async function readCapped(
  * `readOnlyHint` is false, so the reading tools state neither. A value there is
  * noise a reader has to decide whether to believe.
  *
- * `openWorldHint: false` on all nine. Its default is true, meaning the tool may
+ * `openWorldHint: false` on all tools. Its default is true, meaning the tool may
  * reach external entities. Every poof tool acts only on the owner's library.
  */
 
@@ -214,6 +271,10 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 				"Read original Markdown/text or compact Markdown extracted from HTML. Binary files return metadata and a download URL. For editing HTML, use raw: true to retrieve the original markup.",
 			inputSchema: {
 				id: z.string().describe("Document id."),
+				file: z
+					.string()
+					.optional()
+					.describe("File path within the document (default: first file). Use files to list paths."),
 				raw: z
 					.boolean()
 					.default(false)
@@ -228,14 +289,20 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 					.describe("Version to read (default: the current one; see the `versions` tool)."),
 			},
 		},
-		async ({ id, raw, version }) => {
-			const obj = await readVersionContent(c.env, id, version ?? null, nowSeconds(), raw);
-			if (!obj) return version === undefined ? missing(id) : failure(`No version ${version} of document ${id}.`);
+		async ({ id, raw, version, file }) => {
+			const obj = await readVersionContent(c.env, id, version ?? null, nowSeconds(), raw, file);
+			if (!obj)
+				return file !== undefined
+					? failure(`No file ${JSON.stringify(file)} in the requested version of document ${id}.`)
+					: version === undefined
+						? missing(id)
+						: failure(`No version ${version} of document ${id}.`);
 
 			if (obj.binary) {
 				await obj.body.cancel();
 				const query = new URLSearchParams({ format: "raw" });
 				if (version !== undefined) query.set("v", String(version));
+				if (file !== undefined) query.set("file", file);
 				return text(
 					`Binary file: ${JSON.stringify(obj.filename ?? "document")} (${obj.media_type}, ${obj.source_size} bytes).\nDownload: ${origin}/api/documents/${encodeURIComponent(id)}/content?${query}\nThis URL is owner-only. Do not send it to a recipient.`,
 				);
@@ -249,6 +316,30 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 					`[truncated: input is ${obj.size} bytes; decoded text exceeds ${CAT_MAX_BYTES} UTF-8 bytes.`,
 					`The whole thing is at ${origin}/d/${id}. This URL is owner-only. Do not send it to a recipient.]`,
 				].join("\n"),
+			);
+		},
+	);
+
+	server.registerTool(
+		"files",
+		{
+			annotations: { openWorldHint: false, readOnlyHint: true },
+			description:
+				"List file paths and types in a document version. Pass a path to cat as file. Only the owner can inspect past versions.",
+			inputSchema: {
+				id: z.string().describe("Document id."),
+				version: z.number().int().min(1).optional().describe("Version to inspect (default: current)."),
+			},
+		},
+		async ({ id, version }) => {
+			const doc = await getLiveDocumentAt(c.env.DB, id, version ?? null, nowSeconds());
+			if (!doc) return version === undefined ? missing(id) : failure(`No version ${version} of document ${id}.`);
+			const files = await listVersionFiles(c.env.DB, id, doc.version);
+			return text(
+				table(
+					["PATH", "KIND", "MEDIA TYPE"],
+					files.map((file) => [file.path, file.kind, file.media_type]),
+				),
 			);
 		},
 	);
@@ -285,9 +376,13 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 		{
 			annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
 			description:
-				"Create a document from original text or a base64-encoded file and return its owner URL. With share: true, also create a public /v/{token} URL. Send recipients only the /v/ URL. The /d/{id} URL requires Cloudflare Access. Anyone with the /v/ URL can read the document until expiry or revocation. Treat the /v/ URL itself as a secret. Revise a shared document with `update`; do not create a replacement.",
+				"Create one document from files with mixed types or a single content string and return its owner URL. With share: true, also create a public /v/{token} URL. Send recipients only the /v/ URL. The /d/{id} URL requires Cloudflare Access. Anyone with the /v/ URL can read the document until expiry or revocation. Treat the /v/ URL itself as a secret. Revise a shared document with `update`; do not create a replacement.",
 			inputSchema: {
-				content: z.string().describe("Original source text, or base64 bytes when encoding is base64."),
+				content: z
+					.string()
+					.optional()
+					.describe("Original source text, or base64 bytes. Supply either content or files."),
+				files: FILES,
 				...SOURCE_FIELDS,
 				kind: KIND.optional().describe(
 					"Display kind. Inferred from filename/media_type when provided; otherwise defaults to md for text or file for base64.",
@@ -305,7 +400,11 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 				),
 			},
 		},
-		async ({ content, encoding, filename, media_type, kind, share, share_ttl, title, ttl }) => {
+		async ({ content, files, encoding, filename, media_type, kind, share, share_ttl, title, ttl }) => {
+			if ((content === undefined) === (files === undefined)) return failure("Supply either content or files.");
+			if (files !== undefined && files.length === 0) return failure("At least one file is required.");
+			const decodedFiles = files === undefined ? undefined : decodeFiles(files);
+			content ??= "";
 			if (encoding === "base64" && content.length > 4 * Math.ceil(MAX_BYTES / 3)) {
 				return failure(`Content exceeds the ${MAX_BYTES}-byte limit.`);
 			}
@@ -321,27 +420,30 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 				media_type ?? "",
 				typeof source === "string" ? new TextEncoder().encode(source).buffer : source,
 			);
-			const resolvedKind = kind ?? (filename || media_type ? inferred.kind : encoding === "base64" ? "file" : "md");
+			const resolvedKind =
+				decodedFiles?.[0].kind ??
+				kind ??
+				(filename || media_type ? inferred.kind : encoding === "base64" ? "file" : "md");
 			const resolvedMediaType =
 				(filename || media_type) && resolvedKind === inferred.kind
 					? inferred.media_type
 					: defaultMediaType(resolvedKind);
+			const titleSource = decodedFiles?.[0].source ?? source;
 			const resolved =
 				title?.trim() ||
 				(resolvedKind === "md"
 					? await resolveNewTitle(c.env, {
-							fallback: filename || "untitled",
+							fallback: decodedFiles?.[0].filename ?? (filename || "untitled"),
 							kind: "md",
-							source: typeof source === "string" ? source : new TextDecoder().decode(source),
+							source: typeof titleSource === "string" ? titleSource : new TextDecoder().decode(titleSource),
 						})
-					: filename || "untitled");
+					: (decodedFiles?.[0].filename ?? (filename || "untitled")));
 			const id = await createDocument(c.env, now, {
 				title: resolved,
-				filename,
-				kind: resolvedKind,
-				media_type: resolvedMediaType,
-				source,
 				expires_at,
+				...(decodedFiles
+					? { files: decodedFiles }
+					: { filename, kind: resolvedKind, media_type: resolvedMediaType, source }),
 			});
 
 			const lines = [
@@ -406,7 +508,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 			// is already current, so repeating the call costs a read and no write.
 			annotations: { destructiveHint: false, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
 			description:
-				"Make a past version current again (see the `versions` tool for the numbers). Same instant effect on live share links as `update`: everyone holding one sees the restored content on their next load, and there is no way to pin a recipient to another version.",
+				"Restore the complete file set from a past version (see the `versions` tool for the numbers). Same instant effect on live share links as `update`: everyone holding one sees the restored content on their next load, and there is no way to pin a recipient to another version.",
 			inputSchema: {
 				id: z.string().describe("Document id to roll back."),
 				version: z.number().int().min(1).describe("Version number to restore (see the `versions` tool)."),
@@ -464,9 +566,18 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 			// loss, so this remains false. `rm` is the destructive operation.
 			annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
 			description:
-				"Add a version while keeping the same /d/{id} and share links. Recipients see the new content on their next load. Pass edited source. Use `cat` with raw: true when editing HTML. The title remains unless replaced; file metadata can infer a new kind. All live share links update at once, with no per-recipient version pinning. Use a separate document for content that some recipients must not see.",
+				"Merge files by path, retain unmentioned files, and remove only explicit delete_paths in one new version while keeping the same /d/{id} and share links. Recipients see the new content on their next load. Pass edited source. Use `cat` with raw: true when editing HTML. The title remains unless replaced; file metadata can infer a new kind. All live share links update at once, with no per-recipient version pinning. Use a separate document for content that some recipients must not see.",
 			inputSchema: {
-				content: z.string().describe("Original source text, or base64 bytes when encoding is base64."),
+				content: z
+					.string()
+					.optional()
+					.describe("Original source text, or base64 bytes. Supply either content or files."),
+				files: FILES,
+				delete_paths: z
+					.array(z.string())
+					.max(MAX_FILES)
+					.optional()
+					.describe("Explicit file paths to remove. Files omitted from an upload are retained."),
 				...SOURCE_FIELDS,
 				id: z.string().describe("Document id to update."),
 				// Unlike push, update has no default. An omitted kind keeps the current
@@ -478,7 +589,14 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 				title: z.string().optional().describe("New document title (default: keep the current one)."),
 			},
 		},
-		async ({ content, encoding, filename, media_type, id, kind, title }) => {
+		async ({ content, files, delete_paths, encoding, filename, media_type, id, kind, title }) => {
+			if (content !== undefined && files !== undefined) return failure("Supply either content or files.");
+			if (content === undefined && !files?.length && !delete_paths?.length)
+				return failure("Supply content, files, or delete_paths.");
+			const decodedFiles = files === undefined ? undefined : decodeFiles(files);
+			const bundle = decodedFiles !== undefined || content === undefined;
+			if (!bundle && delete_paths?.length) return failure("Use files instead of content when deleting paths.");
+			content ??= "";
 			if (encoding === "base64" && content.length > 4 * Math.ceil(MAX_BYTES / 3)) {
 				return failure(`Content exceeds the ${MAX_BYTES}-byte limit.`);
 			}
@@ -501,21 +619,25 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 			const resolved = kind ?? (filename || media_type ? inferred.kind : doc.kind);
 			const added = await addVersion(c.env, doc, now, {
 				title: title?.trim() || null,
-				filename,
-				kind: resolved,
-				media_type:
-					filename || media_type
-						? resolved === inferred.kind
-							? inferred.media_type
-							: defaultMediaType(resolved)
-						: undefined,
-				source,
+				...(bundle
+					? { files: decodedFiles ?? [], delete_paths }
+					: {
+							filename,
+							kind: resolved,
+							source,
+							media_type:
+								filename || media_type
+									? resolved === inferred.kind
+										? inferred.media_type
+										: defaultMediaType(resolved)
+									: undefined,
+						}),
 			});
 			if (!added) return missing(id);
 
 			return text(
 				[
-					`Updated ${id} to v${added.version} (${resolved}, title ${JSON.stringify(added.title)}).`,
+					`Updated ${id} to v${added.version} (${bundle ? "file set" : resolved}, title ${JSON.stringify(added.title)}).`,
 					ownerLine(origin, id),
 					"Every live share link already serves the new content; there is nothing to re-issue or re-send.",
 				].join("\n"),

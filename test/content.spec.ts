@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { attachmentDisposition, inferFileBytes } from "../src/lib/content";
 import { getLiveDocument } from "../src/lib/db";
 import { MAX_BYTES, createDocument } from "../src/lib/documents";
+import { MAX_UPLOAD_BYTES } from "../src/lib/files";
 import { mintOwnerToken } from "../src/lib/tokens";
 import { OWNER_BASE, fetchWorker } from "./helpers";
 
@@ -86,6 +87,18 @@ describe("original file storage and readable content", () => {
 		expect(html).toContain("&lt;script&gt;");
 		expect(inferFileBytes("image.pdf", "", bytes.buffer).kind).toBe("file");
 		expect(inferFileBytes("unknown", "", new Uint8Array([0]).buffer).kind).toBe("file");
+	});
+
+	it("serves uploaded mjs modules with executable JavaScript MIME and exact source bytes", async () => {
+		const source = 'export const title = "Design";\n';
+		const { id, kind } = await upload(new TextEncoder().encode(source), "app.mjs");
+		expect(kind).toBe("text");
+		const token = await mintOwnerToken(id, env.OWNER_TOKEN_SECRET);
+		const response = await SELF.fetch(`${OWNER_BASE}/raw/${token}/app.mjs`);
+		expect(response.status).toBe(200);
+		expect(response.headers.get("Content-Type")).toBe("text/javascript");
+		expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
+		expect(await response.text()).toBe(source);
 	});
 
 	it("accepts filenames whose extensions match object prototype properties", async () => {
@@ -217,7 +230,7 @@ describe("original file storage and readable content", () => {
 			{},
 			{
 				method: "POST",
-				headers: { "Content-Length": String(MAX_BYTES + 64 * 1024 + 1) },
+				headers: { "Content-Length": String(MAX_UPLOAD_BYTES + 1) },
 				body: "small",
 			},
 		);
@@ -228,7 +241,7 @@ describe("original file storage and readable content", () => {
 	it("bounds the entire multipart request even when source data is small", async () => {
 		const body = new FormData();
 		body.set("file", new Blob(["small"]), "small.txt");
-		body.set("extra", "x".repeat(MAX_BYTES + 64 * 1024));
+		body.set("extra", "x".repeat(MAX_UPLOAD_BYTES));
 		const encoded = new Response(body);
 		const res = await fetchWorker(
 			`${OWNER_BASE}/api/documents`,

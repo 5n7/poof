@@ -84,8 +84,9 @@ fallback.
 
 ## 5. Migrations
 
-Apply the D1 schema (`migrations/0001_init.sql`). Run the remote migration
-against the deployed database:
+Apply the pending D1 migrations from `migrations/`. For an existing deployment
+upgrading to multi-file documents, follow the rollout below before running the
+remote migration:
 
 ```sh
 bun run migrate:remote
@@ -96,6 +97,25 @@ For local development against the miniflare D1 store:
 ```sh
 bun run migrate:local
 ```
+
+### Upgrading to multi-file documents
+
+Migration `0004_document_files.sql` backfills a file manifest for every existing
+version without rewriting stored bytes. Use this order for the single-owner
+deployment:
+
+1. Stop Web, CLI, and MCP uploads and updates. Temporarily pause the scheduled
+   cleanup Cron Trigger in the Cloudflare dashboard.
+2. Wait for in-flight requests and cleanup runs to finish.
+3. Run `bun run migrate:remote` to apply `0004_document_files.sql`.
+4. Keep uploads stopped and run `bun run deploy` to activate the new Worker.
+5. Verify an existing document and its share link, then resume uploads and
+   scheduled cleanup. The deployment restores the Cron Trigger from
+   `wrangler.jsonc`; confirm that it is enabled.
+
+The old Worker must finish writing before the backfill. Its uploads do not
+create file manifests, and its cleanup cannot recognize all files written by
+the new Worker. Keep both operations paused until the new Worker is active.
 
 ## 6. Cloudflare Access (Zero Trust dashboard)
 
