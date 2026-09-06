@@ -46,6 +46,12 @@ describe("Access enforcement (DEV_DISABLE_ACCESS unset)", () => {
 		expect(await res.text()).toBe("Forbidden");
 	});
 
+	it("rejects the assistant connection guide without the Access header (403)", async () => {
+		const res = await fetchWith("/guide");
+		expect(res.status).toBe(403);
+		expect(await res.text()).toBe("Forbidden");
+	});
+
 	it("rejects the owner viewer GET /d/:id without the Access header (403)", async () => {
 		const res = await fetchWith("/d/doc_someid");
 		expect(res.status).toBe(403);
