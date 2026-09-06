@@ -14,6 +14,8 @@ import {
 	type DocumentRow,
 	type RollbackResult,
 	type ShareResult,
+	type TitleSnapshot,
+	type TitleSuggestion,
 	type UpdateResult,
 	type VersionsResult,
 } from "./api";
@@ -301,6 +303,32 @@ const push = defineCommand({
 		}),
 });
 
+const rename = defineCommand({
+	meta: {
+		name: "rename",
+		description: "Change a document title without creating a version or changing its files.",
+	},
+	args: {
+		"doc-id": { type: "positional", description: "Document id to rename.", required: true },
+		title: { type: "string", description: "New document title.", required: true },
+		"expected-state": {
+			type: "string",
+			description: "State token returned by suggest-title for saving a reviewed candidate.",
+		},
+	},
+	run: ({ args }) =>
+		attempt(async () => {
+			const cfg = loadConfig();
+			const state =
+				args["expected-state"] ?? (await api<TitleSnapshot>(cfg, "GET", p`/api/documents/${args["doc-id"]}`)).state;
+			const result = await api<TitleSnapshot>(cfg, "PATCH", p`/api/documents/${args["doc-id"]}/title`, {
+				title: args.title,
+				expected_state: state,
+			});
+			process.stdout.write(`${JSON.stringify(result)}\n`);
+		}),
+});
+
 const revoke = defineCommand({
 	meta: {
 		name: "revoke",
@@ -418,6 +446,26 @@ const status = defineCommand({
 		}),
 });
 
+const suggestTitle = defineCommand({
+	meta: {
+		name: "suggest-title",
+		description: "Print an AI title suggestion as JSON without changing the document.",
+	},
+	args: {
+		"doc-id": { type: "positional", description: "Document id to suggest a title for.", required: true },
+	},
+	run: ({ args }) =>
+		attempt(async () => {
+			const cfg = loadConfig();
+			const id = args["doc-id"];
+			const doc = await api<TitleSnapshot>(cfg, "GET", p`/api/documents/${id}`);
+			const result = await api<TitleSuggestion>(cfg, "POST", p`/api/documents/${id}/title-suggestion`, {
+				expected_state: doc.state,
+			});
+			process.stdout.write(`${JSON.stringify(result)}\n`);
+		}),
+});
+
 const update = defineCommand({
 	meta: {
 		name: "update",
@@ -500,7 +548,22 @@ const main = defineCommand({
 			"Only 'poof auth login' opens a browser. A complete POOF_ACCESS_CLIENT_ID and POOF_ACCESS_CLIENT_SECRET " +
 			"pair selects headless service auth.",
 	},
-	subCommands: { auth, cat, ls, files, push, revoke, rm, rollback, share, status, update, versions },
+	subCommands: {
+		auth,
+		cat,
+		ls,
+		files,
+		push,
+		rename,
+		revoke,
+		rm,
+		rollback,
+		share,
+		status,
+		"suggest-title": suggestTitle,
+		update,
+		versions,
+	},
 });
 
 runMain(main);

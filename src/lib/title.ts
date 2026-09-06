@@ -315,7 +315,7 @@ function describeError(err: unknown): string {
  * Ask Workers AI for a title. Return `null` for a missing binding, timeout,
  * retired model, or unusable output.
  */
-async function generateAiTitle(env: Env, source: string): Promise<string | null> {
+export async function generateAiTitle(env: Env, source: string, languageSource = source): Promise<string | null> {
 	const controller = new AbortController();
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
@@ -341,12 +341,10 @@ async function generateAiTitle(env: Env, source: string): Promise<string | null>
 			}, AI_TITLE_TIMEOUT_MS);
 		});
 
-		// Detected on the same slice the model is shown, never on the whole
-		// document. Decide from the same evidence the model gets,
-		// or a Japanese preface to an English report would ask for one language
-		// while showing the other.
+		// Multi-file suggestions pass their content excerpts separately so English
+		// filenames and request scaffolding do not determine the title language.
 		const excerpt = source.slice(0, AI_TITLE_MAX_CHARS);
-		const japanese = looksJapanese(excerpt);
+		const japanese = looksJapanese(languageSource.slice(0, AI_TITLE_MAX_CHARS));
 
 		const call = env.AI.run(
 			AI_TITLE_MODEL,

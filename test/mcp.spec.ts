@@ -1,6 +1,7 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { documentTitleState } from "../src/lib/documents";
 import { MCP_BASE, MCP_CALL, OWNER_BASE, fetchWorker, seedDoc } from "./helpers";
 
 // Two hosts, because the Worker serves two isolated surfaces (SPEC §6.5).
@@ -8,7 +9,20 @@ import { MCP_BASE, MCP_CALL, OWNER_BASE, fetchWorker, seedDoc } from "./helpers"
 // `/d`, `/v`, and `/raw` paths the tool results point at.
 
 /** The document tools, named after the CLI subcommands (SPEC §10). */
-const TOOL_NAMES = ["cat", "files", "ls", "push", "revoke", "rm", "rollback", "share", "update", "versions"];
+const TOOL_NAMES = [
+	"cat",
+	"files",
+	"ls",
+	"push",
+	"rename",
+	"revoke",
+	"rm",
+	"rollback",
+	"share",
+	"suggest_title",
+	"update",
+	"versions",
+];
 
 interface ToolAnnotations {
 	destructiveHint?: boolean;
@@ -133,7 +147,7 @@ describe("MCP endpoint", () => {
 
 		// The other two hints are defined only when readOnlyHint is false, so these
 		// must not state them: an absent hint is not the same claim as a false one.
-		for (const name of ["cat", "files", "ls", "versions"]) {
+		for (const name of ["cat", "files", "ls", "suggest_title", "versions"]) {
 			expect(annotationsOf(name), name).toMatchObject({ readOnlyHint: true });
 			expect(annotationsOf(name), name).not.toHaveProperty("destructiveHint");
 			expect(annotationsOf(name), name).not.toHaveProperty("idempotentHint");
@@ -143,6 +157,7 @@ describe("MCP endpoint", () => {
 		// moves a pointer, so neither is destructive.
 		const writes: [name: string, destructiveHint: boolean, idempotentHint: boolean][] = [
 			["push", false, false],
+			["rename", true, true],
 			["revoke", true, true],
 			["rm", true, true],
 			["rollback", false, true],
@@ -554,12 +569,12 @@ describe("MCP endpoint", () => {
 		const { id } = await pushDoc({ content: "# Listed\n\nbody", ttl: "1d" });
 
 		const listing = await callTool("ls");
-		expect(listing.split("\n")[0]).toBe("ID\tTITLE\tKIND\tVERSION\tUPDATED\tEXPIRES");
+		expect(listing.split("\n")[0]).toBe("ID\tTITLE\tKIND\tVERSION\tUPDATED\tEXPIRES\tSTATE");
 		const row = listing
 			.split("\n")
 			.find((l) => l.startsWith(id))!
 			.split("\t");
-		expect(row).toHaveLength(6);
+		expect(row).toHaveLength(7);
 		expect(row[1]).toBe("Listed");
 		expect(row[2]).toBe("md");
 		expect(row[3]).toBe("v1");
@@ -576,7 +591,7 @@ describe("MCP endpoint", () => {
 			.split("\n")
 			.find((l) => l.startsWith(id))!
 			.split("\t");
-		expect(row).toHaveLength(6);
+		expect(row).toHaveLength(7);
 		expect(row[1]).toBe("tab here and newline");
 		expect(row[2]).toBe("html");
 	});
@@ -764,5 +779,70 @@ describe("MCP file sets", () => {
 		expect(
 			await callToolExpectingError("push", { files: [{ path: "a.png", content: "!", encoding: "base64" }] }),
 		).toContain("base64");
+	});
+});
+
+describe("MCP title tools", () => {
+	it("renames metadata without creating a version and rejects stale title expectations", async () => {
+		const id = "mcp-rename-title";
+		await seedDoc(id, { title: "Original", kind: "md", body: "# Original content" });
+		const expected_state = await documentTitleState({ id, title: "Original", current_version: 1 });
+		const renamed = await callTool("rename", {
+			id,
+			title: "New title",
+			expected_state,
+		});
+		expect(JSON.parse(renamed)).toMatchObject({ id, title: "New title", current_version: 1 });
+		await callToolExpectingError("rename", {
+			id,
+			title: "Stale suggestion",
+			expected_state,
+		});
+		const current = await env.DB.prepare("SELECT title, current_version FROM document WHERE id = ?").bind(id).first();
+		expect(current).toMatchObject({ title: "New title", current_version: 1 });
+		const history = await env.DB.prepare("SELECT COUNT(*) AS count FROM document_version WHERE document_id = ?")
+			.bind(id)
+			.first();
+		expect(history).toEqual({ count: 1 });
+	});
+
+	it("uses the ls state token to rename binary documents with joiners in their titles", async () => {
+		for (const [suffix, title] of [
+			["zwj", "👩‍💻 Notes"],
+			["zwnj", "می‌روم"],
+		]) {
+			const id = `mcp-rename-${suffix}`;
+			await seedDoc(id, { title, kind: "file", body: "binary" });
+			const listing = await callTool("ls");
+			const row = listing
+				.split("\n")
+				.find((line) => line.startsWith(id + "\t"))!
+				.split("\t");
+			expect(row[1]).not.toBe(title);
+			const expected_state = row.at(-1)!;
+			expect(expected_state).toMatch(/^[a-f0-9]{64}$/);
+			const renamed = JSON.parse(await callTool("rename", { id, title: "Chosen title", expected_state }));
+			expect(renamed).toMatchObject({ id, title: "Chosen title", current_version: 1 });
+			expect(renamed.state).not.toBe(expected_state);
+		}
+	});
+
+	it("reports a missing document from both title tools", async () => {
+		for (const [name, args] of [
+			["rename", { id: "missing-title", title: "Name", expected_state: "a".repeat(64) }],
+			["suggest_title", { id: "missing-title" }],
+		] as const) {
+			const result = await callToolExpectingError(name, args);
+			expect(result).toContain("No live document");
+		}
+	});
+
+	it("does not rename a document when there is no readable text to suggest from", async () => {
+		const id = "mcp-empty-title";
+		await seedDoc(id, { title: "Keep this title", kind: "md", body: "" });
+		const before = await env.DB.prepare("SELECT title, updated_at FROM document WHERE id = ?").bind(id).first();
+		expect(await callToolExpectingError("suggest_title", { id })).toContain("no readable text");
+		const after = await env.DB.prepare("SELECT title, updated_at FROM document WHERE id = ?").bind(id).first();
+		expect(after).toEqual(before);
 	});
 });

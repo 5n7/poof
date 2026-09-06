@@ -370,18 +370,49 @@ export async function applyNewVersion(
 	now: number,
 	title: string | null,
 	expectedVersion?: number,
+	expectedTitle?: string,
 ): Promise<boolean> {
 	const [res] = await db.batch([
 		db
 			.prepare(`UPDATE document SET current_version = ?, updated_at = ?, title = COALESCE(?, title)
-			WHERE id = ? AND (? IS NULL OR current_version = ?) AND EXISTS (SELECT 1 FROM document_version WHERE document_id = document.id AND version = ?)`)
-			.bind(version, now, title, id, expectedVersion ?? null, expectedVersion ?? null, version),
+			WHERE id = ? AND (? IS NULL OR current_version = ?) AND (? IS NULL OR title = ?) AND EXISTS (SELECT 1 FROM document_version WHERE document_id = document.id AND version = ?)`)
+			.bind(
+				version,
+				now,
+				title,
+				id,
+				expectedVersion ?? null,
+				expectedVersion ?? null,
+				expectedTitle ?? null,
+				expectedTitle ?? null,
+				version,
+			),
 		db
 			.prepare(`UPDATE document_version SET ready = 1 WHERE document_id = ? AND version = ?
 			AND EXISTS (SELECT 1 FROM document WHERE id = ? AND current_version = ?)`)
 			.bind(id, version, id, version),
 	]);
 	return (res!.meta.changes ?? 0) > 0;
+}
+
+/** Rename live metadata only. The returned row is the exact state this write committed. */
+export async function compareAndSetDocumentTitle(
+	db: D1Database,
+	id: string,
+	title: string,
+	expectedVersion: number,
+	expectedTitle: string,
+	now: number,
+): Promise<DocumentRow | null> {
+	return db
+		.prepare(`UPDATE document
+		SET title = ?, updated_at = CASE WHEN title = ? THEN updated_at ELSE ? END
+		WHERE id = ? AND current_version = ? AND title = ?
+		AND (expires_at IS NULL OR expires_at >= ?)
+		AND EXISTS (SELECT 1 FROM document_version WHERE document_id = document.id AND version = current_version AND ready = 1)
+		RETURNING id, title, current_version, created_at, updated_at, expires_at`)
+		.bind(title, title, now, id, expectedVersion, expectedTitle, now)
+		.first<DocumentRow>();
 }
 
 /** Move the pointer to an existing version (rollback). false when it does not exist. */

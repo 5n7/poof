@@ -23,7 +23,7 @@ export interface ApiRuntime {
 	oauthAccessToken(resource: string, forceRefresh?: boolean): Promise<string>;
 }
 
-export type HttpMethod = "DELETE" | "GET" | "HEAD" | "POST";
+export type HttpMethod = "DELETE" | "GET" | "HEAD" | "PATCH" | "POST";
 
 export const defaultApiRuntime: ApiRuntime = { fetch, oauthAccessToken };
 
@@ -56,6 +56,22 @@ export interface UpdateResult {
 	title: string;
 	kind: "file" | "html" | "md" | "text";
 	updated_at: number;
+}
+
+export interface TitleSnapshot {
+	state: string;
+	id: string;
+	title: string;
+	current_version: number;
+	updated_at: number;
+}
+
+export interface TitleExpectation {
+	expected_state: string;
+}
+
+export interface TitleSuggestion extends TitleExpectation {
+	title: string;
 }
 
 export interface RollbackResult {
@@ -196,8 +212,10 @@ async function request(
 			}
 			throw new Error(`OAuth access was denied for ${cfg.url}. Check the owner identity and Access policy.`);
 		}
-		if (res.status === 503) throw new Error(`Poof Access configuration is unavailable at ${cfg.url}.`);
 		const contentType = res.headers.get("content-type") ?? "";
+		if (res.status === 503 && !contentType.toLowerCase().includes("application/json")) {
+			throw new Error(`Poof Access configuration is unavailable at ${cfg.url}.`);
+		}
 		if (contentType.toLowerCase().includes("text/html")) {
 			throw new Error(`${method} ${path} failed: ${res.status} ${res.statusText}`);
 		}

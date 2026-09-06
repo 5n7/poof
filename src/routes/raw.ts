@@ -35,6 +35,7 @@ rawRoutes.on("GET", ["/:token", "/:token/*"], async (c) => {
 	const now = nowSeconds();
 
 	let doc: ResolvedDocument | null = null;
+	let pinned = false;
 	if (token.startsWith("s_")) {
 		// Share → current version in one JOIN (see getLiveDocumentByShareToken).
 		doc = await getLiveDocumentByShareToken(c.env.DB, token, now);
@@ -43,7 +44,10 @@ rawRoutes.on("GET", ["/:token", "/:token/*"], async (c) => {
 		// The version pin comes from the signed payload and nowhere else: here the
 		// token *is* the authorization, so accepting a version from the URL would
 		// let anyone holding a share link enumerate the document's history.
-		if (payload) doc = await getLiveDocumentAt(c.env.DB, payload.documentId, payload.version, now);
+		if (payload) {
+			pinned = payload.version !== null;
+			doc = await getLiveDocumentAt(c.env.DB, payload.documentId, payload.version, now);
+		}
 	}
 	if (!doc) return uniform404(c);
 
@@ -92,7 +96,7 @@ rawRoutes.on("GET", ["/:token", "/:token/*"], async (c) => {
 			files.map((entry) => entry.path),
 		);
 	}
-	const title = doc.version_title ?? doc.title;
+	const title = pinned ? (doc.version_title ?? doc.title) : doc.title;
 	if (path !== undefined && file.kind !== "md" && c.req.query("view") !== "1") {
 		return new Response(obj.body, { headers: { "Content-Type": file.media_type } });
 	}

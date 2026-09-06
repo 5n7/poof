@@ -125,14 +125,14 @@ describe("original file storage and readable content", () => {
 		expect(new Uint8Array(await (await content(id, "?format=raw")).arrayBuffer())).toEqual(bytes);
 	});
 
-	it("keeps per-version filename, type, source, and display title after updates and rollback", async () => {
+	it("restores versioned files while keeping the live title and historical title snapshots", async () => {
 		const { id } = await upload(new TextEncoder().encode("# One"), "one.md", "", undefined, "Original");
 		await upload(new TextEncoder().encode("# Two"), "two.md", "", id, "Renamed");
 		expect(await (await viewer(id, 1)).text()).toContain("<title>Original</title>");
 		expect(await (await viewer(id, 2)).text()).toContain("<title>Renamed</title>");
 		const rollback = await SELF.fetch(`${OWNER_BASE}/api/documents/${id}/versions/1/rollback`, { method: "POST" });
 		expect(rollback.status).toBe(200);
-		expect(await (await viewer(id)).text()).toContain("<title>Original</title>");
+		expect(await (await viewer(id)).text()).toContain("<title>Renamed</title>");
 		const raw = await content(id, "?format=raw");
 		expect(raw.headers.get("Content-Disposition")).toContain('filename="one.md"');
 		expect(await raw.text()).toBe("# One");
