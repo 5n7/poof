@@ -18,13 +18,17 @@ import {
 import {
 	MAX_BYTES,
 	MAX_FILES,
+	TitleOperationError,
 	addVersion,
 	createDocument,
 	deleteDocumentWithBlobs,
+	documentTitleState,
 	issueShare,
 	readVersionContent,
+	renameDocument,
 	rollbackDocument,
 	sourceBytes,
+	suggestDocumentTitle,
 } from "../lib/documents";
 import { originForHost } from "../lib/hosts";
 import { nowSeconds } from "../lib/time";
@@ -33,7 +37,7 @@ import { TTL_KEYS, ttlToSeconds } from "../lib/tokens";
 
 /**
  * Expose the document library as MCP tools over Streamable HTTP (SPEC §10).
- * Tool names match the CLI subcommands. `accessAuth` and `csrfProtection` in
+ * Tool names match the CLI subcommands, with underscores instead of hyphens. `accessAuth` and `csrfProtection` in
  * index.ts protect this route. MCP clients authenticate with Cloudflare Access
  * Managed OAuth, and `accessAuth("mcp")` accepts only a human identity
  * assertion here, never a service token (SPEC §11.2).
@@ -111,6 +115,8 @@ Poof returns two URL types. Do not mix them up:
 - /v/{token} is the public share view. Anyone holding it can read the document, with no login, until it expires or is revoked. Treat the URL itself as the secret: prefer short share TTLs, and revoke when access should end early.
 
 A document can contain multiple files of mixed types. Use files with relative paths to keep linked Markdown, HTML, and assets together. update merges by path and retains unmentioned files; delete_paths explicitly removes files. rollback restores the complete file set. Use files to discover paths and cat with file to read one.
+
+Use rename to change only the document title, without uploading a version. suggest_title returns an AI candidate and the expected_state token needed by rename. Review the candidate before saving; a suggestion never changes the document.
 
 To share a new document, call push with share: true and send only the /v/ line. To revise it, call update with the same id. Existing /d/ and /v/ URLs will keep working. Do not create a second document for a revision.
 
@@ -346,7 +352,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 		{
 			annotations: { openWorldHint: false, readOnlyHint: true },
 			description:
-				"List the documents in the library: id, title, kind, current version, last update, and expiry. This is the private owner-side library; nothing here is visible to a recipient.",
+				"List the documents in the library: id, title, kind, current version, last update, expiry, and STATE token for rename. This is the private owner-side library; nothing here is visible to a recipient.",
 			inputSchema: {},
 		},
 		async () => {
@@ -354,15 +360,18 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 			if (documents.length === 0) return text("(no documents)");
 			return text(
 				table(
-					["ID", "TITLE", "KIND", "VERSION", "UPDATED", "EXPIRES"],
-					documents.map((d) => [
-						d.id,
-						d.title,
-						d.kind,
-						`v${d.current_version}`,
-						formatTime(d.updated_at),
-						formatTime(d.expires_at),
-					]),
+					["ID", "TITLE", "KIND", "VERSION", "UPDATED", "EXPIRES", "STATE"],
+					await Promise.all(
+						documents.map(async (d) => [
+							d.id,
+							d.title,
+							d.kind,
+							`v${d.current_version}`,
+							formatTime(d.updated_at),
+							formatTime(d.expires_at),
+							await documentTitleState(d),
+						]),
+					),
 				),
 			);
 		},
@@ -466,6 +475,31 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 	);
 
 	server.registerTool(
+		"rename",
+		{
+			annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
+			description:
+				"Set the document title without creating a version or modifying files. The new title appears on owner and live share pages. Supply expected_state from the STATE column of ls or from suggest_title. A conflict leaves the document unchanged; inspect the current document before trying again.",
+			inputSchema: {
+				id: z.string().describe("Document id to rename."),
+				title: z.string().describe("New title to save, after reviewing any AI suggestion."),
+				expected_state: z
+					.string()
+					.describe("Opaque STATE token from ls or expected_state from suggest_title. Copy it exactly."),
+			},
+		},
+		async ({ id, title, expected_state }) => {
+			try {
+				const result = await renameDocument(c.env, id, title, { expected_state });
+				return text(JSON.stringify(result));
+			} catch (err) {
+				if (err instanceof TitleOperationError) return err.status === 404 ? missing(id) : failure(err.message);
+				throw err;
+			}
+		},
+	);
+
+	server.registerTool(
 		"revoke",
 		{
 			annotations: { destructiveHint: true, idempotentHint: true, openWorldHint: false, readOnlyHint: false },
@@ -551,6 +585,29 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 					return failure(`Invalid share ttl ${JSON.stringify(share_ttl)}.`);
 				case "not-found":
 					return missing(id);
+			}
+		},
+	);
+
+	server.registerTool(
+		"suggest_title",
+		{
+			annotations: { openWorldHint: false, readOnlyHint: true },
+			description:
+				"Ask Workers AI for a title based on readable files in the current document. Returns JSON with title and expected_state. This never renames the document. Review or edit the candidate, then explicitly call rename with the returned expected_state token to save it. AI failures return an error and leave the current title intact.",
+			inputSchema: { id: z.string().describe("Document id to suggest a title for.") },
+		},
+		async ({ id }) => {
+			const doc = await getLiveDocument(c.env.DB, id, nowSeconds());
+			if (!doc) return missing(id);
+			try {
+				const result = await suggestDocumentTitle(c.env, id, {
+					expected_state: await documentTitleState(doc),
+				});
+				return text(JSON.stringify(result));
+			} catch (err) {
+				if (err instanceof TitleOperationError) return err.status === 404 ? missing(id) : failure(err.message);
+				throw err;
 			}
 		},
 	);

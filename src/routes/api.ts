@@ -15,9 +15,14 @@ import {
 	MAX_BYTES,
 	MAX_FILES,
 	DocumentInputError,
+	TitleOperationError,
+	type TitleExpectation,
+	renameDocument,
+	suggestDocumentTitle,
 	type NewFileInput,
 	addVersion,
 	createDocument,
+	documentTitleMetadata,
 	deleteDocumentWithBlobs,
 	issueShare,
 	readVersionContent,
@@ -44,7 +49,9 @@ interface Upload {
 }
 
 apiRoutes.onError((error, c) => {
-	if (error instanceof DocumentInputError) return c.json({ error: error.message }, error.status);
+	if (error instanceof TitleOperationError && error.status === 404) return uniform404(c);
+	if (error instanceof DocumentInputError || error instanceof TitleOperationError)
+		return c.json({ error: error.message }, error.status);
 	throw error;
 });
 
@@ -343,4 +350,56 @@ apiRoutes.delete("/shares/:token", async (c) => {
 	const ok = await revokeShare(c.env.DB, token);
 	if (!ok) return uniform404(c);
 	return c.json({ revoked: true });
+});
+
+apiRoutes.get("/documents/:id", async (c) => {
+	const doc = await getLiveDocument(c.env.DB, c.req.param("id"), nowSeconds());
+	if (!doc) return uniform404(c);
+	return c.json(await documentTitleMetadata(doc));
+});
+
+/** These small JSON requests never need the upload route's multi-megabyte body allowance. */
+async function readTitleRequest(
+	c: Context<{ Bindings: Env }>,
+): Promise<(TitleExpectation & { title?: unknown }) | Response> {
+	if (!(await getLiveDocument(c.env.DB, c.req.param("id")!, nowSeconds()))) return uniform404(c);
+	const reader = c.req.raw.body?.getReader();
+	if (!reader) throw new TitleOperationError("A JSON body is required.", 400);
+	let size = 0;
+	const chunks: Uint8Array[] = [];
+	while (true) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		size += value.byteLength;
+		if (size > 16 * 1024) {
+			await reader.cancel();
+			throw new TitleOperationError("Title request is too large.", 400);
+		}
+		chunks.push(value);
+	}
+	const bytes = new Uint8Array(size);
+	let offset = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	try {
+		const body = JSON.parse(new TextDecoder().decode(bytes));
+		if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Invalid body");
+		return body;
+	} catch {
+		throw new TitleOperationError("A JSON object is required.", 400);
+	}
+}
+
+apiRoutes.post("/documents/:id/title-suggestion", async (c) => {
+	const body = await readTitleRequest(c);
+	if (body instanceof Response) return body;
+	return c.json(await suggestDocumentTitle(c.env, c.req.param("id"), body));
+});
+
+apiRoutes.patch("/documents/:id/title", async (c) => {
+	const body = await readTitleRequest(c);
+	if (body instanceof Response) return body;
+	return c.json(await renameDocument(c.env, c.req.param("id"), body.title, body));
 });

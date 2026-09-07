@@ -28,7 +28,7 @@ test("top-level help lists auth and keeps status at the top level", async () => 
 	const result = await run(["--help"]);
 	expect(result.exitCode).toBe(0);
 	expect(result.stdout).toContain("auth|cat|ls");
-	expect(result.stdout).toContain("share|status|update");
+	expect(result.stdout).toContain("share|status|suggest-title|update");
 	expect(result.stdout).toContain("Only 'poof auth login' opens a browser");
 	expect(result.stderr).toBe("");
 });
@@ -331,6 +331,165 @@ test("files lists a selected version without exposing storage keys", async () =>
 		expect(result.stdout).toContain("adr/001.md");
 		expect(new URL(requestUrl).pathname).toBe("/api/documents/doc/files");
 		expect(new URL(requestUrl).searchParams.get("v")).toBe("2");
+	} finally {
+		server.stop(true);
+	}
+});
+
+test("rename reads a snapshot and changes only title metadata", async () => {
+	const requests: { method: string; path: string; body: unknown }[] = [];
+	const snapshot = { id: "doc/?", title: "Original", current_version: 3, updated_at: 100, state: "a".repeat(64) };
+	const server = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		async fetch(request) {
+			requests.push({
+				method: request.method,
+				path: new URL(request.url).pathname,
+				body: request.method === "GET" ? null : await request.json(),
+			});
+			return Response.json(request.method === "GET" ? snapshot : { ...snapshot, title: "New title", updated_at: 200 });
+		},
+	});
+	try {
+		const result = await run(["rename", snapshot.id, "--title", "New title"], {
+			POOF_URL: `http://127.0.0.1:${server.port}`,
+			POOF_ACCESS_CLIENT_ID: "test",
+			POOF_ACCESS_CLIENT_SECRET: "test",
+		});
+		expect(result.exitCode, result.stderr).toBe(0);
+		expect(JSON.parse(result.stdout)).toEqual({ ...snapshot, title: "New title", updated_at: 200 });
+		expect(requests).toEqual([
+			{ method: "GET", path: "/api/documents/doc%2F%3F", body: null },
+			{
+				method: "PATCH",
+				path: "/api/documents/doc%2F%3F/title",
+				body: { title: "New title", expected_state: snapshot.state },
+			},
+		]);
+	} finally {
+		server.stop(true);
+	}
+});
+
+test("suggest-title prints a reviewable snapshot without saving it", async () => {
+	const requests: { method: string; path: string; body: unknown }[] = [];
+	const suggestion = { title: "Suggested title", expected_state: "a".repeat(64) };
+	const server = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		async fetch(request) {
+			requests.push({
+				method: request.method,
+				path: new URL(request.url).pathname,
+				body: request.method === "GET" ? null : await request.json(),
+			});
+			return Response.json(
+				request.method === "GET"
+					? { id: "doc", title: "Original", current_version: 2, state: suggestion.expected_state }
+					: suggestion,
+			);
+		},
+	});
+	try {
+		const result = await run(["suggest-title", "doc"], {
+			POOF_URL: `http://127.0.0.1:${server.port}`,
+			POOF_ACCESS_CLIENT_ID: "test",
+			POOF_ACCESS_CLIENT_SECRET: "test",
+		});
+		expect(result.exitCode, result.stderr).toBe(0);
+		expect(JSON.parse(result.stdout)).toEqual(suggestion);
+		expect(requests).toEqual([
+			{ method: "GET", path: "/api/documents/doc", body: null },
+			{
+				method: "POST",
+				path: "/api/documents/doc/title-suggestion",
+				body: { expected_state: "a".repeat(64) },
+			},
+		]);
+	} finally {
+		server.stop(true);
+	}
+});
+
+test("rename preserves a reviewed suggestion's preconditions and does not retry conflicts", async () => {
+	const requests: { method: string; body: unknown }[] = [];
+	const server = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		async fetch(request) {
+			requests.push({ method: request.method, body: await request.json() });
+			return Response.json({ error: "Document changed. Review the current title and try again." }, { status: 409 });
+		},
+	});
+	try {
+		const result = await run(["rename", "doc", "--title", "Reviewed title", "--expected-state", "a".repeat(64)], {
+			POOF_URL: `http://127.0.0.1:${server.port}`,
+			POOF_ACCESS_CLIENT_ID: "test",
+			POOF_ACCESS_CLIENT_SECRET: "test",
+		});
+		expect(result.exitCode).toBe(1);
+		expect(result.stdout).toBe("");
+		expect(result.stderr).toContain("Document changed");
+		expect(requests).toEqual([{ method: "PATCH", body: { title: "Reviewed title", expected_state: "a".repeat(64) } }]);
+	} finally {
+		server.stop(true);
+	}
+});
+
+test("rename sends a compact state token when shortening a long existing title", async () => {
+	let requestBody = "";
+	const state = "a".repeat(64);
+	const server = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		async fetch(request) {
+			if (request.method === "GET")
+				return Response.json({ id: "doc", title: "x".repeat(17000), current_version: 1, updated_at: 100, state });
+			requestBody = await request.text();
+			return Response.json({
+				id: "doc",
+				title: "Short title",
+				current_version: 1,
+				updated_at: 200,
+				state: "b".repeat(64),
+			});
+		},
+	});
+	try {
+		const result = await run(["rename", "doc", "--title", "Short title"], {
+			POOF_URL: `http://127.0.0.1:${server.port}`,
+			POOF_ACCESS_CLIENT_ID: "test",
+			POOF_ACCESS_CLIENT_SECRET: "test",
+		});
+		expect(result.exitCode, result.stderr).toBe(0);
+		expect(JSON.parse(requestBody)).toEqual({ title: "Short title", expected_state: state });
+		expect(requestBody.length).toBeLessThan(200);
+	} finally {
+		server.stop(true);
+	}
+});
+
+test("suggest-title reports AI unavailability without blaming Access", async () => {
+	const server = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		fetch(request) {
+			return request.method === "GET"
+				? Response.json({ id: "doc", title: "Original", current_version: 1, state: "a".repeat(64) })
+				: Response.json({ error: "AI title generation is unavailable. Try again or enter a title." }, { status: 503 });
+		},
+	});
+	try {
+		const result = await run(["suggest-title", "doc"], {
+			POOF_URL: `http://127.0.0.1:${server.port}`,
+			POOF_ACCESS_CLIENT_ID: "test",
+			POOF_ACCESS_CLIENT_SECRET: "test",
+		});
+		expect(result.exitCode).toBe(1);
+		expect(result.stdout).toBe("");
+		expect(result.stderr).toContain("AI title generation is unavailable");
+		expect(result.stderr).not.toContain("Access configuration");
 	} finally {
 		server.stop(true);
 	}

@@ -11,11 +11,13 @@ import {
 	listVersions,
 	listVersionFiles,
 } from "../lib/db";
+import { documentTitleState } from "../lib/documents";
 import { rawFileUrl, viewerFileUrl } from "../lib/file-links";
 import { MAX_BYTES, MAX_FILES } from "../lib/files";
 import { originForHost } from "../lib/hosts";
 import { applyHeaders, isVersionString, uniform404, VIEWER_HEADERS } from "../lib/http";
 import { nowSeconds } from "../lib/time";
+import { TITLE_EDITOR_CSS, TITLE_EDITOR_JS } from "../lib/title-editor";
 import { mintOwnerToken } from "../lib/tokens";
 
 type Ctx<P extends string = string> = Context<{ Bindings: Env }, P>;
@@ -30,7 +32,9 @@ const FAVICON_SVG =
 const FAVICON_PNG =
 	"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAC40lEQVR4AcxWX0iTURT/bW3lwinZg6G2lQ/9eRBJe1IkB1pPQhhCkW+SRgQ99qC5jYGkoPXQW++BD5EJmj5tezQIIZfENrYoEYTY6GHNjbWvcy6fN76xzblvbY577j33nO/+fr97d74/RuT82tou9Le02FytrXYvjUolTMVy5VCJqUYAkbmy2ayXMk5FUfpprEhTsZyEzxvSCJECKMkJZ0UYi4OwEOYSVwkBVSQXpNRJEUIAB8iq3Zxcb0Z199UmF3xUb/1Gg8FwQ8xq0DG3Ua3QGtADzH1QAzURwKTHW4DFYsH29mdhy8vvMDs7g3D4K3Z2vmFraxO9vT28CV1W9ARMJhMaGxuFdXd3YXT0PlgUFQ+ampqwuPgGdrvt/wnIRU6n01hZ+YBMJiNSLMTjcQu/3K7oCeSCDg3dxvj4Q0xOPpOpzs5O6ZfjlCyAdx0IfBEcq6trYuSuocHKg8barAbcungCV88eDn/4FSo03bOqBySTSenz3yAn5IxcMcF7z4JXg6ewfKcOT66bKVq4lSzAbDbDZjsvkAYHB8TIXSKR4EHaVM9J6bPzuMsMe0NhmsIZXp1jS0tvMTHxAHNzz2UmGo1K/0ydAadNciqdc/UG6ec6RxLQ3NyM6ekpWK31EsfjmZF+fF9B4GdWztlJ03Rz7w+7ea1kAfF4HJFIRAMyP/8CGxsfNbGnvjQ+7RErRaO/FDxaTyFdmB8lC+Ai7OtzwOEYwNjYONrbL2Fh4SXRaFswlsXd9/u4/Po3bi4m4f9RhJ2WliyArhUtGAxhbW0dqVRKzAt1WaVQRhs/sgDtcv2zogL44ROLxcAWCoX1s+VBKCqAHzgdHdfANjw8kme5/hB/kvn0w5SHQE9RH3+S+ctbrn8V3Vl+I/1qdgK7u99dRvq6YQH6XurlHYbgFEXISghDBGisRnOrnP+ehGqgGiIkOe9UnAA7bCyCjF9dbq5Qjuk1Xq9iuaneHITv4tiB/QUAAP//NJmctQAAAAZJREFUAwAtzvtXfUxb5gAAAABJRU5ErkJggg==";
 
-const PAGE_CSS = `
+const PAGE_CSS =
+	TITLE_EDITOR_CSS +
+	`
 .file-tabs { display: flex; flex: 0 0 auto; overflow-x: auto; border-bottom: 1px solid #e6e6eb; padding: 0 16px; background: #fafafa; scrollbar-width: thin; }
 .file-tab { flex: 0 0 auto; padding: 12px 14px; border-bottom: 2px solid transparent; color: #62626b; font-size: 12px; white-space: nowrap; }
 .file-tab:hover { color: #1a1a1e; background: #f1f1f5; }
@@ -410,11 +414,14 @@ document.querySelectorAll("[data-created]").forEach(function (node) {
 	node.textContent = fmtCreated(Number(node.dataset.created));
 });
 
-function closeMenus() { document.querySelectorAll("[data-menu-pop]").forEach(function (m) { m.style.display = "none"; }); }
+function closeMenus() {
+	document.querySelectorAll("[data-menu-pop]").forEach(function (m) { m.style.display = "none"; });
+	document.querySelectorAll("[data-menu]").forEach(function (m) { m.setAttribute("aria-expanded", "false"); });
+}
 window.addEventListener("click", closeMenus);
 window.addEventListener("keydown", function (e) { if (e.key === "Escape") closeMenus(); });
 document.querySelectorAll(".row").forEach(function (row) {
-	const id = row.dataset.id, title = row.dataset.title;
+	const id = row.dataset.id;
 	const pop = row.querySelector("[data-menu-pop]");
 	row.addEventListener("click", function (e) {
 		if (e.target.closest("[data-menu]") || e.target.closest("[data-menu-pop]")) return;
@@ -425,9 +432,14 @@ document.querySelectorAll(".row").forEach(function (row) {
 		const open = pop.style.display !== "none";
 		closeMenus();
 		pop.style.display = open ? "none" : "block";
+		e.currentTarget.setAttribute("aria-expanded", String(!open));
 	});
 	pop.addEventListener("click", function (e) { e.stopPropagation(); });
-	row.querySelector("[data-share]").addEventListener("click", function () { closeMenus(); openModal(id, title); });
+	row.querySelector("[data-share]").addEventListener("click", function () { closeMenus(); openModal(id, row.dataset.title); });
+	row.querySelector("[data-rename]").addEventListener("click", function () {
+		closeMenus();
+		openTitleEditor(row, row.querySelector("[data-menu]"));
+	});
 	row.querySelector("[data-delete]").addEventListener("click", async function () {
 		closeMenus();
 		const res = await fetch("/api/documents/" + id, { method: "DELETE" });
@@ -501,6 +513,8 @@ async function openVersions(docId) {
 }`;
 
 const VIEWER_JS = `
+const rename = document.getElementById("rename-current");
+if (rename) rename.addEventListener("click", function () { openTitleEditor(rename, rename); });
 const sc = document.getElementById("share-current");
 if (sc) sc.addEventListener("click", function () { openModal(sc.dataset.id, sc.dataset.title); });
 const vb = document.getElementById("ver-btn");
@@ -508,7 +522,7 @@ if (vb) vb.addEventListener("click", function () { openVersions(vb.dataset.id); 
 const vr = document.getElementById("ver-restore");
 if (vr) vr.addEventListener("click", function () { restoreVersion(vr.dataset.id, Number(vr.dataset.version)); });`;
 
-const LIBRARY_SCRIPT = CORE_JS + UPLOAD_JS + LIBRARY_JS;
+const LIBRARY_SCRIPT = CORE_JS + TITLE_EDITOR_JS + UPLOAD_JS + LIBRARY_JS;
 const FILES_JS = `
 const frame = document.getElementById("document-frame");
 if (frame) {
@@ -541,7 +555,7 @@ if (removeFile) removeFile.addEventListener("click", async function () {
 	} catch (error) { toast(error.message || "Could not remove the file. Try again."); removeFile.disabled = false; }
 });`;
 
-const VIEWER_SCRIPT = CORE_JS + UPLOAD_JS + VERSIONS_JS + VIEWER_JS + FILES_JS;
+const VIEWER_SCRIPT = CORE_JS + TITLE_EDITOR_JS + UPLOAD_JS + VERSIONS_JS + VIEWER_JS + FILES_JS;
 
 const Layout: FC<PropsWithChildren<{ title: string; pageCss?: string }>> = ({ title, pageCss, children }) => (
 	<html lang="en">
@@ -629,6 +643,7 @@ function formatRemaining(secondsUntil: number): string {
 export async function libraryPage(c: Ctx) {
 	const now = nowSeconds();
 	const docs = await listDocumentsWithShares(c.env.DB, now);
+	const titleStates = await Promise.all(docs.map(documentTitleState));
 	return c.html(
 		<Layout title="poof">
 			<div class="wrap">
@@ -651,11 +666,11 @@ export async function libraryPage(c: Ctx) {
 						</a>
 					</div>
 					<div class="rows">
-						{docs.map((d) => {
+						{docs.map((d, index) => {
 							const shared = d.active_share_count > 0 && d.next_share_expires_at !== null;
 							const hasTtl = !shared && d.expires_at !== null;
 							return (
-								<div class="row" data-id={d.id} data-title={d.title}>
+								<div class="row" data-id={d.id} data-title={d.title} data-state={titleStates[index]}>
 									<div class="row-main">
 										<div class="row-title">{d.title}</div>
 										<div class="row-meta">
@@ -672,16 +687,19 @@ export async function libraryPage(c: Ctx) {
 										</span>
 									) : null}
 									{hasTtl ? <span class="ttl-label">expires {formatRemaining(d.expires_at! - now)}</span> : null}
-									<span class="menu-btn" data-menu>
+									<button type="button" class="menu-btn" data-menu aria-label="Document actions" aria-expanded="false">
 										···
-									</span>
+									</button>
 									<div class="menu" data-menu-pop style="display:none">
-										<div class="menu-item" data-share>
+										<button type="button" class="menu-item" data-rename>
+											Rename…
+										</button>
+										<button type="button" class="menu-item" data-share>
 											Share…
-										</div>
-										<div class="menu-item del" data-delete>
+										</button>
+										<button type="button" class="menu-item del" data-delete>
 											Delete
-										</div>
+										</button>
 									</div>
 								</div>
 							);
@@ -808,10 +826,11 @@ export async function ownerViewerPage(c: Ctx<"/d/:id">) {
 	// content as a read-only dead end.
 	if (asked !== null && asked !== doc.current_version) return pinnedViewerPage(c, doc);
 
-	const [shares, oToken, files] = await Promise.all([
+	const [shares, oToken, files, titleState] = await Promise.all([
 		listShares(c.env.DB, id, now),
 		mintOwnerToken(id, c.env.OWNER_TOKEN_SECRET),
 		listVersionFiles(c.env.DB, id, doc.version),
+		documentTitleState(doc),
 	]);
 	const selected =
 		c.req.query("file") === undefined ? files[0] : files.find((file) => file.path === c.req.query("file"));
@@ -829,7 +848,18 @@ export async function ownerViewerPage(c: Ctx<"/d/:id">) {
 					←
 				</a>
 				<span class="tb-brand">poof</span>
-				<span class="tb-title">{doc.title}</span>
+				<button
+					type="button"
+					class="tb-rename"
+					id="rename-current"
+					data-id={id}
+					data-title={doc.title}
+					data-state={titleState}
+					aria-label="Rename document"
+				>
+					<span class="tb-title">{doc.title}</span>
+					<span class="tb-rename-label">Rename</span>
+				</button>
 				<span class="spacer" />
 				{chip ? <span class="tb-chip">{chip}</span> : null}
 				<button type="button" class="tb-ver" data-upload>
@@ -883,7 +913,7 @@ async function pinnedViewerPage(c: Ctx<"/d/:id">, doc: ResolvedDocument) {
 	if (!selected) return uniform404(c);
 	applyHeaders(c, VIEWER_HEADERS);
 	return c.html(
-		<Layout title={doc.title}>
+		<Layout title={doc.version_title ?? doc.title}>
 			<ViewerShell
 				src={rawFileUrl(oToken, selected.path)}
 				files={files}
@@ -907,7 +937,7 @@ async function pinnedViewerPage(c: Ctx<"/d/:id">, doc: ResolvedDocument) {
 					←
 				</a>
 				<span class="tb-brand">poof</span>
-				<span class="tb-title">{doc.title}</span>
+				<span class="tb-title">{doc.version_title ?? doc.title}</span>
 				<span class="spacer" />
 				<span class="tb-chip">
 					v{doc.version} of {versions.length}

@@ -26,6 +26,8 @@ poof files <doc-id>                        # list paths in the current version
 poof ls                                    # list documents
 poof push report.md --share                # upload + print a share URL (1d TTL)
 poof push overview.md adr/ --share         # related files in one document
+poof rename <doc-id> --title "New title"   # change the title without a new version
+poof suggest-title <doc-id>                # print an AI candidate as JSON; saves nothing
 poof revoke <share-token>                  # kill a share link now
 poof rm <doc-id>                           # delete a document and its shares
 poof rollback <doc-id> <n>                 # make version n current again
@@ -49,6 +51,23 @@ You can also select or drag multiple files into the web library, upload a
 folder, or paste a file with ⌘V. A pasted document has no file name, so Workers
 AI uses its opening text to name it. The same naming process handles an MCP
 `push` without a title.
+
+Choose **Rename** in a document's menu to edit its title. **Suggest with AI**
+creates a candidate you can review or edit before saving. Renaming changes the
+library and live viewer title without creating a version, changing files, or
+changing URLs. Historical versions keep their recorded titles.
+
+`poof suggest-title <doc-id>` returns `title` and an opaque `expected_state`
+token as JSON. To save a reviewed candidate, copy the returned token:
+
+```sh
+poof rename <doc-id> --title "Chosen title" \
+  --expected-state "<returned-token>"
+```
+
+If the document changed meanwhile, saving fails without overwriting it. A manual
+`rename` without this option reads a fresh snapshot first. Both title commands
+print JSON.
 
 Uploads accept up to 100 files and 10 MiB of source bytes per request. A single
 directory upload stores paths below that directory. Multiple inputs use their
@@ -120,8 +139,11 @@ Set `ACCESS_MCP_AUD` only after creating and checking the Access application in
 `POST /mcp` returns `503 Service Unavailable`. Once configured, the endpoint
 accepts a human OAuth login and no other credential.
 
-After login, the client exposes the same ten document tools as the CLI. `push` and
+After login, the client exposes the same twelve document tools as the CLI. `push` and
 `update` accept `files: [{path, content, encoding?}]` with mixed file types, or
 the existing single `content` argument. `update` accepts `delete_paths` for
 explicit removals. Use `files` to list paths and `cat` with `file` to read one.
 The server receives file contents because it cannot access your filesystem.
+`suggest_title` returns a candidate without saving. `rename` accepts `title` and
+`expected_state` to save a reviewed title safely. MCP `ls` includes a `STATE`
+column for manual renaming without AI.

@@ -2,9 +2,11 @@ import { deleteBlobs } from "./batch";
 import { type DocumentKind, defaultMediaType } from "./content";
 import {
 	type DocumentFileRow,
+	type DocumentRow,
 	type ResolvedDocument,
 	type ShareRow,
 	applyNewVersion,
+	compareAndSetDocumentTitle,
 	deleteDocument,
 	deleteVersion,
 	getLiveDocument,
@@ -22,6 +24,8 @@ import {
 } from "./db";
 import { DocumentInputError, MAX_BYTES, MAX_FILES, defaultFilePath, validateFilePath } from "./files";
 import { htmlToMarkdown } from "./html-to-markdown";
+import { nowSeconds } from "./time";
+import { generateAiTitle } from "./title";
 import { newShareToken, parseTtl, randomToken } from "./tokens";
 
 export { DocumentInputError, MAX_BYTES, MAX_FILES } from "./files";
@@ -31,13 +35,10 @@ export { DocumentInputError, MAX_BYTES, MAX_FILES } from "./files";
  * input and format responses. This module owns the source, blob, and row order
  * defined in SPEC §9.
  *
- * Two calling conventions live here and the split is deliberate. A function that
- * reads a document's fields takes an already-resolved `ResolvedDocument`
- * (`addVersion`, `rollbackDocument`), so an adapter can reject a missing
- * document before it spends anything on parsing the request body. One that only
- * needs the document to exist takes an id and checks it by
- * resolving it (`issueShare`, `readVersionContent`) or by reading it off the write
- * (`deleteDocumentWithBlobs`, whose DELETE reports whether a row was there).
+ * Upload and rollback operations accept a resolved document so adapters can
+ * reject missing documents before parsing request bodies. Title operations
+ * resolve and recheck their own snapshots around inference and writes. Other
+ * operations verify existence while reading or writing the requested id.
  */
 
 /** Attempts at allocating a version number before giving up (see insertVersion). */
@@ -208,7 +209,7 @@ export async function addVersion(
 	};
 	try {
 		for (const { row, source } of writes) await env.BLOBS.put(row.r2_key, source);
-		if (!(await applyNewVersion(env.DB, doc.id, version, now, input.title, doc.current_version))) {
+		if (!(await applyNewVersion(env.DB, doc.id, version, now, input.title, doc.current_version, doc.title))) {
 			if (!(await getLiveDocument(env.DB, doc.id, now))) {
 				await discard();
 				return null;
@@ -348,4 +349,149 @@ export async function readVersionContent(
 	}
 	const bytes = new TextEncoder().encode(content);
 	return { ...metadata, body: new Response(bytes).body!, size: bytes.byteLength };
+}
+
+const TITLE_EXCERPT_CHARS = 2000;
+const TITLE_SOURCE_BYTES = 64 * 1024;
+const TITLE_SOURCE_FILES = 8;
+
+export interface TitleExpectation {
+	expected_state: string;
+}
+
+export class TitleOperationError extends Error {
+	constructor(
+		message: string,
+		public readonly status: 400 | 404 | 409 | 422 | 503,
+	) {
+		super(message);
+		this.name = "TitleOperationError";
+	}
+}
+
+/** A concurrency token preserves exact titles without sending them back in mutation requests. */
+export async function documentTitleState(doc: { id: string; title: string; current_version: number }): Promise<string> {
+	const bytes = new TextEncoder().encode(JSON.stringify([doc.id, doc.current_version, doc.title]));
+	const digest = await crypto.subtle.digest("SHA-256", bytes);
+	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export async function documentTitleMetadata(doc: Pick<DocumentRow, "id" | "title" | "current_version" | "updated_at">) {
+	return {
+		id: doc.id,
+		title: doc.title,
+		current_version: doc.current_version,
+		updated_at: doc.updated_at,
+		state: await documentTitleState(doc),
+	};
+}
+
+export function normalizeDocumentTitle(value: unknown): string {
+	if (typeof value !== "string") throw new TitleOperationError("Title must be a string.", 400);
+	if (/\p{Cs}/u.test(value)) throw new TitleOperationError("Title contains invalid Unicode characters.", 400);
+	for (const ch of value) {
+		if (/[\p{Cc}\p{Cf}]/u.test(ch) && !/\s/u.test(ch) && ch !== "\u200c" && ch !== "\u200d")
+			throw new TitleOperationError("Title contains unsupported control characters.", 400);
+	}
+	const title = value.replace(/\s+/gu, " ").trim();
+	if (!title || [...title].length > 200)
+		throw new TitleOperationError("Use a title between 1 and 200 characters.", 400);
+	return title;
+}
+
+async function titleSnapshot(env: Env, id: string, expected: TitleExpectation): Promise<ResolvedDocument> {
+	const doc = await getLiveDocument(env.DB, id, nowSeconds());
+	if (!doc) throw new TitleOperationError("Document not found.", 404);
+	if (!expected || typeof expected.expected_state !== "string" || !/^[a-f0-9]{64}$/.test(expected.expected_state))
+		throw new TitleOperationError("A valid document state is required.", 400);
+	if ((await documentTitleState(doc)) !== expected.expected_state)
+		throw new TitleOperationError("The document changed. Reload it before renaming.", 409);
+	return doc;
+}
+
+/** Keep titles separate from immutable content versions and their stored title snapshots. */
+export async function renameDocument(env: Env, id: string, value: unknown, expected: TitleExpectation) {
+	const original = await titleSnapshot(env, id, expected);
+	const title = normalizeDocumentTitle(value);
+	const doc = await compareAndSetDocumentTitle(
+		env.DB,
+		id,
+		title,
+		original.current_version,
+		original.title,
+		nowSeconds(),
+	);
+	if (!doc) {
+		await titleSnapshot(env, id, expected);
+		throw new TitleOperationError("The document changed. Reload it before renaming.", 409);
+	}
+	return documentTitleMetadata(doc);
+}
+
+/** Consume only the prefix needed for inference, including empty source objects. */
+async function readTitleSource(body: ReadableStream<Uint8Array>): Promise<string> {
+	const reader = body.getReader();
+	const decoder = new TextDecoder();
+	let remaining = TITLE_SOURCE_BYTES;
+	let text = "";
+	try {
+		while (remaining > 0) {
+			const { value, done } = await reader.read();
+			if (done) break;
+			const chunk = value.subarray(0, remaining);
+			text += decoder.decode(chunk, { stream: true });
+			remaining -= chunk.byteLength;
+		}
+		return text + decoder.decode();
+	} finally {
+		await reader.cancel();
+	}
+}
+
+/** Filename labels distinguish files without replacing their content. */
+async function documentTitleExcerpt(
+	env: Env,
+	doc: ResolvedDocument,
+): Promise<{ source: string; languageSource: string }> {
+	const files = (await listVersionFiles(env.DB, doc.id, doc.current_version))
+		.filter((file) => file.kind !== "file")
+		.slice(0, TITLE_SOURCE_FILES);
+	if (!files.length) throw new TitleOperationError("This document has no readable text to suggest a title from.", 422);
+	const instruction = "Name this document as a whole. The following excerpts are its files.\n";
+	const budget = Math.floor((TITLE_EXCERPT_CHARS - instruction.length) / files.length);
+	const excerpts: string[] = [];
+	const content: string[] = [];
+	for (const file of files) {
+		const obj = await env.BLOBS.get(file.r2_key);
+		if (!obj) throw new TitleOperationError("Document content is unavailable.", 404);
+		const source = await readTitleSource(obj.body);
+		const text = (file.kind === "html" ? htmlToMarkdown(source) : source).trim();
+		if (!/[\p{L}\p{N}]/u.test(text)) continue;
+		const label = `File: ${file.path.slice(0, 60)}\n`;
+		const excerpt = text.slice(0, budget - label.length - 2);
+		content.push(excerpt);
+		excerpts.push(label + excerpt);
+	}
+	if (!excerpts.length)
+		throw new TitleOperationError("This document has no readable text to suggest a title from.", 422);
+	return { source: instruction + excerpts.join("\n\n"), languageSource: content.join("\n\n") };
+}
+
+/** Suggestions never persist. Recheck the source snapshot after inference before returning it. */
+export async function suggestDocumentTitle(env: Env, id: string, expected: TitleExpectation) {
+	const doc = await titleSnapshot(env, id, expected);
+	const excerpt = await documentTitleExcerpt(env, doc);
+	const title = await generateAiTitle(env, excerpt.source, excerpt.languageSource);
+	await titleSnapshot(env, id, expected);
+	if (!title) throw new TitleOperationError("Could not suggest a title. Try again or enter your own.", 503);
+	try {
+		return {
+			title: normalizeDocumentTitle(title),
+			expected_state: expected.expected_state,
+		};
+	} catch (error) {
+		if (error instanceof TitleOperationError)
+			throw new TitleOperationError("Could not suggest a title. Try again or enter your own.", 503);
+		throw error;
+	}
 }
