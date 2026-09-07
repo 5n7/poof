@@ -30,7 +30,7 @@ import {
 	sourceBytes,
 	suggestDocumentTitle,
 } from "../lib/documents";
-import { canonicalHost } from "../lib/hosts";
+import { originForHost } from "../lib/hosts";
 import { nowSeconds } from "../lib/time";
 import { resolveNewTitle } from "../lib/title";
 import { TTL_KEYS, ttlToSeconds } from "../lib/tokens";
@@ -162,12 +162,9 @@ function decodeSource(content: string, encoding: "utf8" | "base64"): string | Ar
  * assigning an empty host is a no-op and would return a broken MCP-host URL.
  */
 function ownerOrigin(c: Context<{ Bindings: Env }>): string {
-	const url = new URL(c.req.url);
-	const host = canonicalHost(c.env.OWNER_HOST, url.protocol);
-	if (host === null) throw new Error("OWNER_HOST is missing, blank, or not a host");
-
-	url.host = host;
-	return url.origin;
+	const origin = originForHost(new URL(c.req.url), c.env.OWNER_HOST);
+	if (origin === null) throw new Error("OWNER_HOST is missing, blank, or not a host");
+	return origin;
 }
 
 /**

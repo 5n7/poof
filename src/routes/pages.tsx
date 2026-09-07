@@ -14,6 +14,7 @@ import {
 import { documentTitleState } from "../lib/documents";
 import { rawFileUrl, viewerFileUrl } from "../lib/file-links";
 import { MAX_BYTES, MAX_FILES } from "../lib/files";
+import { originForHost } from "../lib/hosts";
 import { applyHeaders, isVersionString, uniform404, VIEWER_HEADERS } from "../lib/http";
 import { nowSeconds } from "../lib/time";
 import { TITLE_EDITOR_CSS, TITLE_EDITOR_JS } from "../lib/title-editor";
@@ -83,6 +84,8 @@ a.gh svg { width: 16px; height: 16px; display: block; }
 .line { border-top: 1px solid #e6e6eb; margin: 0 -10px; }
 .hint { border: 0; background: none; font-family: inherit; padding: 8px; font-size: 12px; color: #62626b; margin-top: 28px; text-align: center; cursor: pointer; }
 .hint:hover { color: #8b8b94; }
+.connect-link { align-self: center; margin-top: 4px; padding: 8px; color: #62626b; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
+.connect-link:hover { color: #1a1a1e; }
 
 .viewer { display: flex; flex-direction: column; flex: 1; height: 100dvh; min-height: 0; background: #fff; }
 .topbar { display: flex; align-items: center; gap: 10px; padding: 9px 16px; border-bottom: 1px solid #e6e6eb; background: #fafafa; position: sticky; top: 0; z-index: 10; }
@@ -129,6 +132,20 @@ a.gh svg { width: 16px; height: 16px; display: block; }
 .drop-sub { font-size: 12px; color: #8b8b94; margin-top: 6px; }
 
 .toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 90; background: #1a1a1e; color: #fff; font-size: 12.5px; padding: 8px 16px; border-radius: 8px; box-shadow: 0 6px 20px rgba(20,20,40,.25); animation: popIn .15s ease; white-space: nowrap; }`;
+
+const GUIDE_CSS = `
+.guide { max-width: 640px; width: 100%; margin: 0 auto; padding: 40px 24px 56px; }
+.guide-back { display: inline-block; margin-bottom: 30px; color: #8b8b94; font-size: 12px; }
+.guide-back:hover { color: #1a1a1e; }
+.guide-title { margin: 0; font-size: 24px; letter-spacing: -.02em; }
+.guide-lede { max-width: 500px; margin: 10px 0 32px; color: #62626b; font-size: 14px; line-height: 1.55; }
+.guide-section { border-top: 1px solid #e6e6eb; padding: 22px 0; }
+.guide-section h2 { margin: 0 0 8px; font-size: 14px; }
+.guide-client { margin: 16px 0 6px; font-size: 13px; }
+.guide-section p, .guide-section li { color: #62626b; font-size: 13px; line-height: 1.55; }
+.guide-section p { margin: 0 0 10px; }
+.guide-section ul { margin: 0; padding-left: 19px; }
+.guide-command { display: block; overflow-x: auto; margin: 12px 0; padding: 11px 12px; border: 1px solid #e0e0e6; border-radius: 8px; background: #fff; color: #1a1a1e; font: 400 12px ui-monospace, Menlo, monospace; white-space: pre; }`;
 
 // Shared client logic: toast, the share modal (built with textContent only, no
 // innerHTML with user data), remaining-time formatting, and Esc-to-close.
@@ -540,7 +557,7 @@ if (removeFile) removeFile.addEventListener("click", async function () {
 
 const VIEWER_SCRIPT = CORE_JS + TITLE_EDITOR_JS + UPLOAD_JS + VERSIONS_JS + VIEWER_JS + FILES_JS;
 
-const Layout: FC<PropsWithChildren<{ title: string }>> = ({ title, children }) => (
+const Layout: FC<PropsWithChildren<{ title: string; pageCss?: string }>> = ({ title, pageCss, children }) => (
 	<html lang="en">
 		<head>
 			<meta charset="utf-8" />
@@ -548,7 +565,7 @@ const Layout: FC<PropsWithChildren<{ title: string }>> = ({ title, children }) =
 			<link rel="icon" type="image/png" sizes="32x32" href={FAVICON_PNG} />
 			<link rel="icon" type="image/svg+xml" href={FAVICON_SVG} />
 			<title>{title}</title>
-			<style dangerouslySetInnerHTML={{ __html: PAGE_CSS }} />
+			<style dangerouslySetInnerHTML={{ __html: PAGE_CSS + (pageCss ?? "") }} />
 		</head>
 		<body>{children}</body>
 	</html>
@@ -695,6 +712,9 @@ export async function libraryPage(c: Ctx) {
 					<button type="button" class="folder-link" data-folder>
 						Upload a folder
 					</button>
+					<a class="connect-link" href="/guide">
+						Connect an AI assistant →
+					</a>
 				</div>
 			</div>
 
@@ -710,6 +730,78 @@ export async function libraryPage(c: Ctx) {
 			<input type="file" id="file" multiple style="display:none" />
 			<input type="file" id="folder" multiple webkitdirectory="" style="display:none" />
 			<script dangerouslySetInnerHTML={{ __html: LIBRARY_SCRIPT }} />
+		</Layout>,
+	);
+}
+
+/** Render the owner-only guide for connecting an MCP client. */
+export function guidePage(c: Ctx) {
+	const mcpOrigin = originForHost(new URL(c.req.url), c.env.MCP_HOST);
+	if (mcpOrigin === null) throw new Error("MCP_HOST is missing, blank, or not a host");
+	const mcpUrl = new URL("/mcp", mcpOrigin).toString();
+
+	return c.html(
+		<Layout title="Connect an AI assistant · poof" pageCss={GUIDE_CSS}>
+			<main class="guide">
+				<a class="guide-back" href="/">
+					← Library
+				</a>
+				<h1 class="guide-title">Connect an AI assistant</h1>
+				<p class="guide-lede">
+					Use poof from an MCP-capable assistant to save documents, update them, and create expiring share links.
+				</p>
+
+				<section class="guide-section">
+					<h2>Server URL</h2>
+					<p>Use this exact URL, with no trailing slash.</p>
+					<code class="guide-command">{mcpUrl}</code>
+				</section>
+
+				<section class="guide-section">
+					<h2>Connect</h2>
+					<p>Register the server, then complete the Cloudflare login when your client prompts you.</p>
+					<h3 class="guide-client">Claude Code</h3>
+					<code class="guide-command">claude mcp add --transport http poof {mcpUrl}</code>
+					<h3 class="guide-client">Codex</h3>
+					<code class="guide-command">
+						codex mcp add poof --url {mcpUrl}
+						{"\n"}codex mcp login poof
+					</code>
+				</section>
+
+				<section class="guide-section">
+					<h2>Keep links safe</h2>
+					<ul>
+						<li>
+							<code>/d/</code> links are owner-only. Do not send them to recipients.
+						</li>
+						<li>
+							<code>/v/</code> share links are public to anyone who has the URL. Treat them as secrets and use short
+							expiry times.
+						</li>
+						<li>Updates and rollbacks change every live share link immediately.</li>
+					</ul>
+				</section>
+
+				<section class="guide-section">
+					<h2>Need help?</h2>
+					<p>
+						Read the{" "}
+						<a href="https://github.com/5n7/poof#mcp-server" target="_blank" rel="noopener noreferrer">
+							MCP connection guide
+						</a>{" "}
+						or the{" "}
+						<a
+							href="https://github.com/5n7/poof/blob/main/docs/MCP-OAUTH-RUNBOOK.md"
+							target="_blank"
+							rel="noopener noreferrer"
+						>
+							management runbook
+						</a>
+						.
+					</p>
+				</section>
+			</main>
 		</Layout>,
 	);
 }

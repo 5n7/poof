@@ -6,7 +6,7 @@ import { csrfProtection, notConfigured, unknownHost } from "./lib/http";
 import { accessAuth } from "./middleware/access";
 import { apiRoutes } from "./routes/api";
 import { mcpRoutes } from "./routes/mcp";
-import { libraryPage, ownerViewerPage, publicViewerPage } from "./routes/pages";
+import { guidePage, libraryPage, ownerViewerPage, publicViewerPage } from "./routes/pages";
 import { rawRoutes } from "./routes/raw";
 
 /**
@@ -35,9 +35,11 @@ ownerApp.get("/v/:token", publicViewerPage);
 // that does not exist yet. Keep both guards together.
 ownerApp.use("/api/*", accessAuth("owner"), csrfProtection);
 ownerApp.use("/", accessAuth("owner"));
+ownerApp.use("/guide", accessAuth("owner"));
 ownerApp.use("/d/*", accessAuth("owner"));
 ownerApp.route("/api", apiRoutes);
 ownerApp.get("/", libraryPage);
+ownerApp.get("/guide", guidePage);
 ownerApp.get("/d/:id", ownerViewerPage);
 
 /**

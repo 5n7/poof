@@ -81,3 +81,17 @@ export function canonicalHost(authority: string | undefined, protocol: string): 
 	if (parsed === null) return null;
 	return parsed.port === "" ? parsed.hostname : `${parsed.hostname}:${parsed.port}`;
 }
+
+/**
+ * Build an origin on a configured host while retaining the request's scheme.
+ * This keeps local HTTP development URLs usable without making the configured
+ * hostname responsible for choosing a protocol.
+ */
+export function originForHost(requestUrl: URL, authority: string | undefined): string | null {
+	const host = canonicalHost(authority, requestUrl.protocol);
+	if (host === null) return null;
+
+	const url = new URL(requestUrl);
+	url.host = host;
+	return url.origin;
+}
