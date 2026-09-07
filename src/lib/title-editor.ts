@@ -4,7 +4,7 @@ export const TITLE_EDITOR_CSS = `
 .title-editor::backdrop { background: rgba(24,24,32,.32); }
 .title-editor h2 { margin: 0 0 20px; font-size: 17px; font-weight: 650; }
 .title-editor label { display: block; margin-bottom: 8px; font-size: 13px; font-weight: 600; }
-.title-input { display: block; width: 100%; padding: 10px 12px; border: 1px solid #c9c9d1; border-radius: 7px; color: inherit; background: #fff; font: inherit; font-size: 16px; caret-color: #b45309; }
+.title-input { display: block; width: 100%; padding: 10px 12px; border: 1px solid #c9c9d1; border-radius: 7px; color: inherit; background: #fff; font: inherit; font-size: 14px; caret-color: #b45309; }
 .title-input:focus-visible { outline: 2px solid #b45309; outline-offset: 2px; }
 .title-input[aria-invalid="true"] { border-color: #b1352e; }
 .title-help, .title-status { margin: 10px 0 0; color: #62626b; font-size: 12px; line-height: 1.5; }
@@ -26,7 +26,7 @@ button.menu-item.del:hover { background: #fdf0ef; }
 .tb-rename:hover { background: #e6e6eb; }
 .tb-rename .tb-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tb-rename-label { color: #62626b; font-size: 12px; font-weight: 400; }
-@media (max-width: 640px) { .tb-rename { flex: 1 1 calc(100% - 80px); max-width: calc(100% - 80px); } .tb-rename .tb-title { min-width: 0; text-align: left; } }
+@media (max-width: 640px) { .title-input { font-size: 16px; } .tb-rename { flex: 1 1 calc(100% - 80px); max-width: calc(100% - 80px); } .tb-rename .tb-title { min-width: 0; text-align: left; } }
 `;
 
 export const TITLE_EDITOR_JS = String.raw`
