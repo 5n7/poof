@@ -1,4 +1,4 @@
-import { deleteBlobs } from "./batch";
+import { deleteBlobs, mapConcurrent } from "./batch";
 import { type DocumentKind, defaultMediaType } from "./content";
 import {
 	type DocumentFileRow,
@@ -43,6 +43,8 @@ export { DocumentInputError, MAX_BYTES, MAX_FILES } from "./files";
 
 /** Attempts at allocating a version number before giving up (see insertVersion). */
 const MAX_VERSION_ATTEMPTS = 3;
+
+const BLOB_CONCURRENCY = 4;
 
 /**
  * Return a document source's UTF-8 byte length. Adapters use this to enforce the
@@ -130,7 +132,7 @@ export async function createDocument(env: Env, now: number, input: NewDocumentIn
 		true,
 	);
 	try {
-		for (let i = 0; i < files.length; i++) await env.BLOBS.put(rows[i]!.r2_key, files[i]!.source);
+		await mapConcurrent(files, BLOB_CONCURRENCY, (file, index) => env.BLOBS.put(rows[index]!.r2_key, file.source));
 		if (!(await applyNewVersion(env.DB, id, 1, now, input.title, 0)))
 			throw new Error("Document disappeared during upload.");
 	} catch (err) {
@@ -208,7 +210,7 @@ export async function addVersion(
 		await deleteVersion(env.DB, doc.id, version).catch(() => {});
 	};
 	try {
-		for (const { row, source } of writes) await env.BLOBS.put(row.r2_key, source);
+		await mapConcurrent(writes, BLOB_CONCURRENCY, ({ row, source }) => env.BLOBS.put(row.r2_key, source));
 		if (!(await applyNewVersion(env.DB, doc.id, version, now, input.title, doc.current_version, doc.title))) {
 			if (!(await getLiveDocument(env.DB, doc.id, now))) {
 				await discard();
@@ -250,7 +252,8 @@ export async function rollbackDocument(
 	if (!target) return null;
 	const files = await listVersionFiles(env.DB, doc.id, version);
 	if (!files.length) return null;
-	for (const file of files) if (!(await env.BLOBS.head(file.r2_key))) return null;
+	const sources = await mapConcurrent(files, BLOB_CONCURRENCY, (file) => env.BLOBS.head(file.r2_key));
+	if (sources.some((source) => source === null)) return null;
 
 	// Only move the pointer. No blob needs copying or cleanup.
 	const ok = await setCurrentVersion(env.DB, doc.id, version, now);
@@ -329,26 +332,23 @@ export async function readVersionContent(
 	if (!doc) return null;
 	const file = await getVersionFile(env.DB, id, doc.version, path);
 	if (!file) return null;
-	const obj = await env.BLOBS.get(file.r2_key);
-	if (!obj) return null;
 	const metadata = {
 		filename: file.filename,
 		media_type: file.media_type,
 		binary: file.kind === "file",
-		source_size: obj.size,
 	};
-	if (raw || (file.kind !== "html" && file.kind !== "file")) {
-		return { ...metadata, body: obj.body, size: obj.size };
+	if (file.kind === "file" && !raw) {
+		const obj = await env.BLOBS.head(file.r2_key);
+		if (!obj) return null;
+		const content = `File: ${file.filename ?? doc.title}\nMedia type: ${file.media_type}\nSize: ${obj.size} bytes\nBinary content. Use poof cat ${id} --raw --file '${file.path.replaceAll("'", "'\"'\"'")}'${version === null ? "" : ` --version ${version}`} to retrieve the stored file.\n`;
+		const bytes = new TextEncoder().encode(content);
+		return { ...metadata, source_size: obj.size, body: new Response(bytes).body!, size: bytes.byteLength };
 	}
-	let content: string;
-	if (file.kind === "file") {
-		await obj.body.cancel();
-		content = `File: ${file.filename ?? doc.title}\nMedia type: ${file.media_type}\nSize: ${obj.size} bytes\nBinary content. Use poof cat ${id} --raw --file '${file.path.replaceAll("'", "'\"'\"'")}'${version === null ? "" : ` --version ${version}`} to retrieve the stored file.\n`;
-	} else {
-		content = htmlToMarkdown(await obj.text());
-	}
-	const bytes = new TextEncoder().encode(content);
-	return { ...metadata, body: new Response(bytes).body!, size: bytes.byteLength };
+	const obj = await env.BLOBS.get(file.r2_key);
+	if (!obj) return null;
+	if (raw || file.kind !== "html") return { ...metadata, source_size: obj.size, body: obj.body, size: obj.size };
+	const bytes = new TextEncoder().encode(htmlToMarkdown(await obj.text()));
+	return { ...metadata, source_size: obj.size, body: new Response(bytes).body!, size: bytes.byteLength };
 }
 
 const TITLE_EXCERPT_CHARS = 2000;
@@ -459,22 +459,24 @@ async function documentTitleExcerpt(
 	if (!files.length) throw new TitleOperationError("This document has no readable text to suggest a title from.", 422);
 	const instruction = "Name this document as a whole. The following excerpts are its files.\n";
 	const budget = Math.floor((TITLE_EXCERPT_CHARS - instruction.length) / files.length);
-	const excerpts: string[] = [];
-	const content: string[] = [];
-	for (const file of files) {
-		const obj = await env.BLOBS.get(file.r2_key);
-		if (!obj) throw new TitleOperationError("Document content is unavailable.", 404);
-		const source = await readTitleSource(obj.body);
-		const text = (file.kind === "html" ? htmlToMarkdown(source) : source).trim();
-		if (!/[\p{L}\p{N}]/u.test(text)) continue;
-		const label = `File: ${file.path.slice(0, 60)}\n`;
-		const excerpt = text.slice(0, budget - label.length - 2);
-		content.push(excerpt);
-		excerpts.push(label + excerpt);
-	}
+	const excerpts = (
+		await mapConcurrent(files, BLOB_CONCURRENCY, async (file) => {
+			const obj = await env.BLOBS.get(file.r2_key);
+			if (!obj) throw new TitleOperationError("Document content is unavailable.", 404);
+			const source = await readTitleSource(obj.body);
+			const text = (file.kind === "html" ? htmlToMarkdown(source) : source).trim();
+			if (!/[\p{L}\p{N}]/u.test(text)) return null;
+			const label = `File: ${file.path.slice(0, 60)}\n`;
+			const excerpt = text.slice(0, budget - label.length - 2);
+			return { labelled: label + excerpt, content: excerpt };
+		})
+	).filter((excerpt) => excerpt !== null);
 	if (!excerpts.length)
 		throw new TitleOperationError("This document has no readable text to suggest a title from.", 422);
-	return { source: instruction + excerpts.join("\n\n"), languageSource: content.join("\n\n") };
+	return {
+		source: instruction + excerpts.map((excerpt) => excerpt.labelled).join("\n\n"),
+		languageSource: excerpts.map((excerpt) => excerpt.content).join("\n\n"),
+	};
 }
 
 /** Suggestions never persist. Recheck the source snapshot after inference before returning it. */

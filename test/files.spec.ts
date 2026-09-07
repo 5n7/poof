@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { runCleanup } from "../src/cron";
 import { getLiveDocument, getLiveDocumentAtVersion, getVersion, listVersionFiles, listVersions } from "../src/lib/db";
-import { MAX_BYTES, addVersion, createDocument, rollbackDocument } from "../src/lib/documents";
+import { MAX_BYTES, addVersion, createDocument, readVersionContent, rollbackDocument } from "../src/lib/documents";
 import { MAX_FILES, MAX_PATH_BYTES, validateFilePath } from "../src/lib/files";
 import { OWNER_BASE } from "./helpers";
 
@@ -122,11 +122,11 @@ describe("document file snapshots", () => {
 		const originalPut = env.BLOBS.put.bind(env.BLOBS);
 		let calls = 0;
 		const put = vi.spyOn(env.BLOBS, "put").mockImplementation(async (...args) => {
-			calls++;
+			const call = ++calls;
 			expect((await listVersions(env.DB, id)).map((version) => version.version)).toEqual([1]);
 			expect(await getLiveDocumentAtVersion(env.DB, id, 2, now())).toBeNull();
 			expect(await rollbackDocument(env, await current(id), 2, now())).toBeNull();
-			if (calls === 2) throw new Error("injected upload failure");
+			if (call === 2) throw new Error("injected upload failure");
 			return originalPut(...args);
 		});
 		try {
@@ -142,6 +142,78 @@ describe("document file snapshots", () => {
 		expect((await current(id)).version).toBe(1);
 		expect(await getVersion(env.DB, id, 2)).toBeNull();
 		expect(await env.BLOBS.head(`doc/${id}/v2.html`)).toBeNull();
+	});
+
+	it.each(["create", "update"] as const)("drains late writes before cleaning up a failed %s", async (operation) => {
+		const existing = operation === "update" ? await current(await create()) : null;
+		const originalPut = env.BLOBS.put.bind(env.BLOBS);
+		const keys: string[] = [];
+		let release!: () => void;
+		let started!: () => void;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const ready = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		const failure = new Error("injected concurrent upload failure");
+		const put = vi.spyOn(env.BLOBS, "put").mockImplementation(async (...args) => {
+			keys.push(args[0]);
+			if (keys.length === 2) {
+				started();
+				throw failure;
+			}
+			await held;
+			return originalPut(...args);
+		});
+		const cleanup = vi.spyOn(env.BLOBS, "delete");
+		const files = [file("overview.md", "changed"), file("other.md")];
+		const pendingUpload = (
+			existing
+				? addVersion(env, existing, now(), { title: null, files })
+				: createDocument(env, now(), { title: "New", expires_at: null, files })
+		).catch((error) => error);
+		try {
+			await ready;
+			await Promise.resolve();
+			expect(cleanup).not.toHaveBeenCalled();
+			const id = existing?.id ?? keys[0]!.split("/")[1]!;
+			expect(await getLiveDocumentAtVersion(env.DB, id, existing ? 2 : 1, now())).toBeNull();
+			release();
+			expect(await pendingUpload).toBe(failure);
+			for (const key of keys) expect(await env.BLOBS.head(key)).toBeNull();
+			if (existing) expect((await current(id)).version).toBe(1);
+			else expect(await getLiveDocument(env.DB, id, now())).toBeNull();
+		} finally {
+			release();
+			await pendingUpload;
+			put.mockRestore();
+			cleanup.mockRestore();
+		}
+	});
+
+	it("reads binary summaries from metadata and streams downloads from the object", async () => {
+		const bytes = new Uint8Array([0, 255, 128, 42]);
+		const id = await createDocument(env, now(), {
+			title: "Binary",
+			expires_at: null,
+			files: [{ path: "data.bin", kind: "file", source: bytes.buffer }],
+		});
+		const get = vi.spyOn(env.BLOBS, "get");
+		const head = vi.spyOn(env.BLOBS, "head");
+		try {
+			const summary = await readVersionContent(env, id, null, now());
+			expect(await new Response(summary!.body).text()).toContain("Size: 4 bytes");
+			expect(summary!.source_size).toBe(4);
+			expect(head).toHaveBeenCalledTimes(1);
+			expect(get).not.toHaveBeenCalled();
+			const download = await readVersionContent(env, id, null, now(), true);
+			expect(new Uint8Array(await new Response(download!.body).arrayBuffer())).toEqual(bytes);
+			expect(get).toHaveBeenCalledTimes(1);
+		} finally {
+			get.mockRestore();
+			head.mockRestore();
+		}
 	});
 
 	it("rejects empty snapshots, duplicate paths, and aggregate oversized uploads", async () => {

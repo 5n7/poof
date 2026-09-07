@@ -102,7 +102,15 @@ rawRoutes.on("GET", ["/:token", "/:token/*"], async (c) => {
 	}
 	if (file.kind === "md" || file.kind === "text") {
 		const source = await obj.text();
-		const body = file.kind === "md" ? renderMarkdown(source) : `<pre><code>${escapeHtml(source)}</code></pre>`;
+		// Keep source-code previews eligible for highlighting, including languages
+		// served as text/plain. Notes and logs do not need language detection.
+		const plainText =
+			/\.(?:txt|log)$/i.test(file.path) ||
+			(file.media_type === "text/plain" && !file.path.split("/").at(-1)!.includes("."));
+		const body =
+			file.kind === "md"
+				? renderMarkdown(source)
+				: `<pre><code${plainText ? ' class="nohighlight"' : ""}>${escapeHtml(source)}</code></pre>`;
 		const response = new Response(wrapViewerHtml(title, body), {
 			headers: { "Content-Type": "text/html; charset=utf-8" },
 		});

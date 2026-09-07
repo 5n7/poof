@@ -101,6 +101,32 @@ describe("document title changes", () => {
 });
 
 describe("title suggestions", () => {
+	it("bounds concurrent source reads while preserving file order", async () => {
+		const files = Array.from({ length: 8 }, (_, index) => ({
+			path: `note-${index}.md`,
+			kind: "md" as const,
+			source: `Readable note ${index}`,
+		}));
+		const id = await document(files);
+		const originalGet = env.BLOBS.get.bind(env.BLOBS);
+		let active = 0;
+		let peak = 0;
+		vi.spyOn(env.BLOBS, "get").mockImplementation(async (...args) => {
+			active++;
+			peak = Math.max(peak, active);
+			try {
+				return await originalGet(...args);
+			} finally {
+				active--;
+			}
+		});
+		const ai = vi.spyOn(titleGenerator, "generateAiTitle").mockResolvedValue("Suggested");
+		await suggestDocumentTitle(env, id, await expectation(id));
+		expect(peak).toBe(4);
+		expect(active).toBe(0);
+		expect(ai.mock.calls[0]![2]).toBe(files.map((file) => file.source).join("\n\n"));
+	});
+
 	it("uses bounded text from multiple files and removes HTML scripts without changing anything", async () => {
 		const id = await createDocument(env, 100, {
 			title: "Original",
