@@ -25,9 +25,7 @@ interface KeyPair {
 
 /**
  * An RSA-SHA256 key pair as JWKs, tagged with `alg` and `kid` so `hono/jwt`
- * writes a `kid` into the header it signs and finds the matching key in the
- * JWKS. A bare `CryptoKey` produces a header with no `kid`, which
- * `verifyWithJwks` rejects before it looks at anything else.
+ * signs with the key ID required by the Access middleware.
  */
 async function keyPair(): Promise<KeyPair> {
 	// Both `generateKey` and `exportKey` are typed as unions over their
@@ -71,7 +69,7 @@ beforeAll(async () => {
  * Serve the team's public key at its JWKS endpoint for every test.
  *
  * The Worker under test shares this isolate, so stubbing the global `fetch`
- * reaches `verifyWithJwks` inside the middleware. Everything else is handed to
+ * reaches the JWKS loader inside the middleware. Everything else is handed to
  * the original `fetch`, which is what keeps the D1 and R2 bindings working.
  *
  * Every test wants the same JWKS, including the forgery test, which serves the
@@ -89,6 +87,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.unstubAllGlobals();
+	vi.useRealTimers();
 });
 
 /** The identity payload Cloudflare documents for an interactive login. */
@@ -155,6 +154,98 @@ async function mcpRequest(claims: Record<string, unknown>): Promise<Response> {
 	return fetchWithToken(`${MCP_BASE}/mcp`, await signAs(claims, team.privateJwk), MCP_CALL);
 }
 
+/** Give cache tests independent issuers without exposing a production reset hook. */
+function cachedTeam(publicKey = team.publicJwk) {
+	const domain = `keys-${crypto.randomUUID()}.example`;
+	const issuer = `https://${domain}`;
+	const real = globalThis.fetch;
+	const requests = vi.fn(async () => Response.json({ keys: [publicKey] }));
+	vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+		const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+		return url === `${issuer}/cdn-cgi/access/certs` ? requests() : real(input as RequestInfo, init);
+	});
+	return {
+		requests,
+		async request(claims: Record<string, unknown> = {}, key = team.privateJwk) {
+			const token = await signAs({ ...identityClaims(OWNER_AUD, nowSeconds()), iss: issuer, ...claims }, key);
+			return fetchWithToken(`${OWNER_BASE}/api/documents`, token, {}, { ACCESS_TEAM_DOMAIN: domain });
+		},
+	};
+}
+
+describe("Access public key caching", () => {
+	it("fetches keys once for repeated requests and still verifies each assertion", async () => {
+		const access = cachedTeam();
+		for (let i = 0; i < 3; i++) expect((await access.request()).status).toBe(200);
+		expect((await access.request({}, forger.privateJwk)).status).toBe(403);
+		expect((await access.request({ aud: [MCP_AUD] })).status).toBe(403);
+		expect((await access.request({ exp: nowSeconds() - 1 })).status).toBe(403);
+		expect(access.requests).toHaveBeenCalledTimes(1);
+	});
+
+	it("refreshes expired public keys before accepting another request", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		const access = cachedTeam();
+		expect((await access.request()).status).toBe(200);
+		vi.setSystemTime(Date.now() + 10 * 60 * 1000);
+		expect((await access.request()).status).toBe(200);
+		expect(access.requests).toHaveBeenCalledTimes(2);
+	});
+
+	it("refreshes a rotated key after the cooldown and limits unknown key retries", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		const access = cachedTeam();
+		const rotated = { ...forger.privateJwk, kid: "rotated-key" };
+		expect((await access.request()).status).toBe(200);
+		access.requests.mockImplementation(async () =>
+			Response.json({ keys: [{ ...forger.publicJwk, kid: rotated.kid }] }),
+		);
+		for (let i = 0; i < 3; i++) expect((await access.request({}, rotated)).status).toBe(403);
+		expect(access.requests).toHaveBeenCalledTimes(1);
+		vi.setSystemTime(Date.now() + 30 * 1000);
+		expect((await access.request({}, rotated)).status).toBe(200);
+		expect(access.requests).toHaveBeenCalledTimes(2);
+		expect((await access.request()).status).toBe(403);
+	});
+
+	it("does not accept stale keys when a required refresh fails", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		const access = cachedTeam();
+		expect((await access.request()).status).toBe(200);
+		vi.setSystemTime(Date.now() + 10 * 60 * 1000);
+		access.requests.mockResolvedValueOnce(new Response("Unavailable", { status: 503 }));
+		expect((await access.request()).status).toBe(403);
+		expect((await access.request()).status).toBe(200);
+		expect(access.requests).toHaveBeenCalledTimes(3);
+	});
+
+	it("recovers from an initial key fetch failure", async () => {
+		const access = cachedTeam();
+		access.requests.mockRejectedValueOnce(new Error("Network unavailable"));
+		expect((await access.request()).status).toBe(403);
+		expect((await access.request()).status).toBe(200);
+		expect(access.requests).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps different issuers with the same key ID isolated", async () => {
+		const first = cachedTeam();
+		const second = cachedTeam(forger.publicJwk);
+		expect((await first.request()).status).toBe(200);
+		expect((await second.request({}, forger.privateJwk)).status).toBe(200);
+		expect((await second.request()).status).toBe(403);
+		expect(first.requests).toHaveBeenCalledTimes(1);
+		expect(second.requests).toHaveBeenCalledTimes(1);
+	});
+
+	it("bounds retained issuers and reloads keys after eviction", async () => {
+		const first = cachedTeam();
+		expect((await first.request()).status).toBe(200);
+		for (let i = 0; i < 4; i++) expect((await cachedTeam().request()).status).toBe(200);
+		expect((await first.request()).status).toBe(200);
+		expect(first.requests).toHaveBeenCalledTimes(2);
+	});
+});
+
 describe("Access JWT verification", () => {
 	it("accepts a valid user JWT on the owner surface", async () => {
 		const res = await ownerRequest(identityClaims(OWNER_AUD, nowSeconds()));
@@ -218,7 +309,8 @@ describe("Access JWT verification", () => {
 	});
 
 	it("rejects a header with no kid", async () => {
-		const token = tokenWithHeader({ alg: "RS256", typ: "JWT" }, identityClaims(OWNER_AUD, nowSeconds()));
+		const { kid: _kid, ...key } = team.privateJwk;
+		const token = await signAs(identityClaims(OWNER_AUD, nowSeconds()), key);
 
 		expect((await fetchWithToken(`${OWNER_BASE}/api/documents`, token)).status).toBe(403);
 	});
@@ -229,9 +321,27 @@ describe("Access JWT verification", () => {
 		expect((await ownerRequest(claims)).status).toBe(403);
 	});
 
-	// `hono/jwt` checks exp, iat, and nbf only when the claim is present, so a
-	// token with no `exp` would otherwise sail past the expiry check and never
-	// stop being valid.
+	it.each(["exp", "iat", "nbf"])("rejects a signed %s numeric overflow", async (claim) => {
+		// JSON permits exponents that overflow JavaScript numbers. Sign the raw
+		// JSON because JSON.stringify replaces non-finite numbers with null.
+		const claims = { ...identityClaims(OWNER_AUD, nowSeconds()), [claim]: "overflow" };
+		const payload = JSON.stringify(claims).replace('"overflow"', claim === "exp" ? "1e400" : "-1e400");
+		const header = JSON.stringify({ alg: "RS256", kid: KID, typ: "JWT" });
+		const input = `${b64url(ENCODER.encode(header))}.${b64url(ENCODER.encode(payload))}`;
+		const key = await crypto.subtle.importKey(
+			"jwk",
+			team.privateJwk,
+			{ name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+			false,
+			["sign"],
+		);
+		const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, ENCODER.encode(input));
+		expect(
+			(await fetchWithToken(`${OWNER_BASE}/api/documents`, `${input}.${b64url(new Uint8Array(signature))}`)).status,
+		).toBe(403);
+	});
+
+	// JWT verification allows a missing exp claim, so the middleware must require it.
 	it("rejects a token with no exp claim", async () => {
 		const { exp: _exp, ...claims } = identityClaims(OWNER_AUD, nowSeconds());
 		expect((await ownerRequest(claims)).status).toBe(403);

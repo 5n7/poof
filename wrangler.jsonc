@@ -2,6 +2,7 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "poof",
 	"main": "src/index.ts",
+	"minify": true,
 	"compatibility_date": "2026-07-01",
 	"workers_dev": false,
 	"preview_urls": false,

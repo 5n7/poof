@@ -74,6 +74,10 @@ body { margin: 0; }
   .markdown-body table tr:nth-child(2n) { background: #151b23; }
 }`;
 
+// Leave large blocks as readable text. Auto-detecting every bundled language
+// can monopolize the browser thread even for prose in a code block.
+const MAX_HIGHLIGHT_CHARS = 10_000;
+
 // Load libraries only when the rendered document uses them.
 const LOADER = `
 (function () {
@@ -88,13 +92,25 @@ const LOADER = `
       window.mermaid.run();
     });
   }
-  if (document.querySelector("pre code")) {
+  var plain = /(^|\\s)(no-?highlight|(?:lang(?:uage)?-)?(?:text|plaintext|txt))(?=\\s|$)/i;
+  var blocks = Array.from(document.querySelectorAll("pre code")).filter(function (block) {
+    var classes = block.className + " " + block.parentElement.className;
+    if (plain.test(classes) || block.dataset.highlighted) return false;
+    var length = block.textContent.length;
+    return length > 0 && length <= ${MAX_HIGHLIGHT_CHARS};
+  });
+  if (blocks.length) {
     var l = document.createElement("link");
     l.rel = "stylesheet"; l.href = ${JSON.stringify(HLJS_CSS)};
     l.integrity = ${JSON.stringify(HLJS_CSS_SRI)}; l.crossOrigin = "anonymous";
     document.head.appendChild(l);
     load(${JSON.stringify(HLJS_JS)}, ${JSON.stringify(HLJS_SRI)}, function () {
-      window.hljs.highlightAll();
+      var index = 0;
+      function highlightNext() {
+        window.hljs.highlightElement(blocks[index++]);
+        if (index < blocks.length) setTimeout(highlightNext, 0);
+      }
+      setTimeout(highlightNext, 0);
     });
   }
 })();`;

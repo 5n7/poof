@@ -1,9 +1,31 @@
 import type { Context, MiddlewareHandler, Next } from "hono";
-import { verifyWithJwks } from "hono/jwt";
-import type { JWTPayload } from "hono/utils/jwt/types";
+import { createRemoteJWKSet, type JWTPayload, jwtVerify } from "jose";
 
 import { configured } from "../lib/hosts";
 import { notConfigured } from "../lib/http";
+import { nowSeconds } from "../lib/time";
+
+const MAX_KEY_SETS = 4;
+const keySets = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+
+/** Reuse public keys across requests, never assertions or authorization results. */
+function accessKeys(issuer: string): ReturnType<typeof createRemoteJWKSet> {
+	const url = `${issuer}/cdn-cgi/access/certs`;
+	let keys = keySets.get(url);
+	if (!keys) {
+		keys = createRemoteJWKSet(new URL(url), {
+			cacheMaxAge: 10 * 60 * 1000,
+			cooldownDuration: 30 * 1000,
+			timeoutDuration: 5 * 1000,
+		});
+		if (keySets.size >= MAX_KEY_SETS) {
+			const oldest = keySets.keys().next().value;
+			if (oldest !== undefined) keySets.delete(oldest);
+		}
+		keySets.set(url, keys);
+	}
+	return keys;
+}
 
 /**
  * Which Cloudflare Access application protects a route. The two hostnames are
@@ -48,12 +70,11 @@ function accessConfig(vars: Env, audience: Audience): AccessConfig | null {
  * Claims documented for *both* application-token payloads, the identity login
  * and the service token: `type`, `aud`, `exp`, `iss`, `iat`, `sub`.
  *
- * `hono/jwt` validates `exp`, `nbf`, and `iat` only when the claim is present,
- * so a token carrying no `exp` at all would pass its expiry check. Requiring
- * presence here is what closes that.
+ * JWT verification validates optional timestamps. Require the common claims
+ * here and reject future `iat` values, which jose otherwise permits.
  *
  * `nbf` appears only in the identity payload, so requiring it for every route
- * would reject every service token; `hono/jwt` still rejects an identity token
+ * would reject every service token; JWT verification still rejects an identity token
  * that carries one and is not valid yet. `sub` is documented in both, so its
  * presence is required, but it is the empty string for a service token, which
  * is why only `isIdentityAssertion` reads its value.
@@ -69,7 +90,11 @@ function hasCommonClaims(payload: JWTPayload): boolean {
 	return (
 		payload.type === "app" &&
 		typeof payload.exp === "number" &&
+		Number.isFinite(payload.exp) &&
 		typeof payload.iat === "number" &&
+		Number.isFinite(payload.iat) &&
+		payload.iat <= nowSeconds() &&
+		(payload.nbf === undefined || Number.isFinite(payload.nbf)) &&
 		typeof payload.sub === "string"
 	);
 }
@@ -138,11 +163,15 @@ export function accessAuth(audience: Audience): MiddlewareHandler<{ Bindings: En
 
 		let payload: JWTPayload;
 		try {
-			payload = await verifyWithJwks(token, {
-				jwks_uri: `https://${config.teamDomain}/cdn-cgi/access/certs`,
-				allowedAlgorithms: ["RS256"],
-				verification: { aud: config.aud, iss: `https://${config.teamDomain}` },
-			});
+			const issuer = `https://${config.teamDomain}`;
+			({ payload } = await jwtVerify(
+				token,
+				(header, jwt) => {
+					if (typeof header.kid !== "string" || header.kid === "") throw new Error("Missing JWT key ID");
+					return accessKeys(issuer)(header, jwt);
+				},
+				{ algorithms: ["RS256"], audience: config.aud, issuer },
+			));
 		} catch {
 			return c.text("Forbidden", 403);
 		}

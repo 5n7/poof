@@ -79,6 +79,26 @@ async function seedFiles() {
 }
 
 describe("document file navigation", () => {
+	it("skips note and log highlighting while preserving source-code previews", async () => {
+		const paths = ["notes.txt", "build.LOG", "notes", "main.py", "app.js"];
+		const source = "const value = '<draft>';";
+		const id = await createDocument(env, now(), {
+			title: "Text previews",
+			expires_at: null,
+			files: paths.map((path) => ({ path, kind: "text" as const, media_type: "text/plain", source })),
+		});
+		const token = await mintOwnerToken(id, env.OWNER_TOKEN_SECRET);
+		for (const [index, path] of paths.entries()) {
+			const response = await SELF.fetch(`${OWNER_BASE}${rawFileUrl(token, path)}?view=1`);
+			expect(response.status).toBe(200);
+			const html = await response.text();
+			expect(html).toContain(index < 3 ? '<pre><code class="nohighlight">' : "<pre><code>");
+			expect(html).toContain("&lt;draft&gt;");
+			const raw = await SELF.fetch(`${OWNER_BASE}${rawFileUrl(token, path)}`);
+			expect(await raw.text()).toBe(source);
+		}
+	});
+
 	it("encodes nested Unicode paths and preserves file/version selection", () => {
 		expect(rawFileUrl("s_token", "adr/日本 語.md")).toBe("/raw/s_token/adr/%E6%97%A5%E6%9C%AC%20%E8%AA%9E.md");
 		expect(viewerFileUrl("/d/doc", "adr/001.md", 2)).toBe("/d/doc?file=adr%2F001.md&v=2");
