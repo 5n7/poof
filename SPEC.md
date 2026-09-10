@@ -616,7 +616,7 @@ They are built from `OWNER_HOST`, **not from the request origin**. The server an
 
 The cap counts emitted UTF-8 bytes after decoding, including replacement characters for invalid input, and avoids splitting a character. HTML parsing reads the full source before conversion, so styles cannot consume the output budget and hide the document body. `raw: true` returns original text/HTML under the same cap. Binary files always return metadata and an owner-only raw download URL instead of binary content.
 
-**Tool descriptions include the cautions.** The server's `instructions` block tells the model that `/d/{id}` is owner-only, `/v/{token}` is a secret, revisions use `update` on the existing id, updates and rollbacks affect every live share link immediately, and shared documents must contain no secrets. Individual tool descriptions repeat the warning relevant to that operation. For HTML edits, `cat` with `raw: true` retrieves source markup; default `cat` output is a readable extraction.
+**Agent instructions.** The server's `instructions` and tool descriptions make uploads owner-only by default. Return `/d/{id}` for ordinary uploads; create a public `/v/{token}` link only when the user explicitly requests sharing. Revisions use `update` on the existing id; updates and rollbacks immediately affect all live shares. Treat share URLs as secrets and keep secrets out of shared content. For HTML edits, `cat` with `raw: true` retrieves source markup; default `cat` output is a readable extraction.
 
 ### 11.5 One core, two adapters
 

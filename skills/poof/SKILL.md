@@ -1,18 +1,18 @@
 ---
 name: poof
-description: Share files via disposable links, through the poof MCP tools or the poof CLI. Use when asked to share a document, report, or generated doc with someone as a URL, or to manage previously shared poof documents (list, re-share, revoke, delete).
+description: Upload, share, or manage poof documents through MCP tools or the CLI.
 ---
 
-# poof document sharing
+# poof documents
 
-poof stores related files unchanged as one document in a private library and mints
-short-lived public share links. Write a document, push it, and send the
-recipient a URL. The URL expires on schedule or stops working when revoked.
+poof stores related files unchanged as one document in a private library.
+Uploads stay owner-only by default. Create a public share link only when the
+user explicitly requests sharing.
 
-Two URL kinds come back:
+The URL identifies who can open it:
 
-- `/d/{id}` is the owner view protected by Cloudflare Access. Only the owner can
-  open it. Never give this URL to someone else; it will not work for them.
+- `/d/{id}` is the owner view protected by Cloudflare Access. Return it to the
+  owner after an upload. It does not work for recipients.
 - `/v/{token}` is the public share view. Anyone with the URL can open it without
   logging in until the share expires or is revoked.
 
@@ -69,8 +69,8 @@ poof versions <doc-id>
 - `ls` lists documents (id, title, kind, current version, last updated,
   expires).
 - `push` uploads one or more files into one document. File types may be mixed.
-  It prints the `/d/{id}` owner URL. With `--share` it
-  also issues a share link and prints the `/v/{token}` URL on a second line.
+  It prints the `/d/{id}` owner URL. Add `--share` only for an explicit sharing
+  request; it also prints the public `/v/{token}` URL.
 - `--ttl` sets the document's own lifetime. Omitted means the document is
   kept forever; when it expires, the document and all its shares die.
 - `--share-ttl` sets the share link lifetime (default `1d`). Shares always
@@ -133,20 +133,21 @@ that name and retains the other files.
 
 ## Typical flow
 
-Sharing a freshly written doc with someone:
+Upload a document for the owner:
 
 ```sh
-poof push overview.md adr/ --share --share-ttl 1d
+poof push overview.md adr/
 ```
 
-MCP: `push` with each file as `{path, content}` in `files`, `share: true`,
-and `share_ttl: "1d"`.
+MCP: `push` with each file as `{path, content}` in `files`, omitting `share`.
+Return the `/d/...` owner URL.
 
-Give the recipient the `/v/...` line only. A title argument is rarely needed:
-the server names an untitled document from its content, and the CLI falls back
-to the file name.
+When the user explicitly requests sharing, add `--share --share-ttl 1d` to
+`push`, or run `poof share <doc-id> --share-ttl 1d` for an existing document.
+For MCP, use `push` with `share: true`, or `share` with the existing `id`;
+both take `share_ttl: "1d"`. Give recipients the `/v/...` URL only.
 
-To revise a shared document, edit its source and run:
+To revise a document, edit its source and run:
 
 ```sh
 poof update <doc-id> adr/001.md --root .
@@ -154,13 +155,10 @@ poof update <doc-id> adr/001.md --root .
 
 MCP: `update` with the same `id` and `files: [{path: "adr/001.md", content: "..."}]`.
 
-The recipient sees the new content the next time they load the link they
-already have. Do not push a second document and do not re-send a URL.
+Existing owner and share URLs keep working. Recipients with live share links
+see the new content on their next load; no new URL is needed.
 
 ## Cautions
-
-These cautions apply to both clients. The MCP tools repeat them in their own
-descriptions.
 
 - Anyone holding a `/v/` URL can read the document until it expires. Treat
   the URL itself as the secret. Prefer short share TTLs, and `revoke` when
@@ -173,7 +171,3 @@ descriptions.
   see. Issue a separate document instead.
 - `versions` and `rollback` are owner-side only. Recipients never see the
   version number or that a history exists.
-- Fixing a document means revising the source and running `update` on the same
-  document id. The same URL keeps working, so nothing has to be reissued or
-  re-sent. Use `push` only when it should be a separate document,
-  and `rm` when the old one should disappear.
