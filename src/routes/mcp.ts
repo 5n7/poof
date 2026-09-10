@@ -108,19 +108,16 @@ const TTL = z.enum(TTL_KEYS);
 /**
  * Give the model the safety rules that apply across tools.
  */
-const INSTRUCTIONS = `poof stores original files and mints short-lived public share links.
+const INSTRUCTIONS = `poof stores original files in an owner-only library. For uploads, call push without share and return the /d/{id} owner URL. Create a public link only when the user explicitly requests sharing: use push with share: true for a new document or share for an existing one.
 
-Poof returns two URL types. Do not mix them up:
-- /d/{id} is the owner view, behind Cloudflare Access. Only the owner can open it. Never hand this URL to a recipient; it will not work for them.
-- /v/{token} is the public share view. Anyone holding it can read the document, with no login, until it expires or is revoked. Treat the URL itself as the secret: prefer short share TTLs, and revoke when access should end early.
+- /d/{id} requires Cloudflare Access. Never hand this URL to a recipient; it will not work for them.
+- /v/{token} is public until expiry or revocation. Send recipients only this URL. Treat it as a secret; prefer short share TTLs and revoke to end access early.
 
-A document can contain multiple files of mixed types. Use files with relative paths to keep linked Markdown, HTML, and assets together. update merges by path and retains unmentioned files; delete_paths explicitly removes files. rollback restores the complete file set. Use files to discover paths and cat with file to read one.
+Use files with relative paths to keep related files together. update merges by path and retains omitted files; delete_paths removes files. rollback restores the complete file set. Use files to list paths and cat with file to read one.
 
-Use rename to change only the document title, without uploading a version. suggest_title returns an AI candidate and the expected_state token needed by rename. Review the candidate before saving; a suggestion never changes the document.
+Use rename to change only the title without creating a version. Review the candidate from suggest_title, then pass its expected_state to rename to save it. Suggestions never change the document.
 
-To share a new document, call push with share: true and send only the /v/ line. To revise it, call update with the same id. Existing /d/ and /v/ URLs will keep working. Do not create a second document for a revision.
-
-An update or rollback is visible immediately to everyone holding a live share link, and there is no way to pin a recipient to an older version. Never update a document to add content one recipient should not see; issue a separate document instead.
+Revise with update on the same id. Existing /d/ and /v/ URLs keep working. update and rollback reach all live share links immediately, with no per-recipient version pinning. Use a separate document for content some recipients must not see.
 
 Do not push secrets, credentials, or private data that must not leak through a copied link.`;
 
@@ -382,7 +379,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 		{
 			annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
 			description:
-				"Create one document from files with mixed types or a single content string and return its owner URL. With share: true, also create a public /v/{token} URL. Send recipients only the /v/ URL. The /d/{id} URL requires Cloudflare Access. Anyone with the /v/ URL can read the document until expiry or revocation. Treat the /v/ URL itself as a secret. Revise a shared document with `update`; do not create a replacement.",
+				"Upload files or a content string as one owner-only document and return its /d/{id} URL. Set share: true only when the user explicitly requests sharing; send recipients the resulting /v/{token} URL. Revise existing documents with `update`.",
 			inputSchema: {
 				content: z
 					.string()
@@ -393,7 +390,10 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 				kind: KIND.optional().describe(
 					"Display kind. Inferred from filename/media_type when provided; otherwise defaults to md for text or file for base64.",
 				),
-				share: z.boolean().default(false).describe("Also issue a public share link and return its /v/{token} URL."),
+				share: z
+					.boolean()
+					.default(false)
+					.describe("Create a public /v/{token} link only when the user explicitly requests sharing."),
 				share_ttl: TTL.default("1d").describe(
 					"Share link lifetime. Only takes effect when share is true; it is ignored otherwise. Shares always expire; there is no forever share. Prefer the shortest that works.",
 				),
@@ -468,7 +468,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 						: `No share link was issued (${issued.reason}); call \`share\` with this id to retry.`,
 				);
 			} else {
-				lines.push("No share link yet: call `share` with this id when there is someone to send it to.");
+				lines.push("Uploaded for the owner only. No public share link was created.");
 			}
 			return text(lines.join("\n"));
 		},
@@ -561,7 +561,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 		{
 			annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: false, readOnlyHint: false },
 			description:
-				"Create a public /v/{token} URL for a document. Send recipients only that URL. The /d/{id} URL requires Cloudflare Access. Anyone with the /v/ URL can read the document until expiry or revocation. Treat the /v/ URL itself as a secret. Use a short share_ttl and call `revoke` when access should end early.",
+				"Create a public /v/{token} URL only when the user explicitly requests sharing an existing document. Anyone with it can read until expiry or revocation. Send recipients this URL; use a short share_ttl and `revoke` to end access early.",
 			inputSchema: {
 				id: z.string().describe("Document id to share."),
 				// Match `push` and the CLI's `--share-ttl` spelling (SPEC §11.3). Zod
