@@ -27,12 +27,12 @@ poof ls                                    # list documents
 poof push report.md --share                # upload + print a share URL (1d TTL)
 poof push overview.md adr/ --share         # related files in one document
 poof rename <doc-id> --title "New title"   # change the title without a new version
-poof suggest-title <doc-id>                # print an AI candidate as JSON; saves nothing
 poof revoke <share-token>                  # kill a share link now
 poof rm <doc-id>                           # delete a document and its shares
 poof rollback <doc-id> <n>                 # make version n current again
 poof share <doc-id>                        # issue another share link
 poof status                                # check the saved login against the API
+poof suggest-title <doc-id>                # print an AI candidate as JSON; saves nothing
 poof update <doc-id> adr/001.md --root .   # replace this path, retain other files
 poof update <doc-id> --delete obsolete.md  # remove a file in a new version
 poof versions <doc-id>                     # version history, newest first

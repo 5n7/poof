@@ -15,12 +15,12 @@ else.
 
 |                                  | Before                    | After                           |
 | -------------------------------- | ------------------------- | ------------------------------- |
-| MCP endpoint                     | `https://poof.5n7.me/mcp` | `https://mcp.poof.5n7.me/mcp`   |
-| MCP credential                   | `poof-cli` service token  | OAuth authorization code + PKCE |
-| MCP Access application           | shared with the library   | its own, with its own AUD tag   |
-| Library, API, `/d`, `/v`, `/raw` | `poof.5n7.me`             | unchanged                       |
-| Interactive CLI credential       | service token             | owner-app OAuth grant           |
 | CI and headless credential       | service token             | service token                   |
+| Interactive CLI credential       | service token             | owner-app OAuth grant           |
+| Library, API, `/d`, `/v`, `/raw` | `poof.5n7.me`             | unchanged                       |
+| MCP Access application           | shared with the library   | its own, with its own AUD tag   |
+| MCP credential                   | `poof-cli` service token  | OAuth authorization code + PKCE |
+| MCP endpoint                     | `https://poof.5n7.me/mcp` | `https://mcp.poof.5n7.me/mcp`   |
 
 The interactive CLI now uses a separate OAuth grant from the owner application.
 CI keeps a service token, and the Service Auth policy stays on that application.
@@ -157,8 +157,8 @@ the way Cloudflare evaluates them:
 | Rule    | Selector                  | Value                               |
 | ------- | ------------------------- | ----------------------------------- |
 | Include | Emails                    | the owner's exact address           |
-| Require | Login Methods             | the Cloudflare provider from step 2 |
 | Require | Cloudflare Account Member | the account ID from Prerequisites   |
+| Require | Login Methods             | the Cloudflare provider from step 2 |
 
 The split is load-bearing. Cloudflare documents Include as an OR: "In case more
 than one Include rule is specified, users need to meet only one of the
@@ -186,13 +186,13 @@ On the new application, open **Advanced settings**:
 
 | Setting                 | Value                    | API field                                            |
 | ----------------------- | ------------------------ | ---------------------------------------------------- |
-| Managed OAuth           | on                       | `oauth_configuration.enabled`                        |
-| Dynamic registration    | on                       | `dynamic_client_registration.enabled`                |
 | Access token lifetime   | `15m`                    | `grant.access_token_lifetime`                        |
-| Grant session duration  | `336h` (14 days)         | `grant.session_duration`                             |
-| Allow loopback clients  | on                       | `dynamic_client_registration.allow_any_on_loopback`  |
 | Allow localhost clients | off                      | `dynamic_client_registration.allow_any_on_localhost` |
+| Allow loopback clients  | on                       | `dynamic_client_registration.allow_any_on_loopback`  |
 | Allowed redirect URIs   | leave empty until step 7 | `dynamic_client_registration.allowed_uris`           |
+| Dynamic registration    | on                       | `dynamic_client_registration.enabled`                |
+| Grant session duration  | `336h` (14 days)         | `grant.session_duration`                             |
+| Managed OAuth           | on                       | `oauth_configuration.enabled`                        |
 
 Cloudflare's own advice is a short access token lifetime with a longer grant,
 and 15 minutes is its documented default.
@@ -246,12 +246,13 @@ allowlisted.
    documents two shapes, and which one appears depends on the authorization
    server:
 
+   - `https://chatgpt.com/connector/oauth/{callback_id}`, specific to this one
+     connector, used when the authorization server does not support issuer
+     identification.
    - `https://chatgpt.com/connector_platform_oauth_redirect`, the stable
      platform-wide callback, used when the authorization server supports issuer
      identification (it advertises `authorization_response_iss_parameter_supported`
      and returns a matching `iss` on the authorization response).
-   - `https://chatgpt.com/connector/oauth/{callback_id}`, specific to this one
-     connector, used otherwise.
 
    Do not guess which applies. Copy the value the page displays.
 
@@ -266,7 +267,7 @@ allowlisted.
 
 4. **Authenticate.** Start the connector's login. It should redirect to a
    Cloudflare account login, prompt for the second factor, and come back
-   connected with the nine tools listed.
+   connected with the twelve tools listed.
 
 ## Verify
 
