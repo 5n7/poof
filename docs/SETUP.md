@@ -41,8 +41,8 @@ placeholder in the `d1_databases` block:
 ```jsonc
 "d1_databases": [{
   "binding": "DB",
-  "database_name": "poof-db",
   "database_id": "PASTE_THE_ID_HERE",
+  "database_name": "poof-db",
   "migrations_dir": "migrations"
 }]
 ```
@@ -126,12 +126,6 @@ hostname; [MCP-OAUTH-RUNBOOK.md](MCP-OAUTH-RUNBOOK.md) creates that one (step 9)
 
 ### App 1: owner pages
 
-- **Type**: Self-hosted.
-- **Path**: `poof.5n7.me/` (protects the library, viewer `/d/*`, and `/api/*`).
-- **Policies**:
-  - **Allow** the owner's exact email through Cloudflare account login.
-  - **Service Auth** accepts the optional CI service token created below. Human
-    CLI sessions use Managed OAuth instead.
 - **Identity providers**: this account has one Cloudflare identity provider,
   with account-member restriction enabled. Add that provider explicitly to
   `poof-admin` and enable auto-redirect. This hardens the existing application;
@@ -142,6 +136,12 @@ hostname; [MCP-OAUTH-RUNBOOK.md](MCP-OAUTH-RUNBOOK.md) creates that one (step 9)
   - allow loopback clients (`127.0.0.1`) and keep localhost clients disabled;
   - set the access token lifetime to `15m` and grant session duration to `336h`;
   - keep the hosted redirect allowlist separate from the loopback setting.
+- **Path**: `poof.5n7.me/` (protects the library, viewer `/d/*`, and `/api/*`).
+- **Policies**:
+  - **Allow** the owner's exact email through Cloudflare account login.
+  - **Service Auth** accepts the optional CI service token created below. Human
+    CLI sessions use Managed OAuth instead.
+- **Type**: Self-hosted.
 
 The owner policy should have one **Include Emails** rule for the owner's exact
 address and one **Require Cloudflare Account Member** rule for this account.
@@ -150,13 +150,13 @@ login method, so a second Require Login Methods rule adds no restriction.
 
 ### App 2: public shared viewer
 
-- **Type**: Self-hosted, **Bypass** policy for **everyone**.
 - **Path**: `poof.5n7.me/v/*`.
+- **Type**: Self-hosted, **Bypass** policy for **everyone**.
 
 ### App 3: raw blob endpoint
 
-- **Type**: Self-hosted, **Bypass** policy for **everyone**.
 - **Path**: `poof.5n7.me/raw/*`.
+- **Type**: Self-hosted, **Bypass** policy for **everyone**.
 
 > The `/v/*` and `/raw/*` paths must bypass Access. A sandboxed iframe has an
 > opaque origin, so it does not send Access's `CF_Authorization` cookie with
@@ -369,8 +369,8 @@ codex mcp add poof --url https://mcp.poof.5n7.me/mcp
 codex mcp login poof
 ```
 
-`claude mcp list` should then show `poof` as connected, and the nine tools
-appear as `mcp__poof__push`, `mcp__poof__ls`, and so on.
+`claude mcp list` should then show `poof` as connected, and the twelve tools
+appear as `mcp__poof__ls`, `mcp__poof__push`, and so on.
 
 To check the endpoint without a client, send the MCP handshake by hand with an
 access token from a completed grant. The `Accept` header is required by the
@@ -379,9 +379,9 @@ Streamable HTTP transport, and the reply usually arrives as a one-line SSE
 
 ```sh
 curl -sS https://mcp.poof.5n7.me/mcp \
+  -H "Accept: application/json, text/event-stream" \
   -H "Authorization: Bearer $POOF_MCP_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
 ```
 
@@ -398,11 +398,11 @@ tool capability. The failures read like this:
   whatever audience it carries (SPEC §6.6). Compare the tag on the MCP
   application against `wrangler.jsonc`, and check that no Service Auth policy
   was added to it.
-- `503 Service Unavailable`: `ACCESS_MCP_AUD` is missing, blank, or equal to
-  `ACCESS_AUD`. Fill in the MCP application's own tag and deploy.
 - `404 Not Found`: wrong hostname or wrong path. `poof.5n7.me/mcp` is 404 now,
   and so are `mcp.poof.5n7.me/mcp/` and anything under it. The path is exact,
   with no trailing slash.
+- `503 Service Unavailable`: `ACCESS_MCP_AUD` is missing, blank, or equal to
+  `ACCESS_AUD`. Fill in the MCP application's own tag and deploy.
 - An HTML login page instead of JSON: the request reached Access as a browser
   navigation with no session.
 

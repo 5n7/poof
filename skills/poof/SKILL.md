@@ -1,6 +1,6 @@
 ---
-name: poof
 description: Upload, share, or manage poof documents through MCP tools or the CLI.
+name: poof
 ---
 
 # poof documents
@@ -23,9 +23,10 @@ The URL identifies who can open it:
   variables.
 - Use the **`poof` CLI** when the MCP tools are unavailable.
 
-The tools use the CLI subcommand names. The commands below therefore apply to
-both clients. A few argument shapes differ; see _MCP differences_. URL types,
-TTLs, and update behavior remain the same.
+The tools use the CLI subcommand names, except MCP uses `suggest_title` for the
+CLI's `suggest-title`. The commands below therefore apply to both clients. A
+few argument shapes differ; see _MCP differences_. URL types, TTLs, and update
+behavior remain the same.
 
 ## Prerequisites (CLI route only)
 
@@ -45,36 +46,37 @@ guessing a deployment.
 
 ## Commands
 
-Spelled as CLI invocations; each is also an MCP tool of the same name, with the
-same meaning.
+Spelled as CLI invocations; each corresponds to an MCP tool with the same
+meaning.
 
 ```sh
-poof cat <doc-id> [--file <path>] [--version <n>] [--raw]
+poof cat <doc-id> [--file <path>] [--raw] [--version <n>]
 poof files <doc-id> [--version <n>]
 poof ls
-poof push <file-or-directory>... [--root <directory>] [--title <t>] [--ttl 1h|1d|1w] [--share] [--share-ttl 1h|1d|1w]
+poof push <file-or-directory>... [--root <directory>] [--share] [--share-ttl 1h|1d|1w] [--title <t>] [--ttl 1h|1d|1w]
+poof rename <doc-id> --title <t> [--expected-state <token>]
 poof revoke <share-token>
 poof rm <doc-id>
 poof rollback <doc-id> <version>
 poof share <doc-id> [--share-ttl 1h|1d|1w]
-poof update <doc-id> [<file-or-directory>...] [--root <directory>] [--delete <path>]... [--title <t>]
+poof suggest-title <doc-id>
+poof update <doc-id> [<file-or-directory>...] [--delete <path>]... [--root <directory>] [--title <t>]
 poof versions <doc-id>
 ```
 
-- `files` lists paths and file types for the current or selected version.
 - `cat` prints original Markdown/text or readable Markdown extracted from HTML.
   Pass `--file <path>` to select a file and `--version <n>` for a past version. Use `--raw` to retrieve original bytes
   for editing HTML or downloading binary files. Default binary output gives
   metadata and a raw-download command.
+- `files` lists paths and file types for the current or selected version.
 - `ls` lists documents (id, title, kind, current version, last updated,
   expires).
 - `push` uploads one or more files into one document. File types may be mixed.
   It prints the `/d/{id}` owner URL. Add `--share` only for an explicit sharing
   request; it also prints the public `/v/{token}` URL.
-- `--ttl` sets the document's own lifetime. Omitted means the document is
-  kept forever; when it expires, the document and all its shares die.
-- `--share-ttl` sets the share link lifetime (default `1d`). Shares always
-  expire; there is no forever share.
+- `rename` changes only a document's title without creating a version or
+  modifying files. Pass `--expected-state` from `suggest-title` when saving a
+  reviewed candidate; without it, the CLI reads a fresh snapshot first.
 - `revoke` kills one share token immediately (takes the `s_...` token, not
   the document id).
 - `rm` deletes a document, all stored files and versions, and all of its shares.
@@ -82,6 +84,9 @@ poof versions <doc-id>
   document title. Same instant effect on live
   share links as `update`.
 - `share` issues an additional share link for an existing document.
+- `suggest-title` prints a JSON title candidate and `expected_state` without
+  changing the document. Review or edit the candidate, then pass its token to
+  `rename` to save it.
 - `update` merges by path: matching files are replaced, new paths are appended,
   and omitted files remain. Repeat `--delete <path>` for explicit removals.
   A deletion path is required; use `--delete=-draft.md` for names beginning with a dash.
@@ -89,6 +94,13 @@ poof versions <doc-id>
   `--title` is given. A document must retain at least one file.
 - `versions` lists a document's versions, newest first, with `*` on the
   current one. Pass one of its version numbers to `rollback`.
+
+## Options
+
+- `--share-ttl` sets the share link lifetime (default `1d`). Shares always
+  expire; there is no forever share.
+- `--ttl` sets the document's own lifetime. Omitted means the document is
+  kept forever; when it expires, the document and all its shares die.
 
 ## File paths and limits
 
@@ -109,8 +121,11 @@ that name and retains the other files.
 
 ## MCP differences
 
+- MCP `rename` requires `expected_state` from `ls` `STATE` or `suggest_title`
+  `expected_state`. CLI `rename` fetches a fresh state when `--expected-state`
+  is omitted.
 - For multiple files, `push` and `update` take `files: [{path, content, encoding?}]`.
-  Each entry may set `kind`, `filename`, and `media_type`. Preserve nested paths.
+  Each entry may set `filename`, `kind`, and `media_type`. Preserve nested paths.
   `update` takes `delete_paths: ["obsolete.md"]` for explicit removal.
   Omit top-level `content` when supplying `files`. Use `files` to list paths and
   `cat` with `file: "adr/001.md"` to read one. Both accept a `version`.

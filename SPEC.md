@@ -81,20 +81,20 @@ filename is supplied. Explicit paths always use merge semantics.
 
 ### Tech stack
 
-- **TypeScript** everywhere (Worker, admin UI, CLI) in a single repo
 - **Hono** on Workers; admin UI is server-rendered Hono JSX + minimal vanilla JS (no frontend framework)
-- **wrangler** for deploys and D1 migrations
+- **TypeScript** everywhere (Worker, admin UI, CLI) in a single repo
 - **Vitest + `@cloudflare/vitest-pool-workers`** for tests
+- **wrangler** for deploys and D1 migrations
 
 ### Repository layout
 
 ```
 poof/
-  src/            # Worker (Hono app, render pipeline, auth, cron)
   cli/            # poof CLI (TypeScript)
+  docs/           # SETUP.md (Access, secrets, domain) + MCP-OAUTH-RUNBOOK.md
   migrations/     # D1 migrations
   scripts/        # bootstrap.sh, idempotent resource creation (D1, R2)
-  docs/           # SETUP.md (Access, secrets, domain) + MCP-OAUTH-RUNBOOK.md
+  src/            # Worker (Hono app, render pipeline, auth, cron)
   wrangler.jsonc
 ```
 
@@ -237,15 +237,15 @@ A sandboxed iframe has an opaque origin, so its subresource/navigation requests 
 
 | Prefix | Kind             | Backing                                                                                                 | Used by                          |
 | ------ | ---------------- | ------------------------------------------------------------------------------------------------------- | -------------------------------- |
-| `s_`   | Share token      | `share` row in D1 (checks `expires_at`, `revoked`); resolves to the **current** version                 | Public shared view `/v/{token}`  |
 | `o_`   | Owner view token | Stateless HMAC-signed payload `{document_id, exp, version?}`, TTL ~10 min, secret via `wrangler secret` | Private library viewer `/d/{id}` |
+| `s_`   | Share token      | `share` row in D1 (checks `expires_at`, `revoked`); resolves to the **current** version                 | Public shared view `/v/{token}`  |
 
 The Access-protected library page mints an `o_` token when it renders the viewer. Owner views and public shares then use **the same endpoint and headers** without relying on cookies.
 
 **Version pinning lives inside the signed payload, never in a query parameter.** The token authorizes access to `/raw/*`, so accepting `?v=N` would let a share holder enumerate the edit history. Only `/d/{id}?v=N`, which sits behind Access, can mint a pinned token. The pin expires with the token after about 10 minutes.
 
-- `s_` tokens have no version field at all: there is structurally no way to ask a share for anything but the current version.
 - An `o_` token pointing at the current version **omits `v` entirely**, so ordinary tokens stay byte-identical to the pre-versioning format and tokens minted before the change keep verifying.
+- `s_` tokens have no version field at all: there is structurally no way to ask a share for anything but the current version.
 
 The HMAC authenticates the payload but does not replace validation. After the HMAC check, the Worker rejects a `v` that is not a positive integer, including `0`, `-1`, `1.5`, or `"2"`.
 
@@ -295,9 +295,10 @@ Beyond a valid RS256 signature from the team's JWKS, the Worker requires:
 | Claim  | Requirement                                  | Why                                                                                                  |
 | ------ | -------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `aud`  | contains the **route's own** application tag | The boundary in §6.5                                                                                 |
-| `iss`  | exactly `https://{ACCESS_TEAM_DOMAIN}`       | A token from another Cloudflare team cannot be replayed here                                         |
 | `exp`  | present, in the future                       | `hono/jwt` checks expiry only when the claim is present, so a token with no `exp` would never expire |
 | `iat`  | present, not in the future                   | Same reason                                                                                          |
+| `iss`  | exactly `https://{ACCESS_TEAM_DOMAIN}`       | A token from another Cloudflare team cannot be replayed here                                         |
+| `sub`  | present                                      | Both documented assertion payloads include this claim                                                |
 | `type` | `"app"`                                      | Cloudflare also issues `"org"` global session tokens, signed by the same team key                    |
 
 The set is the intersection of the two payloads Cloudflare documents, the identity login and the service token, and it applies on both hostnames. `nbf` is not required, because only the identity payload carries one and requiring it would reject every service token; it is still enforced on tokens that do carry it. `sub` must be present, because both payloads document it, but its value is only read below.
@@ -307,8 +308,8 @@ The owner routes take either documented assertion. Interactive browser and CLI O
 | Claim         | MCP requirement                                   |
 | ------------- | ------------------------------------------------- |
 | `common_name` | absent (it is the service token's Client ID)      |
-| `sub`         | present and non-empty (a service token's is `""`) |
 | `email`       | present and non-empty (service tokens have none)  |
+| `sub`         | present and non-empty (a service token's is `""`) |
 
 This is the Worker-side half of "the MCP application has no Service Auth policy" (§11.2). The policy is the primary control. This still refuses a static credential if such a policy is added by hand, or if the endpoint is pointed at an application that has one. All three signals are checked rather than any one, because a single check is a single point of failure on a boundary whose job is keeping a static credential out. `country` and `identity_nonce` are identity-only too and are deliberately not required. They add no discrimination beyond `email` and `sub`, and each further requirement is another way for a legitimate login to be refused if Cloudflare omits one.
 
@@ -434,25 +435,29 @@ Every route below is on `poof.5n7.me` except `POST /mcp`, which is on `mcp.poof.
 | Route                                                | Auth                         | Purpose                                                                  |
 | ---------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------ |
 | `GET /`                                              | Access                       | Library list (newest first), upload UI                                   |
-| `POST /api/documents`                                | Access (incl. service token) | Upload repeated file/path fields + optional title/TTL; creates version 1 |
 | `GET /api/documents`                                 | Access                       | List documents (incl. `current_version`, `updated_at`; no `r2_key`)      |
+| `POST /api/documents`                                | Access (incl. service token) | Upload repeated file/path fields + optional title/TTL; creates version 1 |
 | `GET /api/documents/:id`                             | Access                       | Current title and version snapshot for rename                            |
-| `POST /api/documents/:id/title-suggestion`           | Access                       | Generate an AI candidate without changing the document                   |
-| `PATCH /api/documents/:id/title`                     | Access                       | Save a title against the reviewed title and version                      |
 | `DELETE /api/documents/:id`                          | Access                       | Delete document (+every version's blob, cascades shares)                 |
-| `POST /api/documents/:id/versions`                   | Access (incl. service token) | Merge repeated file/path fields, optional delete paths and title         |
-| `GET /api/documents/:id/versions`                    | Access                       | List versions (newest first) + `current_version`; no `r2_key`            |
 | `GET /api/documents/:id/content`                     | Access                       | Readable content; `?format=raw` returns source; `?v=N` pins a version    |
-| `POST /api/documents/:id/versions/:version/rollback` | Access                       | Point the document at an existing version                                |
-| `POST /api/documents/:id/shares`                     | Access                       | Issue share (TTL param) → returns `/v/{token}` URL                       |
+| `GET /api/documents/:id/files`                       | Access                       | Ordered file metadata without R2 keys; optional `?v=N` pins a version    |
 | `GET /api/documents/:id/shares`                      | Access                       | List active shares for a document                                        |
+| `POST /api/documents/:id/shares`                     | Access                       | Issue share (TTL param) → returns `/v/{token}` URL                       |
+| `PATCH /api/documents/:id/title`                     | Access                       | Save a title against the reviewed title and version                      |
+| `POST /api/documents/:id/title-suggestion`           | Access                       | Generate an AI candidate without changing the document                   |
+| `GET /api/documents/:id/versions`                    | Access                       | List versions (newest first) + `current_version`; no `r2_key`            |
+| `POST /api/documents/:id/versions`                   | Access (incl. service token) | Merge repeated file/path fields, optional delete paths and title         |
+| `POST /api/documents/:id/versions/:version/rollback` | Access                       | Point the document at an existing version                                |
 | `DELETE /api/shares/:token`                          | Access                       | Revoke (`revoked=1`, immediate)                                          |
-| `POST /mcp`                                          | Access, MCP application      | MCP server (Streamable HTTP): twelve tools over the same core (§11)      |
 | `GET /d/:id`                                         | Access                       | Private viewer page (mints `o_` token, embeds iframe)                    |
 | `GET /d/:id?v=N`                                     | Access                       | Read-only view of version N (banner, no Share, no uploader)              |
-| `GET /v/:token`                                      | none                         | Public shared viewer page; **always the current version**                |
+| `GET /guide`                                         | Access                       | Owner guide page                                                         |
+| `POST /mcp`                                          | Access, MCP application      | MCP server (Streamable HTTP): twelve tools over the same core (§11)      |
 | `GET /raw/:token`                                    | none (token is the auth)     | Rendered content with sandbox headers; `?format=raw` downloads source    |
-| Cron (weekly)                                        | N/A                          | Cleanup (§7)                                                             |
+| `GET /raw/:token/*`                                  | none (token is the auth)     | Linked file or asset with the same sandbox headers                       |
+| `GET /v/:token`                                      | none                         | Public shared viewer page; **always the current version**                |
+
+Weekly Cron cleanup is described in §7.
 
 Version routes follow these rules:
 
@@ -481,20 +486,20 @@ The CLI is the usual path from AI output to a share link. It is written in TypeS
 poof auth login [--new-client] [--no-open]
 poof auth logout
 poof cat <doc-id> [--file <path>] [--version <n>]
-poof files <doc-id> [--version <n>] # file paths and types
                                 # print source text or readable Markdown extracted from HTML
 poof cat <doc-id> --raw          # original bytes, suitable for redirecting to a file
+poof files <doc-id> [--version <n>] # file paths and types
 poof ls                         # list documents
-poof push <file-or-directory>... [--root <directory>] [--title <t>] [--ttl <dur>] [--share [--share-ttl 1d]]
+poof push <file-or-directory>... [--root <directory>] [--share [--share-ttl 1d]] [--title <t>] [--ttl <dur>]
                                 # upload; prints /d/{id} URL; --share also prints /v/{token}
 poof rename <doc-id> --title <t> [--expected-state <token>]
-poof suggest-title <doc-id>    # JSON candidate and preconditions; does not save
 poof revoke <share-token>
 poof rm <doc-id>
 poof rollback <doc-id> <version>
 poof share <doc-id> [--share-ttl 1h|1d|1w]
 poof status
-poof update <doc-id> [<file-or-directory>...] [--root <directory>] [--delete <path>]... [--title <t>]
+poof suggest-title <doc-id>    # JSON candidate and preconditions; does not save
+poof update <doc-id> [<file-or-directory>...] [--delete <path>]... [--root <directory>] [--title <t>]
                                 # new version of an existing document; prints /d/{id} then v{n}
 poof versions <doc-id>          # VER / KIND / CREATED / CURRENT, newest first, '*' marks current
 ```
@@ -582,11 +587,11 @@ The twelve tools use the CLI subcommand names from §10, with `suggest_title` us
 | `ls`            | none                                                                        | Documents, newest first, with a STATE token for rename                     |
 | `push`          | files or content, optional kind/title, document TTL, share flag + share TTL | New document: `/d/{id}` URL, plus a `/v/{token}` URL when shared           |
 | `rename`        | document id, title, expected state token                                    | Change only the document title; return JSON metadata                       |
-| `suggest_title` | document id                                                                 | JSON title candidate and preconditions; no document change                 |
 | `revoke`        | share token                                                                 | The share is dead on the next request                                      |
 | `rm`            | document id                                                                 | Document, every version's blob, and all its shares deleted                 |
 | `rollback`      | document id, version                                                        | That version becomes current; no blob written                              |
 | `share`         | document id, optional share TTL (`1h` / `1d` / `1w`)                        | A `/v/{token}` URL                                                         |
+| `suggest_title` | document id                                                                 | JSON title candidate and preconditions; no document change                 |
 | `update`        | document id, files or content, optional delete_paths, kind, title           | New version, live immediately; same `/d/{id}` and same share links         |
 | `versions`      | document id                                                                 | Version history, newest first, with the current one marked                 |
 
@@ -656,26 +661,26 @@ Workers AI is the only metered addition. Auto-naming uses about 3 to 5 neurons f
 
 | Item              | Decision                                                                                                                                                                                                                                                                                                                                      |
 | ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Share model       | Unlisted URL + TTL; `share` as its own entity; revocation in initial scope                                                                                                                                                                                                                                                                    |
-| Versioning        | Document = stable identity + ordered immutable versions; `document_file` records each snapshot, with first-file metadata on `document_version` for compatibility; `current_version` is a pointer, next = `MAX+1`                                                                                                                              |
-| Share on update   | Shares **follow the current version**. An update reaches every live link without reissuing it. Per-share pinning is out of scope (§13).                                                                                                                                                                                                       |
-| Rollback          | `POST …/versions/:version/rollback`; pointer move only, no blob copied; already-current is an idempotent no-op                                                                                                                                                                                                                                |
-| Version viewing   | Owner-only: `/d/{id}?v=N` (read-only, behind Access) via an `o_` token with the version **inside the signed payload**; `/raw` never accepts a `v` query param                                                                                                                                                                                 |
-| Security boundary | **CSP `sandbox allow-scripts allow-popups` response header** on `/raw/*`, plus the iframe `sandbox` attribute. Never add `allow-same-origin`.                                                                                                                                                                                                 |
-| Delivery path     | Single public `/raw/{token}` endpoint; `s_` share tokens (D1) + `o_` owner tokens (HMAC, ~10 min)                                                                                                                                                                                                                                             |
-| Sanitization      | None; all docs treated as untrusted blobs, sandbox is the boundary                                                                                                                                                                                                                                                                            |
-| Rendering         | View-time `markdown-it` in the Worker; Mermaid + highlight.js lazily loaded client-side inside the sandbox                                                                                                                                                                                                                                    |
-| Titling           | Create-only when `title` is absent: Workers AI → first `#` heading → client fallback. `/api` uses the file name, and MCP `push` uses `untitled`. It runs synchronously so the create response contains the selected title. Failures use the next fallback.                                                                                    |
-| Renaming          | Editable document metadata; AI suggestions require a separate save; state tokens bind saves to the reviewed title and version; no new version or file changes.                                                                                                                                                                                |
-| Errors            | Uniform 404 for missing/expired/revoked                                                                                                                                                                                                                                                                                                       |
-| Tokens            | `crypto.getRandomValues`, 128-bit, base64url                                                                                                                                                                                                                                                                                                  |
-| Host isolation    | One Worker, two hostnames dispatched before routing: `poof.5n7.me` serves the web, API, and public paths; `mcp.poof.5n7.me` serves `POST /mcp` and nothing else. Any other host gets 404. Blank or duplicated host vars answer 503 (§6.5).                                                                                                    |
-| MCP server        | Worker-hosted at `POST mcp.poof.5n7.me/mcp` with Streamable HTTP (`@hono/mcp`). It creates a server per request and issues no session id because isolates are not sticky. The path is exact; other methods return `405` with `Allow: POST` and the server offers no SSE stream.                                                               |
-| MCP auth          | Its own Access application and AUD tag, authenticated with Managed OAuth (authorization code + PKCE) and **no Service Auth policy**, enforced again in-Worker by refusing service-token assertions, plus the shared CSRF guard.                                                                                                               |
-| MCP tools         | Twelve, matching CLI names with underscores; `push`/`update` take files or content; `files` lists paths; file metadata determines omitted `kind`, falling back to md/file on push and current kind on update; `cat` capped at 128 KiB after conversion; results carry absolute `OWNER_HOST` URLs; one shared core in `src/lib/`, two adapters |
 | Auth              | Cloudflare Access on both hostnames, each validated against its own AUD; separate Managed OAuth grants for the interactive CLI and MCP clients, optional owner-app service token for CI, bypass on `poof.5n7.me/v/*` `/raw/*`                                                                                                                 |
-| JWT verification  | `Cf-Access-Jwt-Assertion` only, RS256 against the team JWKS, pinned `iss`, route-specific `aud`, and required `exp` / `iat` / `sub` / `type: "app"`. `nbf` is checked when present but never required. `/mcp` additionally requires an identity assertion and refuses service tokens (§6.6).                                                  |
-| Infra / stack     | Cloudflare Workers + R2 + D1 + Access; TypeScript + Hono + wrangler + vitest-pool-workers                                                                                                                                                                                                                                                     |
-| Provisioning      | Idempotent `scripts/bootstrap.sh` + `docs/SETUP.md` + `docs/MCP-OAUTH-RUNBOOK.md`; no Terraform until environments multiply; `workers_dev` disabled; Access JWT verified in-Worker                                                                                                                                                            |
-| TTL defaults      | Library: none; shares: 1 day (1h/1d/1w selectable)                                                                                                                                                                                                                                                                                            |
+| Delivery path     | Single public `/raw/{token}` endpoint; `s_` share tokens (D1) + `o_` owner tokens (HMAC, ~10 min)                                                                                                                                                                                                                                             |
+| Errors            | Uniform 404 for missing/expired/revoked                                                                                                                                                                                                                                                                                                       |
 | Headers           | `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex` on viewer/raw paths                                                                                                                                                                                                                                                                   |
+| Host isolation    | One Worker, two hostnames dispatched before routing: `poof.5n7.me` serves the web, API, and public paths; `mcp.poof.5n7.me` serves `POST /mcp` and nothing else. Any other host gets 404. Blank or duplicated host vars answer 503 (§6.5).                                                                                                    |
+| Infra / stack     | Cloudflare Workers + R2 + D1 + Access; TypeScript + Hono + wrangler + vitest-pool-workers                                                                                                                                                                                                                                                     |
+| JWT verification  | `Cf-Access-Jwt-Assertion` only, RS256 against the team JWKS, pinned `iss`, route-specific `aud`, and required `exp` / `iat` / `sub` / `type: "app"`. `nbf` is checked when present but never required. `/mcp` additionally requires an identity assertion and refuses service tokens (§6.6).                                                  |
+| MCP auth          | Its own Access application and AUD tag, authenticated with Managed OAuth (authorization code + PKCE) and **no Service Auth policy**, enforced again in-Worker by refusing service-token assertions, plus the shared CSRF guard.                                                                                                               |
+| MCP server        | Worker-hosted at `POST mcp.poof.5n7.me/mcp` with Streamable HTTP (`@hono/mcp`). It creates a server per request and issues no session id because isolates are not sticky. The path is exact; other methods return `405` with `Allow: POST` and the server offers no SSE stream.                                                               |
+| MCP tools         | Twelve, matching CLI names with underscores; `push`/`update` take files or content; `files` lists paths; file metadata determines omitted `kind`, falling back to md/file on push and current kind on update; `cat` capped at 128 KiB after conversion; results carry absolute `OWNER_HOST` URLs; one shared core in `src/lib/`, two adapters |
+| Provisioning      | Idempotent `scripts/bootstrap.sh` + `docs/SETUP.md` + `docs/MCP-OAUTH-RUNBOOK.md`; no Terraform until environments multiply; `workers_dev` disabled; Access JWT verified in-Worker                                                                                                                                                            |
+| Renaming          | Editable document metadata; AI suggestions require a separate save; state tokens bind saves to the reviewed title and version; no new version or file changes.                                                                                                                                                                                |
+| Rendering         | View-time `markdown-it` in the Worker; Mermaid + highlight.js lazily loaded client-side inside the sandbox                                                                                                                                                                                                                                    |
+| Rollback          | `POST …/versions/:version/rollback`; pointer move only, no blob copied; already-current is an idempotent no-op                                                                                                                                                                                                                                |
+| Sanitization      | None; all docs treated as untrusted blobs, sandbox is the boundary                                                                                                                                                                                                                                                                            |
+| Security boundary | **CSP `sandbox allow-scripts allow-popups` response header** on `/raw/*`, plus the iframe `sandbox` attribute. Never add `allow-same-origin`.                                                                                                                                                                                                 |
+| Share model       | Unlisted URL + TTL; `share` as its own entity; revocation in initial scope                                                                                                                                                                                                                                                                    |
+| Share on update   | Shares **follow the current version**. An update reaches every live link without reissuing it. Per-share pinning is out of scope (§13).                                                                                                                                                                                                       |
+| Titling           | Create-only when `title` is absent: Workers AI → first `#` heading → client fallback. `/api` uses the file name, and MCP `push` uses `untitled`. It runs synchronously so the create response contains the selected title. Failures use the next fallback.                                                                                    |
+| Tokens            | `crypto.getRandomValues`, 128-bit, base64url                                                                                                                                                                                                                                                                                                  |
+| TTL defaults      | Library: none; shares: 1 day (1h/1d/1w selectable)                                                                                                                                                                                                                                                                                            |
+| Version viewing   | Owner-only: `/d/{id}?v=N` (read-only, behind Access) via an `o_` token with the version **inside the signed payload**; `/raw` never accepts a `v` query param                                                                                                                                                                                 |
+| Versioning        | Document = stable identity + ordered immutable versions; `document_file` records each snapshot, with first-file metadata on `document_version` for compatibility; `current_version` is a pointer, next = `MAX+1`                                                                                                                              |

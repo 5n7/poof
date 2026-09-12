@@ -36,8 +36,8 @@ Wrangler minification is enabled. The measured deployment bundle includes the ex
 
 | Bundle size  |    Baseline |       After |
 | ------------ | ----------: | ----------: |
-| Uncompressed | 1984.11 KiB | 1103.04 KiB |
 | Gzip         |  394.83 KiB |  307.77 KiB |
+| Uncompressed | 1984.11 KiB | 1103.04 KiB |
 
 The gzip bundle is 22.1% smaller. These results do not establish a Worker startup latency improvement.
 
@@ -51,10 +51,10 @@ For a 102,400-byte plain-text fixture:
 
 | Metric                 | Baseline, two runs | After, two runs |
 | ---------------------- | -----------------: | --------------: |
-| Maximum long task      |      942 / 1055 ms |       0 / 59 ms |
-| `loadEventEnd`         |   1509 / 1596.4 ms | 106.4 / 96.9 ms |
 | CDN encoded body bytes |             44,488 |               0 |
 | DOM elements           |               6414 |              12 |
+| `loadEventEnd`         |   1509 / 1596.4 ms | 106.4 / 96.9 ms |
+| Maximum long task      |      942 / 1055 ms |       0 / 59 ms |
 
 Zero means no task of at least 50 ms was observed. These are local renderer observations, not Lighthouse scores, Core Web Vitals, or production page latency.
 
