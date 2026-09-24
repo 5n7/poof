@@ -38,6 +38,10 @@ poof update <doc-id> --delete obsolete.md  # remove a file in a new version
 poof versions <doc-id>                     # version history, newest first
 ```
 
+In a terminal, `push` and `update` show the current upload step and elapsed time
+on stderr. The display clears when the command finishes. Redirected output
+keeps the usual URLs and version without progress text.
+
 Set `POOF_URL=https://poof.5n7.me`, then run `poof auth login`. The CLI uses
 Cloudflare Access Managed OAuth and saves its tokens in the operating system's
 credential manager.
