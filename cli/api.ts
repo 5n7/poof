@@ -23,6 +23,13 @@ export interface ApiRuntime {
 	oauthAccessToken(resource: string, forceRefresh?: boolean): Promise<string>;
 }
 
+export interface ApiTiming {
+	authMs: number;
+	httpMs: number;
+	serverTiming: string | null;
+	traceId: string | null;
+}
+
 export type HttpMethod = "DELETE" | "GET" | "HEAD" | "PATCH" | "POST";
 
 export const defaultApiRuntime: ApiRuntime = { fetch, oauthAccessToken };
@@ -141,13 +148,19 @@ async function requestOnce(
 	path: string,
 	body: FormData | object | undefined,
 	forceRefresh = false,
+	timing?: ApiTiming,
 ): Promise<Response> {
+	const authStart = performance.now();
 	const headers: Record<string, string> = {};
 	if (cfg.auth.type === "service") {
 		headers["CF-Access-Client-Id"] = cfg.auth.clientId;
 		headers["CF-Access-Client-Secret"] = cfg.auth.clientSecret;
 	} else {
 		headers.Authorization = `Bearer ${await runtime.oauthAccessToken(cfg.url, forceRefresh)}`;
+	}
+	if (timing) {
+		timing.authMs += performance.now() - authStart;
+		headers["X-Poof-Timing"] = "1";
 	}
 	let payload: string | FormData | undefined;
 	if (body instanceof FormData) {
@@ -160,7 +173,17 @@ async function requestOnce(
 	// Cloudflare Access redirects unauthenticated requests to its sign-in page.
 	// Do not follow that redirect. Otherwise `poof cat` could print login HTML and
 	// exit 0, while `poof ls` could parse that HTML as an API response.
-	return runtime.fetch(`${cfg.url}${path}`, { method, headers, body: payload, redirect: "manual" });
+	const httpStart = performance.now();
+	try {
+		const response = await runtime.fetch(`${cfg.url}${path}`, { method, headers, body: payload, redirect: "manual" });
+		if (timing) {
+			timing.serverTiming = response.headers.get("Server-Timing");
+			timing.traceId = response.headers.get("X-Poof-Trace");
+		}
+		return response;
+	} finally {
+		if (timing) timing.httpMs += performance.now() - httpStart;
+	}
 }
 
 function oauthRejection(res: Response): boolean {
@@ -177,12 +200,13 @@ async function request(
 	path: string,
 	body?: FormData | object,
 	runtime: ApiRuntime = defaultApiRuntime,
+	timing?: ApiTiming,
 ): Promise<Response> {
-	let res = await requestOnce(cfg, runtime, method, path, body);
+	let res = await requestOnce(cfg, runtime, method, path, body, false, timing);
 	if (cfg.auth.type === "oauth" && oauthRejection(res)) {
 		await res.body?.cancel().catch(() => undefined);
 		if (isSafeMethod(method)) {
-			res = await requestOnce(cfg, runtime, method, path, body, true);
+			res = await requestOnce(cfg, runtime, method, path, body, true, timing);
 		} else {
 			await runtime.oauthAccessToken(cfg.url, true);
 			throw new Error(`${method} ${path} was rejected before execution. OAuth was refreshed; rerun the command.`);
@@ -233,8 +257,9 @@ export async function api<T>(
 	path: string,
 	body?: FormData | object,
 	runtime: ApiRuntime = defaultApiRuntime,
+	timing?: ApiTiming,
 ): Promise<T> {
-	const res = await request(cfg, method, path, body, runtime);
+	const res = await request(cfg, method, path, body, runtime, timing);
 	if (res.status === 204) {
 		return undefined as T;
 	}
