@@ -9,6 +9,7 @@ import { defaultMediaType, inferFileBytes } from "../lib/content";
 import {
 	type ShareRow,
 	getLiveDocument,
+	getLiveUpdateSnapshot,
 	getLiveDocumentAt,
 	listDocuments,
 	listVersionFiles,
@@ -34,6 +35,7 @@ import { originForHost } from "../lib/hosts";
 import { nowSeconds } from "../lib/time";
 import { resolveNewTitle } from "../lib/title";
 import { TTL_KEYS, ttlToSeconds } from "../lib/tokens";
+import { UploadTiming, measureUpload } from "../lib/upload-timing";
 
 /**
  * Expose the document library as MCP tools over Streamable HTTP (SPEC §10).
@@ -381,6 +383,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 			description:
 				"Upload files or a content string as one owner-only document and return its /d/{id} URL. Set share: true only when the user explicitly requests sharing; send recipients the resulting /v/{token} URL. Revise existing documents with `update`.",
 			inputSchema: {
+				measure: z.boolean().optional().describe("Include upload timings in the result and Worker logs."),
 				content: z
 					.string()
 					.optional()
@@ -406,10 +409,13 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 				),
 			},
 		},
-		async ({ content, files, encoding, filename, media_type, kind, share, share_ttl, title, ttl }) => {
+		async ({ content, files, encoding, filename, media_type, kind, share, share_ttl, title, ttl, measure }) => {
+			const timing = measure ? new UploadTiming() : undefined;
 			if ((content === undefined) === (files === undefined)) return failure("Supply either content or files.");
 			if (files !== undefined && files.length === 0) return failure("At least one file is required.");
-			const decodedFiles = files === undefined ? undefined : decodeFiles(files);
+			const decodedFiles = await measureUpload(timing, "decode", async () =>
+				files === undefined ? undefined : decodeFiles(files),
+			);
 			content ??= "";
 			if (encoding === "base64" && content.length > 4 * Math.ceil(MAX_BYTES / 3)) {
 				return failure(`Content exceeds the ${MAX_BYTES}-byte limit.`);
@@ -435,22 +441,31 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 					? inferred.media_type
 					: defaultMediaType(resolvedKind);
 			const titleSource = decodedFiles?.[0].source ?? source;
-			const resolved =
-				title?.trim() ||
-				(resolvedKind === "md"
-					? await resolveNewTitle(c.env, {
-							fallback: decodedFiles?.[0].filename ?? (filename || "untitled"),
-							kind: "md",
-							source: typeof titleSource === "string" ? titleSource : new TextDecoder().decode(titleSource),
-						})
-					: (decodedFiles?.[0].filename ?? (filename || "untitled")));
-			const id = await createDocument(c.env, now, {
-				title: resolved,
-				expires_at,
-				...(decodedFiles
-					? { files: decodedFiles }
-					: { filename, kind: resolvedKind, media_type: resolvedMediaType, source }),
-			});
+			const resolved = await measureUpload(
+				timing,
+				"title",
+				async () =>
+					title?.trim() ||
+					(resolvedKind === "md"
+						? await resolveNewTitle(c.env, {
+								fallback: decodedFiles?.[0].filename ?? (filename || "untitled"),
+								kind: "md",
+								source: typeof titleSource === "string" ? titleSource : new TextDecoder().decode(titleSource),
+							})
+						: (decodedFiles?.[0].filename ?? (filename || "untitled"))),
+			);
+			const id = await createDocument(
+				c.env,
+				now,
+				{
+					title: resolved,
+					expires_at,
+					...(decodedFiles
+						? { files: decodedFiles }
+						: { filename, kind: resolvedKind, media_type: resolvedMediaType, source }),
+				},
+				timing,
+			);
 
 			const lines = [
 				`Created document ${id} (v1, ${resolvedKind}, title ${JSON.stringify(resolved)}, expires ${formatTime(expires_at)}).`,
@@ -469,6 +484,15 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 				);
 			} else {
 				lines.push("Uploaded for the owner only. No public share link was created.");
+			}
+			if (timing) {
+				const sources = decodedFiles?.map((file) => file.source) ?? [source];
+				const { traceId, serverTiming } = timing.report(
+					"push",
+					sources.length,
+					sources.reduce((sum, item) => sum + sourceBytes(item), 0),
+				);
+				lines.push(`Timing ${traceId}: ${serverTiming}`);
 			}
 			return text(lines.join("\n"));
 		},
@@ -622,6 +646,7 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 			description:
 				"Merge files by path, retain unmentioned files, and remove only explicit delete_paths in one new version while keeping the same /d/{id} and share links. Recipients see the new content on their next load. Pass edited source. Use `cat` with raw: true when editing HTML. The title remains unless replaced; file metadata can infer a new kind. All live share links update at once, with no per-recipient version pinning. Use a separate document for content that some recipients must not see.",
 			inputSchema: {
+				measure: z.boolean().optional().describe("Include upload timings in the result and Worker logs."),
 				content: z
 					.string()
 					.optional()
@@ -643,11 +668,14 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 				title: z.string().optional().describe("New document title (default: keep the current one)."),
 			},
 		},
-		async ({ content, files, delete_paths, encoding, filename, media_type, id, kind, title }) => {
+		async ({ content, files, delete_paths, encoding, filename, media_type, id, kind, title, measure }) => {
+			const timing = measure ? new UploadTiming() : undefined;
 			if (content !== undefined && files !== undefined) return failure("Supply either content or files.");
 			if (content === undefined && !files?.length && !delete_paths?.length)
 				return failure("Supply content, files, or delete_paths.");
-			const decodedFiles = files === undefined ? undefined : decodeFiles(files);
+			const decodedFiles = await measureUpload(timing, "decode", async () =>
+				files === undefined ? undefined : decodeFiles(files),
+			);
 			const bundle = decodedFiles !== undefined || content === undefined;
 			if (!bundle && delete_paths?.length) return failure("Use files instead of content when deleting paths.");
 			content ??= "";
@@ -660,9 +688,9 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 			if (oversized) return oversized;
 
 			const now = nowSeconds();
-			// getLiveDocument, not getDocument: no new versions for owner-expired documents.
-			const doc = await getLiveDocument(c.env.DB, id, now);
-			if (!doc) return missing(id);
+			const snapshot = await measureUpload(timing, "d1_snapshot", () => getLiveUpdateSnapshot(c.env.DB, id, now));
+			if (!snapshot) return missing(id);
+			const doc = snapshot.doc;
 
 			// doc.kind comes from the version joined on current_version.
 			const inferred = inferFileBytes(
@@ -671,31 +699,45 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
 				typeof source === "string" ? new TextEncoder().encode(source).buffer : source,
 			);
 			const resolved = kind ?? (filename || media_type ? inferred.kind : doc.kind);
-			const added = await addVersion(c.env, doc, now, {
-				title: title?.trim() || null,
-				...(bundle
-					? { files: decodedFiles ?? [], delete_paths }
-					: {
-							filename,
-							kind: resolved,
-							source,
-							media_type:
-								filename || media_type
-									? resolved === inferred.kind
-										? inferred.media_type
-										: defaultMediaType(resolved)
-									: undefined,
-						}),
-			});
+			const added = await addVersion(
+				c.env,
+				doc,
+				now,
+				{
+					title: title?.trim() || null,
+					...(bundle
+						? { files: decodedFiles ?? [], delete_paths }
+						: {
+								filename,
+								kind: resolved,
+								source,
+								media_type:
+									filename || media_type
+										? resolved === inferred.kind
+											? inferred.media_type
+											: defaultMediaType(resolved)
+										: undefined,
+							}),
+				},
+				{ timing, previousFiles: snapshot.files, initialVersion: snapshot.next_version },
+			);
 			if (!added) return missing(id);
 
-			return text(
-				[
-					`Updated ${id} to v${added.version} (${bundle ? "file set" : resolved}, title ${JSON.stringify(added.title)}).`,
-					ownerLine(origin, id),
-					"Every live share link already serves the new content; there is nothing to re-issue or re-send.",
-				].join("\n"),
-			);
+			const lines = [
+				`Updated ${id} to v${added.version} (${bundle ? "file set" : resolved}, title ${JSON.stringify(added.title)}).`,
+				ownerLine(origin, id),
+				"Every live share link already serves the new content; there is nothing to re-issue or re-send.",
+			];
+			if (timing) {
+				const sources = decodedFiles?.map((file) => file.source) ?? (bundle ? [] : [source]);
+				const { traceId, serverTiming } = timing.report(
+					"update",
+					sources.length,
+					sources.reduce((sum, item) => sum + sourceBytes(item), 0),
+				);
+				lines.push(`Timing ${traceId}: ${serverTiming}`);
+			}
+			return text(lines.join("\n"));
 		},
 	);
 

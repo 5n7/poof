@@ -27,6 +27,7 @@ import { htmlToMarkdown } from "./html-to-markdown";
 import { nowSeconds } from "./time";
 import { generateAiTitle } from "./title";
 import { newShareToken, parseTtl, randomToken } from "./tokens";
+import { type UploadTiming, measureUpload } from "./upload-timing";
 
 export { DocumentInputError, MAX_BYTES, MAX_FILES } from "./files";
 
@@ -44,7 +45,7 @@ export { DocumentInputError, MAX_BYTES, MAX_FILES } from "./files";
 /** Attempts at allocating a version number before giving up (see insertVersion). */
 const MAX_VERSION_ATTEMPTS = 3;
 
-const BLOB_CONCURRENCY = 4;
+const BLOB_CONCURRENCY = 6;
 
 /**
  * Return a document source's UTF-8 byte length. Adapters use this to enforce the
@@ -88,6 +89,14 @@ export type NewVersionInput = (SingleSourceInput | FileSetInput) & {
 export interface NewVersion {
 	version: number;
 	title: string;
+	kind: DocumentKind;
+	file_count: number;
+}
+
+interface AddVersionOptions {
+	timing?: UploadTiming;
+	previousFiles?: DocumentFileRow[];
+	initialVersion?: number;
 }
 
 function validateFiles(files: NewFileInput[]): void {
@@ -118,22 +127,31 @@ function fileRow(id: string, version: number, file: NewFileInput, position: numb
 }
 
 /** Stage every source reference before uploading, then publish the complete snapshot. */
-export async function createDocument(env: Env, now: number, input: NewDocumentInput): Promise<string> {
+export async function createDocument(
+	env: Env,
+	now: number,
+	input: NewDocumentInput,
+	timing?: UploadTiming,
+): Promise<string> {
 	const files = input.files ?? [{ ...input, path: defaultFilePath(input.filename, input.kind) }];
 	validateFiles(files);
 	if (!files.length) throw new DocumentInputError("At least one file is required.");
 	const id = randomToken();
 	const rows = files.map((file, position) => fileRow(id, 1, file, position));
 	const first = rows[0]!;
-	await insertDocument(
-		env.DB,
-		{ ...first, id, title: input.title, created_at: now, expires_at: input.expires_at },
-		rows,
-		true,
+	await measureUpload(timing, "d1_stage", () =>
+		insertDocument(
+			env.DB,
+			{ ...first, id, title: input.title, created_at: now, expires_at: input.expires_at },
+			rows,
+			true,
+		),
 	);
 	try {
-		await mapConcurrent(files, BLOB_CONCURRENCY, (file, index) => env.BLOBS.put(rows[index]!.r2_key, file.source));
-		if (!(await applyNewVersion(env.DB, id, 1, now, input.title, 0)))
+		await measureUpload(timing, "r2_put", () =>
+			mapConcurrent(files, BLOB_CONCURRENCY, (file, index) => env.BLOBS.put(rows[index]!.r2_key, file.source)),
+		);
+		if (!(await measureUpload(timing, "d1_publish", () => applyNewVersion(env.DB, id, 1, now, input.title, 0))))
 			throw new Error("Document disappeared during upload.");
 	} catch (err) {
 		await deleteBlobs(
@@ -152,8 +170,11 @@ export async function addVersion(
 	doc: ResolvedDocument,
 	now: number,
 	input: NewVersionInput,
+	options: AddVersionOptions = {},
 ): Promise<NewVersion | null> {
-	const previous = await listVersionFiles(env.DB, doc.id, doc.version);
+	const { timing, previousFiles, initialVersion } = options;
+	const previous =
+		previousFiles ?? (await measureUpload(timing, "d1_files", () => listVersionFiles(env.DB, doc.id, doc.version)));
 	const legacy = input.files === undefined;
 	const files = input.files ?? [
 		{
@@ -186,7 +207,10 @@ export async function addVersion(
 	let rows: DocumentFileRow[] = [];
 	let writes: { row: DocumentFileRow; source: string | ArrayBuffer }[] = [];
 	for (let attempt = 1; ; attempt++) {
-		version = await nextVersion(env.DB, doc.id);
+		version =
+			attempt === 1 && initialVersion !== undefined
+				? initialVersion
+				: await measureUpload(timing, "d1_next_version", () => nextVersion(env.DB, doc.id));
 		writes = [];
 		rows = paths.map((path, position) => {
 			const file = files.find((item) => item.path === path);
@@ -198,7 +222,12 @@ export async function addVersion(
 			return { ...retained.find((item) => item.path === path)!, version, position };
 		});
 		const first = rows[0]!;
-		if (await insertVersion(env.DB, { ...first, title, created_at: now, ready: 0 }, rows)) break;
+		if (
+			await measureUpload(timing, "d1_stage", () =>
+				insertVersion(env.DB, { ...first, title, created_at: now, ready: 0 }, rows),
+			)
+		)
+			break;
 		if (attempt >= MAX_VERSION_ATTEMPTS)
 			throw new DocumentInputError("Document changed during upload. Retry the update.", 409);
 	}
@@ -210,8 +239,14 @@ export async function addVersion(
 		await deleteVersion(env.DB, doc.id, version).catch(() => {});
 	};
 	try {
-		await mapConcurrent(writes, BLOB_CONCURRENCY, ({ row, source }) => env.BLOBS.put(row.r2_key, source));
-		if (!(await applyNewVersion(env.DB, doc.id, version, now, input.title, doc.current_version, doc.title))) {
+		await measureUpload(timing, "r2_put", () =>
+			mapConcurrent(writes, BLOB_CONCURRENCY, ({ row, source }) => env.BLOBS.put(row.r2_key, source)),
+		);
+		if (
+			!(await measureUpload(timing, "d1_publish", () =>
+				applyNewVersion(env.DB, doc.id, version, now, input.title, doc.current_version, doc.title),
+			))
+		) {
 			if (!(await getLiveDocument(env.DB, doc.id, now))) {
 				await discard();
 				return null;
@@ -222,7 +257,7 @@ export async function addVersion(
 		await discard();
 		throw err;
 	}
-	return { version, title };
+	return { version, title, kind: rows[0]!.kind, file_count: rows.length };
 }
 
 /** Where a document's pointer ended up, and when it last moved. */

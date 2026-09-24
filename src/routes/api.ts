@@ -4,6 +4,7 @@ import type { Context } from "hono";
 import { attachmentDisposition, defaultMediaType, inferFileBytes, isDocumentKind } from "../lib/content";
 import {
 	getLiveDocument,
+	getLiveUpdateSnapshot,
 	getLiveDocumentAt,
 	listDocuments,
 	listShares,
@@ -33,6 +34,7 @@ import { API_CONTENT_HEADERS, isVersionString, uniform404, withHeaders } from ".
 import { nowSeconds } from "../lib/time";
 import { resolveNewTitle } from "../lib/title";
 import { parseTtl } from "../lib/tokens";
+import { UploadTiming, measureUpload } from "../lib/upload-timing";
 
 /** All routes here sit behind `accessAuth` and `csrfProtection` (wired in index.ts). */
 export const apiRoutes = new Hono<{ Bindings: Env }>();
@@ -42,6 +44,7 @@ const UPLOAD_BUFFER_BYTES = 64 * 1024;
 
 interface Upload {
 	files: NewFileInput[];
+	bytes: number;
 	legacy: boolean;
 	delete_paths: string[];
 	title: string | null;
@@ -134,6 +137,7 @@ async function readUpload(c: Context<{ Bindings: Env }>, update = false): Promis
 	const title = typeof titleField === "string" && titleField.trim() ? titleField.trim() : null;
 	return {
 		files,
+		bytes,
 		legacy: files.length === 1 && !paths.length && !removed.length,
 		delete_paths: removed as string[],
 		title,
@@ -142,7 +146,8 @@ async function readUpload(c: Context<{ Bindings: Env }>, update = false): Promis
 }
 
 apiRoutes.post("/documents", async (c) => {
-	const upload = await readUpload(c);
+	const timing = c.req.header("X-Poof-Timing") === "1" ? new UploadTiming() : undefined;
+	const upload = await measureUpload(timing, "parse", () => readUpload(c));
 	if (upload instanceof Response) return upload;
 
 	const now = nowSeconds();
@@ -155,18 +160,22 @@ apiRoutes.post("/documents", async (c) => {
 	}
 
 	const first = upload.files[0]!;
-	const title =
-		upload.title ??
-		(upload.files.length === 1 && first.kind === "md"
-			? await resolveNewTitle(c.env, {
-					fallback: first.filename ?? first.path,
-					kind: "md",
-					source: new TextDecoder().decode(first.source as ArrayBuffer),
-				})
-			: first.filename?.trim() || "untitled");
+	const title = await measureUpload(
+		timing,
+		"title",
+		async () =>
+			upload.title ??
+			(upload.files.length === 1 && first.kind === "md"
+				? await resolveNewTitle(c.env, {
+						fallback: first.filename ?? first.path,
+						kind: "md",
+						source: new TextDecoder().decode(first.source as ArrayBuffer),
+					})
+				: first.filename?.trim() || "untitled"),
+	);
 	const sources = upload.legacy ? first : { files: upload.files };
-	const id = await createDocument(c.env, now, { ...sources, title, expires_at });
-	return c.json(
+	const id = await createDocument(c.env, now, { ...sources, title, expires_at }, timing);
+	const response = c.json(
 		{
 			id,
 			title,
@@ -180,6 +189,7 @@ apiRoutes.post("/documents", async (c) => {
 		},
 		201,
 	);
+	return timing ? timing.finish(response, "push", upload.files.length, upload.bytes) : response;
 });
 
 apiRoutes.get("/documents", async (c) => {
@@ -194,35 +204,41 @@ apiRoutes.delete("/documents/:id", async (c) => {
 });
 
 apiRoutes.post("/documents/:id/versions", async (c) => {
+	const timing = c.req.header("X-Poof-Timing") === "1" ? new UploadTiming() : undefined;
 	const id = c.req.param("id");
 	const now = nowSeconds();
-	// getLiveDocument, not getDocument: no new versions for owner-expired documents.
-	// Resolved before the body is read, so a missing document costs nothing.
-	const doc = await getLiveDocument(c.env.DB, id, now);
-	if (!doc) return uniform404(c);
+	// Resolve the live snapshot before reading the body, so missing documents cost nothing.
+	const snapshot = await measureUpload(timing, "d1_snapshot", () => getLiveUpdateSnapshot(c.env.DB, id, now));
+	if (!snapshot) return uniform404(c);
 
-	const upload = await readUpload(c, true);
+	const upload = await measureUpload(timing, "parse", () => readUpload(c, true));
 	if (upload instanceof Response) return upload;
 	const sources = upload.legacy ? upload.files[0]! : { files: upload.files };
-	const added = await addVersion(c.env, doc, now, {
-		...sources,
-		title: upload.title,
-		delete_paths: upload.delete_paths,
-	});
+	const added = await addVersion(
+		c.env,
+		snapshot.doc,
+		now,
+		{
+			...sources,
+			title: upload.title,
+			delete_paths: upload.delete_paths,
+		},
+		{ timing, previousFiles: snapshot.files, initialVersion: snapshot.next_version },
+	);
 	if (!added) return uniform404(c);
-	const files = await listVersionFiles(c.env.DB, id, added.version);
-	return c.json(
+	const response = c.json(
 		{
 			id,
 			version: added.version,
-			kind: files[0]!.kind,
+			kind: added.kind,
 			title: added.title,
 			updated_at: now,
-			file_count: files.length,
+			file_count: added.file_count,
 			url: `/d/${id}`,
 		},
 		201,
 	);
+	return timing ? timing.finish(response, "update", upload.files.length, upload.bytes) : response;
 });
 
 apiRoutes.get("/documents/:id/files", async (c) => {

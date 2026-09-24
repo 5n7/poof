@@ -9,8 +9,10 @@ import {
 	api,
 	apiCheck,
 	apiStream,
+	defaultApiRuntime,
 	loadConfig,
 	p,
+	type ApiTiming,
 	type DocumentRow,
 	type RollbackResult,
 	type ShareResult,
@@ -31,6 +33,33 @@ import {
 } from "./messages";
 
 const TTL_OPTIONS = ["1h", "1d", "1w"];
+
+function uploadTiming(): ApiTiming | undefined {
+	return process.env.POOF_TIMING === "1" ? { authMs: 0, httpMs: 0, serverTiming: null, traceId: null } : undefined;
+}
+
+function printUploadTiming(
+	operation: "push" | "update",
+	timing: ApiTiming | undefined,
+	started: number,
+	filesMs: number,
+	prepareMs: number,
+): void {
+	if (!timing) return;
+	const round = (value: number) => Math.round(value * 10) / 10;
+	const record = {
+		event: "upload_timing",
+		operation,
+		totalMs: round(performance.now() - started),
+		filesMs: round(filesMs),
+		prepareMs: round(prepareMs),
+		authMs: round(timing.authMs),
+		httpMs: round(timing.httpMs),
+		serverTiming: timing.serverTiming,
+		traceId: timing.traceId,
+	};
+	process.stderr.write(`${JSON.stringify(record)}\n`);
+}
 
 function fail(message: string): never {
 	process.stderr.write(`Error: ${message}\n`);
@@ -277,7 +306,10 @@ const push = defineCommand({
 	},
 	run: ({ args }) =>
 		attempt(async () => {
+			const timing = uploadTiming();
+			const started = performance.now();
 			const upload = await collectFiles(args._, args.root);
+			const filesMs = performance.now() - started;
 			const first = upload.files[0];
 			const title =
 				args.title ??
@@ -291,8 +323,10 @@ const push = defineCommand({
 			appendFiles(form, upload);
 			form.append("title", title);
 			if (args.ttl) form.append("ttl", args.ttl);
+			const prepareMs = performance.now() - started - filesMs;
 
-			const doc = await api<DocumentRow>(cfg, "POST", "/api/documents", form);
+			const doc = await api<DocumentRow>(cfg, "POST", "/api/documents", form, defaultApiRuntime, timing);
+			printUploadTiming("push", timing, started, filesMs, prepareMs);
 			process.stdout.write(`${cfg.url}/d/${doc.id}\n`);
 
 			if (args.share) {
@@ -492,8 +526,11 @@ const update = defineCommand({
 	},
 	run: ({ args, rawArgs }) =>
 		attempt(async () => {
+			const timing = uploadTiming();
+			const started = performance.now();
 			const removed = deletionPaths(rawArgs);
 			const upload = await collectFiles(args._.slice(1), args.root);
+			const filesMs = performance.now() - started;
 			if (!upload.files.length && !removed.length) throw new Error("provide files to upload or --delete paths");
 
 			const cfg = loadConfig();
@@ -504,8 +541,17 @@ const update = defineCommand({
 			// Do not infer a title during updates. Omitting the field keeps the current
 			// title. The user must pass --title to rename the document.
 			if (args.title) form.append("title", args.title);
+			const prepareMs = performance.now() - started - filesMs;
 
-			const result = await api<UpdateResult>(cfg, "POST", p`/api/documents/${args["doc-id"]}/versions`, form);
+			const result = await api<UpdateResult>(
+				cfg,
+				"POST",
+				p`/api/documents/${args["doc-id"]}/versions`,
+				form,
+				defaultApiRuntime,
+				timing,
+			);
+			printUploadTiming("update", timing, started, filesMs, prepareMs);
 			process.stdout.write(`${cfg.url}/d/${result.id}\n`);
 			process.stdout.write(`v${result.version}\n`);
 		}),

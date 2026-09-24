@@ -195,6 +195,59 @@ export async function getLiveDocument(db: D1Database, id: string, now: number): 
 		.first<ResolvedDocument>();
 }
 
+/** Read the current snapshot and a candidate next version in one D1 request. */
+export async function getLiveUpdateSnapshot(
+	db: D1Database,
+	id: string,
+	now: number,
+): Promise<{ doc: ResolvedDocument; files: DocumentFileRow[]; next_version: number } | null> {
+	const { results } = await db
+		.prepare(
+			`WITH next_version AS (
+				SELECT COALESCE(MAX(version), 0) + 1 AS value
+				FROM document_version WHERE document_id = ?
+			)
+			SELECT ${RESOLVED_COLUMNS}, nv.value AS next_version,
+				df.path AS file_path, df.filename AS file_filename, df.kind AS file_kind,
+				df.media_type AS file_media_type, df.r2_key AS file_r2_key, df.position AS file_position
+			FROM document d
+			${CURRENT_JOIN}
+			CROSS JOIN next_version nv
+			LEFT JOIN document_file df ON df.document_id = d.id AND df.version = dv.version
+			WHERE d.id = ? AND (d.expires_at IS NULL OR d.expires_at >= ?)
+			ORDER BY df.position, df.path`,
+		)
+		.bind(id, id, now)
+		.all<
+			ResolvedDocument & {
+				next_version: number;
+				file_path: string | null;
+				file_filename: string | null;
+				file_kind: DocumentKind | null;
+				file_media_type: string | null;
+				file_r2_key: string | null;
+				file_position: number | null;
+			}
+		>();
+	const first = results[0];
+	if (!first) return null;
+	const files: DocumentFileRow[] = [];
+	for (const row of results) {
+		if (row.file_path === null) continue;
+		files.push({
+			document_id: id,
+			version: row.version,
+			path: row.file_path,
+			filename: row.file_filename,
+			kind: row.file_kind!,
+			media_type: row.file_media_type!,
+			r2_key: row.file_r2_key!,
+			position: row.file_position!,
+		});
+	}
+	return { doc: first, files, next_version: first.next_version };
+}
+
 /**
  * Read one version of a live document for the owner history path.
  * null for an unknown version, exactly like an unknown document, so both fold
