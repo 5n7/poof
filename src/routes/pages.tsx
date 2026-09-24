@@ -131,7 +131,8 @@ a.gh svg { width: 16px; height: 16px; display: block; }
 .drop-title { font-size: 15px; font-weight: 650; }
 .drop-sub { font-size: 12px; color: #8b8b94; margin-top: 6px; }
 
-.toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 90; background: #1a1a1e; color: #fff; font-size: 12.5px; padding: 8px 16px; border-radius: 8px; box-shadow: 0 6px 20px rgba(20,20,40,.25); animation: popIn .15s ease; white-space: nowrap; }`;
+.toast { position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%); z-index: 90; background: #1a1a1e; color: #fff; font-size: 12.5px; padding: 8px 16px; border-radius: 8px; box-shadow: 0 6px 20px rgba(20,20,40,.25); animation: popIn .15s ease; white-space: nowrap; }
+.upload-status { bottom: 72px; }`;
 
 const GUIDE_CSS = `
 .guide { max-width: 640px; width: 100%; margin: 0 auto; padding: 40px 24px 56px; }
@@ -333,7 +334,14 @@ async function uploadFiles(files, named) {
 	uploading = true;
 	const controls = document.querySelectorAll("[data-upload], [data-folder]");
 	controls.forEach(function (control) { control.disabled = true; });
-	toast("Uploading " + files.length + (files.length === 1 ? " file…" : " files…"));
+	const status = el("div", "toast upload-status", "Uploading " + files.length + (files.length === 1 ? " file…" : " files…"));
+	status.setAttribute("role", "status");
+	const elapsed = el("span", "", "");
+	elapsed.setAttribute("aria-hidden", "true");
+	status.append(elapsed);
+	document.body.append(status);
+	const started = performance.now();
+	const timer = setInterval(function () { elapsed.textContent = " " + ((performance.now() - started) / 1000).toFixed(0) + "s"; }, 1000);
 	try {
 		const budget = { count: 0, bytes: 0 };
 		files.forEach(function (entry) { countFile(entry.file || entry, budget); });
@@ -355,6 +363,8 @@ async function uploadFiles(files, named) {
 	} catch (error) {
 		toast(error.message || "Upload failed. Try again.");
 	} finally {
+		clearInterval(timer);
+		status.remove();
 		uploading = false;
 		controls.forEach(function (control) { control.disabled = false; });
 	}

@@ -31,6 +31,7 @@ import {
 	oauthStatusMessage,
 	replacementRevocationWarning,
 } from "./messages";
+import { uploadProgress } from "./progress";
 
 const TTL_OPTIONS = ["1h", "1d", "1w"];
 
@@ -306,33 +307,43 @@ const push = defineCommand({
 	},
 	run: ({ args }) =>
 		attempt(async () => {
-			const timing = uploadTiming();
-			const started = performance.now();
-			const upload = await collectFiles(args._, args.root);
-			const filesMs = performance.now() - started;
-			const first = upload.files[0];
-			const title =
-				args.title ??
-				(/\.(md|markdown)$/i.test(first.filename)
-					? (firstMarkdownHeading(new TextDecoder().decode(first.content)) ?? first.filename)
-					: first.filename);
+			let progress = uploadProgress("Reading files");
+			try {
+				const timing = uploadTiming();
+				const started = performance.now();
+				const upload = await collectFiles(args._, args.root);
+				const filesMs = performance.now() - started;
+				progress.update("Preparing upload");
+				const first = upload.files[0];
+				const title =
+					args.title ??
+					(/\.(md|markdown)$/i.test(first.filename)
+						? (firstMarkdownHeading(new TextDecoder().decode(first.content)) ?? first.filename)
+						: first.filename);
 
-			const cfg = loadConfig();
+				const cfg = loadConfig();
 
-			const form = new FormData();
-			appendFiles(form, upload);
-			form.append("title", title);
-			if (args.ttl) form.append("ttl", args.ttl);
-			const prepareMs = performance.now() - started - filesMs;
+				const form = new FormData();
+				appendFiles(form, upload);
+				form.append("title", title);
+				if (args.ttl) form.append("ttl", args.ttl);
+				const prepareMs = performance.now() - started - filesMs;
 
-			const doc = await api<DocumentRow>(cfg, "POST", "/api/documents", form, defaultApiRuntime, timing);
-			printUploadTiming("push", timing, started, filesMs, prepareMs);
-			process.stdout.write(`${cfg.url}/d/${doc.id}\n`);
+				progress.update("Uploading and saving");
+				const doc = await api<DocumentRow>(cfg, "POST", "/api/documents", form, defaultApiRuntime, timing);
+				progress.stop();
+				printUploadTiming("push", timing, started, filesMs, prepareMs);
+				process.stdout.write(`${cfg.url}/d/${doc.id}\n`);
 
-			if (args.share) {
-				const body = args["share-ttl"] ? { ttl: args["share-ttl"] } : {};
-				const share = await api<ShareResult>(cfg, "POST", p`/api/documents/${doc.id}/shares`, body);
-				process.stdout.write(`${cfg.url}/v/${share.token}\n`);
+				if (args.share) {
+					const body = args["share-ttl"] ? { ttl: args["share-ttl"] } : {};
+					progress = uploadProgress("Creating share link");
+					const share = await api<ShareResult>(cfg, "POST", p`/api/documents/${doc.id}/shares`, body);
+					progress.stop();
+					process.stdout.write(`${cfg.url}/v/${share.token}\n`);
+				}
+			} finally {
+				progress.stop();
 			}
 		}),
 });
@@ -526,34 +537,42 @@ const update = defineCommand({
 	},
 	run: ({ args, rawArgs }) =>
 		attempt(async () => {
-			const timing = uploadTiming();
-			const started = performance.now();
-			const removed = deletionPaths(rawArgs);
-			const upload = await collectFiles(args._.slice(1), args.root);
-			const filesMs = performance.now() - started;
-			if (!upload.files.length && !removed.length) throw new Error("provide files to upload or --delete paths");
+			const progress = uploadProgress("Reading files");
+			try {
+				const timing = uploadTiming();
+				const started = performance.now();
+				const removed = deletionPaths(rawArgs);
+				const upload = await collectFiles(args._.slice(1), args.root);
+				const filesMs = performance.now() - started;
+				if (!upload.files.length && !removed.length) throw new Error("provide files to upload or --delete paths");
+				progress.update("Preparing upload");
 
-			const cfg = loadConfig();
+				const cfg = loadConfig();
 
-			const form = new FormData();
-			appendFiles(form, upload);
-			for (const path of removed) form.append("delete", path);
-			// Do not infer a title during updates. Omitting the field keeps the current
-			// title. The user must pass --title to rename the document.
-			if (args.title) form.append("title", args.title);
-			const prepareMs = performance.now() - started - filesMs;
+				const form = new FormData();
+				appendFiles(form, upload);
+				for (const path of removed) form.append("delete", path);
+				// Do not infer a title during updates. Omitting the field keeps the current
+				// title. The user must pass --title to rename the document.
+				if (args.title) form.append("title", args.title);
+				const prepareMs = performance.now() - started - filesMs;
 
-			const result = await api<UpdateResult>(
-				cfg,
-				"POST",
-				p`/api/documents/${args["doc-id"]}/versions`,
-				form,
-				defaultApiRuntime,
-				timing,
-			);
-			printUploadTiming("update", timing, started, filesMs, prepareMs);
-			process.stdout.write(`${cfg.url}/d/${result.id}\n`);
-			process.stdout.write(`v${result.version}\n`);
+				progress.update("Uploading and saving");
+				const result = await api<UpdateResult>(
+					cfg,
+					"POST",
+					p`/api/documents/${args["doc-id"]}/versions`,
+					form,
+					defaultApiRuntime,
+					timing,
+				);
+				progress.stop();
+				printUploadTiming("update", timing, started, filesMs, prepareMs);
+				process.stdout.write(`${cfg.url}/d/${result.id}\n`);
+				process.stdout.write(`v${result.version}\n`);
+			} finally {
+				progress.stop();
+			}
 		}),
 });
 
