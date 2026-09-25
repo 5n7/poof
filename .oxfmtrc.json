@@ -13,13 +13,14 @@
 	],
 	"sortImports": {
 		"groups": [
+			["side_effect", "side_effect_style"],
 			["type-builtin", "type-external", "value-builtin", "value-external"],
 			["type-internal", "value-internal"],
 			["type-parent", "type-sibling", "type-index", "value-parent", "value-sibling", "value-index"],
-			"side_effect_style",
 			"unknown"
 		],
-		"internalPattern": []
+		"internalPattern": [],
+		"sortSideEffects": false
 	},
 	"sortPackageJson": false
 }
