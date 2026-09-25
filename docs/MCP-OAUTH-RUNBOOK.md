@@ -274,9 +274,11 @@ allowlisted.
 Work through these checks in order after every Access or Worker change.
 
 1. The endpoint is not open. From a machine with no session:
+
    ```sh
    curl -si https://mcp.poof.5n7.me/mcp -X POST -d '{}' | head -1
    ```
+
    Expect `401` with a `WWW-Authenticate: Bearer` header carrying a
    `resource_metadata` pointer. A `200` means Access is not in front of the
    hostname. A `503` means `ACCESS_MCP_AUD` is still blank or equal to
@@ -284,9 +286,11 @@ Work through these checks in order after every Access or Worker change.
 
 2. Discovery resolves. With Managed OAuth on, Cloudflare serves the
    authorization server metadata on the application domain:
+
    ```sh
    curl -s https://mcp.poof.5n7.me/.well-known/oauth-authorization-server
    ```
+
    Check that `code_challenge_methods_supported` contains `S256` and that a
    `registration_endpoint` is advertised. OpenAI's clients require the first and
    use the second for dynamic registration.
@@ -304,15 +308,18 @@ Work through these checks in order after every Access or Worker change.
 
 4. A service token cannot connect. Create a throwaway service token, add it
    to the _owner_ application only, and send it at the MCP hostname:
+
    ```sh
    curl -si https://mcp.poof.5n7.me/mcp -X POST \
      -H "CF-Access-Client-Id: $ID" -H "CF-Access-Client-Secret: $SECRET" -d '{}' | head -1
    ```
+
    Expect a refusal, not a tool list. Delete the throwaway token afterwards.
 
 5. The owner surface did not move. The library, interactive CLI, and CI all use
    `poof.5n7.me`. Test the CLI's owner OAuth grant with `poof status`, then test
    the CI service token directly:
+
    ```sh
    poof status
    curl -si https://poof.5n7.me/mcp -X POST \
@@ -320,6 +327,7 @@ Work through these checks in order after every Access or Worker change.
      -H "CF-Access-Client-Secret: $POOF_ACCESS_CLIENT_SECRET" \
      -d '{}' | head -1   # expect 404
    ```
+
    The service-token headers are what make this check mean anything. Without
    them the owner Access application answers first, and the result says nothing
    about the Worker. With them the request crosses the edge and reaches the
@@ -328,6 +336,7 @@ Work through these checks in order after every Access or Worker change.
 
 6. The public paths are where they were. A live share link still works on
    the owner host and is absent from the MCP host:
+
    ```sh
    curl -si https://poof.5n7.me/v/$TOKEN     | head -1   # expect 200
    curl -si https://mcp.poof.5n7.me/v/$TOKEN | head -1   # expect 404
@@ -376,8 +385,8 @@ propagate, so confirm the 503 before touching the Access application.
    ```
 
    `MCP_APP_ID` is the application ID recorded in step 4, and `CF_API_TOKEN`
-   needs `Access: Apps and Policies Revoke` or `Access: Apps and Policies
-   Write`.
+   needs `Access: Apps and Policies Revoke` or
+   `Access: Apps and Policies Write`.
 
    Then remove the connector in ChatGPT.
 

@@ -20,7 +20,7 @@ View AI-generated Markdown and HTML design documents or memos in a browser. Most
 - **In-place document update**: merge uploaded paths and explicitly delete files while keeping the same `/d/{id}` and the same already-issued share links
 - **Version history**: past versions are retained, viewable, and restorable by the owner
 - JavaScript execution inside documents (interactive charts, tabs, widgets)
-- **Mermaid rendering** in Markdown code fences (`` ```mermaid ``)
+- **Mermaid rendering** in Markdown code fences marked `mermaid`
 - **CLI** for interactive or headless upload/share (`poof push design.md --share`)
 - **MCP server** hosted by the Worker, exposing the same operations as tools to AI agents
 

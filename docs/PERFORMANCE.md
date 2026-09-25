@@ -132,7 +132,7 @@ Re-run validation from the repository root:
 bun run test
 bun run typecheck
 bun run lint
-bunx dprint check --incremental=false
+bun run fmt:check
 git diff --check
 bunx wrangler deploy --dry-run
 ```

@@ -1,0 +1,25 @@
+{
+	"$schema": "./node_modules/oxfmt/configuration_schema.json",
+	"printWidth": 120,
+	"useTabs": true,
+	"ignorePatterns": ["bun.lock", "worker-configuration.d.ts"],
+	"overrides": [
+		{
+			"files": ["**/*.md", "**/*.toml", "**/*.yaml", "**/*.yml"],
+			"options": {
+				"useTabs": false
+			}
+		}
+	],
+	"sortImports": {
+		"groups": [
+			["type-builtin", "type-external", "value-builtin", "value-external"],
+			["type-internal", "value-internal"],
+			["type-parent", "type-sibling", "type-index", "value-parent", "value-sibling", "value-index"],
+			"side_effect_style",
+			"unknown"
+		],
+		"internalPattern": []
+	},
+	"sortPackageJson": false
+}
