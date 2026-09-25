@@ -89,15 +89,16 @@ type Surface = "mcp" | "owner" | "unconfigured" | "unknown";
  * away in both.
  */
 function surfaceFor(env: { MCP_HOST?: string; OWNER_HOST?: string }, url: URL): Surface {
-	const mcpIdentity = hostIdentity(env.MCP_HOST);
-	const ownerIdentity = hostIdentity(env.OWNER_HOST);
-	if (mcpIdentity === null || ownerIdentity === null || mcpIdentity === ownerIdentity) return "unconfigured";
+  const mcpIdentity = hostIdentity(env.MCP_HOST);
+  const ownerIdentity = hostIdentity(env.OWNER_HOST);
+  if (mcpIdentity === null || ownerIdentity === null || mcpIdentity === ownerIdentity)
+    return "unconfigured";
 
-	const requested = canonicalHost(url.host, url.protocol);
-	if (requested === null) return "unknown";
-	if (requested === canonicalHost(env.MCP_HOST, url.protocol)) return "mcp";
-	if (requested === canonicalHost(env.OWNER_HOST, url.protocol)) return "owner";
-	return "unknown";
+  const requested = canonicalHost(url.host, url.protocol);
+  if (requested === null) return "unknown";
+  if (requested === canonicalHost(env.MCP_HOST, url.protocol)) return "mcp";
+  if (requested === canonicalHost(env.OWNER_HOST, url.protocol)) return "owner";
+  return "unknown";
 }
 
 /**
@@ -112,19 +113,19 @@ function surfaceFor(env: { MCP_HOST?: string; OWNER_HOST?: string }, url: URL): 
  * type error rather than a hostname that silently falls through to the library.
  */
 function dispatch(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
-	switch (surfaceFor(env, new URL(request.url))) {
-		case "mcp":
-			return mcpApp.fetch(request, env, ctx);
-		case "owner":
-			return ownerApp.fetch(request, env, ctx);
-		case "unconfigured":
-			return notConfigured();
-		case "unknown":
-			return unknownHost();
-	}
+  switch (surfaceFor(env, new URL(request.url))) {
+    case "mcp":
+      return mcpApp.fetch(request, env, ctx);
+    case "owner":
+      return ownerApp.fetch(request, env, ctx);
+    case "unconfigured":
+      return notConfigured();
+    case "unknown":
+      return unknownHost();
+  }
 }
 
 export default {
-	fetch: dispatch,
-	scheduled: (_event, env, ctx) => ctx.waitUntil(runCleanup(env)),
+  fetch: dispatch,
+  scheduled: (_event, env, ctx) => ctx.waitUntil(runCleanup(env)),
 } satisfies ExportedHandler<Env>;

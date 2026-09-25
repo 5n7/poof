@@ -8,7 +8,7 @@
  * the fail-closed 503 belongs. Missing and blank collapse to the same "".
  */
 export function configured(value: string | undefined): string {
-	return typeof value === "string" ? value.trim() : "";
+  return typeof value === "string" ? value.trim() : "";
 }
 
 /**
@@ -28,28 +28,28 @@ const AUTHORITY_DELIMITERS = /[\\/?#]/;
 const IDENTITY_PROTOCOL = "https:";
 
 interface Authority {
-	/** Lowercased, with the trailing DNS root label removed. */
-	hostname: string;
-	/** Empty when the port is the default for the protocol it was parsed with. */
-	port: string;
+  /** Lowercased, with the trailing DNS root label removed. */
+  hostname: string;
+  /** Empty when the port is the default for the protocol it was parsed with. */
+  port: string;
 }
 
 /** Parse a bare authority, or `null` when the value is not one. */
 function parseAuthority(authority: string | undefined, protocol: string): Authority | null {
-	const raw = configured(authority);
-	if (raw === "" || AUTHORITY_DELIMITERS.test(raw)) return null;
+  const raw = configured(authority);
+  if (raw === "" || AUTHORITY_DELIMITERS.test(raw)) return null;
 
-	let url: URL;
-	try {
-		url = new URL(`${protocol}//${raw}`);
-	} catch {
-		return null;
-	}
-	// Credentials need no delimiter to appear, so they are checked separately.
-	if (url.username !== "" || url.password !== "") return null;
+  let url: URL;
+  try {
+    url = new URL(`${protocol}//${raw}`);
+  } catch {
+    return null;
+  }
+  // Credentials need no delimiter to appear, so they are checked separately.
+  if (url.username !== "" || url.password !== "") return null;
 
-	const hostname = url.hostname.endsWith(".") ? url.hostname.slice(0, -1) : url.hostname;
-	return hostname === "" ? null : { hostname, port: url.port };
+  const hostname = url.hostname.endsWith(".") ? url.hostname.slice(0, -1) : url.hostname;
+  return hostname === "" ? null : { hostname, port: url.port };
 }
 
 /**
@@ -64,7 +64,7 @@ function parseAuthority(authority: string | undefined, protocol: string): Author
  * be two isolated surfaces on either scheme, so the port has no say here.
  */
 export function hostIdentity(authority: string | undefined): string | null {
-	return parseAuthority(authority, IDENTITY_PROTOCOL)?.hostname ?? null;
+  return parseAuthority(authority, IDENTITY_PROTOCOL)?.hostname ?? null;
 }
 
 /**
@@ -77,9 +77,9 @@ export function hostIdentity(authority: string | undefined): string | null {
  * surfaces from one process.
  */
 export function canonicalHost(authority: string | undefined, protocol: string): string | null {
-	const parsed = parseAuthority(authority, protocol);
-	if (parsed === null) return null;
-	return parsed.port === "" ? parsed.hostname : `${parsed.hostname}:${parsed.port}`;
+  const parsed = parseAuthority(authority, protocol);
+  if (parsed === null) return null;
+  return parsed.port === "" ? parsed.hostname : `${parsed.hostname}:${parsed.port}`;
 }
 
 /**
@@ -88,10 +88,10 @@ export function canonicalHost(authority: string | undefined, protocol: string): 
  * hostname responsible for choosing a protocol.
  */
 export function originForHost(requestUrl: URL, authority: string | undefined): string | null {
-	const host = canonicalHost(authority, requestUrl.protocol);
-	if (host === null) return null;
+  const host = canonicalHost(authority, requestUrl.protocol);
+  if (host === null) return null;
 
-	const url = new URL(requestUrl);
-	url.host = host;
-	return url.origin;
+  const url = new URL(requestUrl);
+  url.host = host;
+  return url.origin;
 }

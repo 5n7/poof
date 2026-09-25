@@ -2,7 +2,11 @@ import MarkdownIt from "markdown-it";
 
 /** Minimal HTML-escape for text placed inside an element. */
 export function escapeHtml(s: string): string {
-	return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 const md = new MarkdownIt({ html: true, linkify: true });
@@ -11,17 +15,18 @@ const md = new MarkdownIt({ html: true, linkify: true });
 // The sandbox renders them in the browser. Other fences use the default
 // renderer. Poof does not sanitize HTML (SPEC §6.4).
 const defaultFence =
-	md.renderer.rules.fence ?? ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
+  md.renderer.rules.fence ??
+  ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
 md.renderer.rules.fence = (tokens, idx, options, env, self) => {
-	const token = tokens[idx];
-	if (token.info.trim() === "mermaid") {
-		return `<pre class="mermaid">${escapeHtml(token.content)}</pre>\n`;
-	}
-	return defaultFence(tokens, idx, options, env, self);
+  const token = tokens[idx];
+  if (token.info.trim() === "mermaid") {
+    return `<pre class="mermaid">${escapeHtml(token.content)}</pre>\n`;
+  }
+  return defaultFence(tokens, idx, options, env, self);
 };
 
 export function renderMarkdown(source: string): string {
-	return md.render(source);
+  return md.render(source);
 }
 
 // Pin CDN assets with SRI. Mermaid's UMD build is one file, while its ESM entry
@@ -31,7 +36,8 @@ const MERMAID_JS = "https://cdn.jsdelivr.net/npm/mermaid@11.16.0/dist/mermaid.mi
 const MERMAID_SRI = "sha384-T/0lMUdJpd2S1ZHtRiofG3htU3xPCrFVeAQ1UUE2TJwlEJSV5NUwn30kP28n238E";
 const HLJS_JS = "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.11.1/highlight.min.js";
 const HLJS_SRI = "sha384-RH2xi4eIQ/gjtbs9fUXM68sLSi99C7ZWBRX1vDrVv6GQXRibxXLbwO2NGZB74MbU";
-const HLJS_CSS = "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.11.1/styles/github.min.css";
+const HLJS_CSS =
+  "https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.11.1/styles/github.min.css";
 const HLJS_CSS_SRI = "sha384-eFTL69TLRZTkNfYZOLM+G04821K1qZao/4QLJbet1pP4tcF+fdXq/9CdqAbWRl/L";
 
 // ~2KB GitHub-flavored markdown CSS (minimal subset).
@@ -117,7 +123,7 @@ const LOADER = `
 
 /** Wrap rendered markdown body HTML in a full standalone viewer document. */
 export function wrapViewerHtml(title: string, bodyHtml: string): string {
-	return `<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">

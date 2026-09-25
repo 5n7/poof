@@ -10,21 +10,21 @@ const keySets = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
 /** Reuse public keys across requests, never assertions or authorization results. */
 function accessKeys(issuer: string): ReturnType<typeof createRemoteJWKSet> {
-	const url = `${issuer}/cdn-cgi/access/certs`;
-	let keys = keySets.get(url);
-	if (!keys) {
-		keys = createRemoteJWKSet(new URL(url), {
-			cacheMaxAge: 10 * 60 * 1000,
-			cooldownDuration: 30 * 1000,
-			timeoutDuration: 5 * 1000,
-		});
-		if (keySets.size >= MAX_KEY_SETS) {
-			const oldest = keySets.keys().next().value;
-			if (oldest !== undefined) keySets.delete(oldest);
-		}
-		keySets.set(url, keys);
-	}
-	return keys;
+  const url = `${issuer}/cdn-cgi/access/certs`;
+  let keys = keySets.get(url);
+  if (!keys) {
+    keys = createRemoteJWKSet(new URL(url), {
+      cacheMaxAge: 10 * 60 * 1000,
+      cooldownDuration: 30 * 1000,
+      timeoutDuration: 5 * 1000,
+    });
+    if (keySets.size >= MAX_KEY_SETS) {
+      const oldest = keySets.keys().next().value;
+      if (oldest !== undefined) keySets.delete(oldest);
+    }
+    keySets.set(url, keys);
+  }
+  return keys;
 }
 
 /**
@@ -36,8 +36,8 @@ type Audience = "mcp" | "owner";
 
 /** The resolved Access settings for one route. */
 interface AccessConfig {
-	aud: string;
-	teamDomain: string;
+  aud: string;
+  teamDomain: string;
 }
 
 /**
@@ -55,15 +55,15 @@ interface AccessConfig {
  * is no half of that to keep serving.
  */
 function accessConfig(vars: Env, audience: Audience): AccessConfig | null {
-	const teamDomain = configured(vars.ACCESS_TEAM_DOMAIN);
-	if (teamDomain === "") return null;
+  const teamDomain = configured(vars.ACCESS_TEAM_DOMAIN);
+  if (teamDomain === "") return null;
 
-	const ownerAud = configured(vars.ACCESS_AUD);
-	const mcpAud = configured(vars.ACCESS_MCP_AUD);
-	if (ownerAud === mcpAud) return null;
+  const ownerAud = configured(vars.ACCESS_AUD);
+  const mcpAud = configured(vars.ACCESS_MCP_AUD);
+  if (ownerAud === mcpAud) return null;
 
-	const aud = audience === "mcp" ? mcpAud : ownerAud;
-	return aud === "" ? null : { aud, teamDomain };
+  const aud = audience === "mcp" ? mcpAud : ownerAud;
+  return aud === "" ? null : { aud, teamDomain };
 }
 
 /**
@@ -87,16 +87,16 @@ function accessConfig(vars: Env, audience: Audience): AccessConfig | null {
  * See https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/application-token/
  */
 function hasCommonClaims(payload: JWTPayload): boolean {
-	return (
-		payload.type === "app" &&
-		typeof payload.exp === "number" &&
-		Number.isFinite(payload.exp) &&
-		typeof payload.iat === "number" &&
-		Number.isFinite(payload.iat) &&
-		payload.iat <= nowSeconds() &&
-		(payload.nbf === undefined || Number.isFinite(payload.nbf)) &&
-		typeof payload.sub === "string"
-	);
+  return (
+    payload.type === "app" &&
+    typeof payload.exp === "number" &&
+    Number.isFinite(payload.exp) &&
+    typeof payload.iat === "number" &&
+    Number.isFinite(payload.iat) &&
+    payload.iat <= nowSeconds() &&
+    (payload.nbf === undefined || Number.isFinite(payload.nbf)) &&
+    typeof payload.sub === "string"
+  );
 }
 
 /**
@@ -114,13 +114,13 @@ function hasCommonClaims(payload: JWTPayload): boolean {
  * login to be refused if Cloudflare ever omits one.
  */
 function isIdentityAssertion(payload: JWTPayload): boolean {
-	return (
-		payload.common_name === undefined &&
-		typeof payload.sub === "string" &&
-		payload.sub !== "" &&
-		typeof payload.email === "string" &&
-		payload.email !== ""
-	);
+  return (
+    payload.common_name === undefined &&
+    typeof payload.sub === "string" &&
+    payload.sub !== "" &&
+    typeof payload.email === "string" &&
+    payload.email !== ""
+  );
 }
 
 /**
@@ -152,33 +152,34 @@ function isIdentityAssertion(payload: JWTPayload): boolean {
  * production: with it on, an unauthenticated request is the owner.
  */
 export function accessAuth(audience: Audience): MiddlewareHandler<{ Bindings: Env }> {
-	return async (c: Context<{ Bindings: Env }>, next: Next) => {
-		if (c.env.DEV_DISABLE_ACCESS === "1") return next();
+  return async (c: Context<{ Bindings: Env }>, next: Next) => {
+    if (c.env.DEV_DISABLE_ACCESS === "1") return next();
 
-		const config = accessConfig(c.env, audience);
-		if (!config) return notConfigured();
+    const config = accessConfig(c.env, audience);
+    if (!config) return notConfigured();
 
-		const token = c.req.header("Cf-Access-Jwt-Assertion");
-		if (!token) return c.text("Forbidden", 403);
+    const token = c.req.header("Cf-Access-Jwt-Assertion");
+    if (!token) return c.text("Forbidden", 403);
 
-		let payload: JWTPayload;
-		try {
-			const issuer = `https://${config.teamDomain}`;
-			({ payload } = await jwtVerify(
-				token,
-				(header, jwt) => {
-					if (typeof header.kid !== "string" || header.kid === "") throw new Error("Missing JWT key ID");
-					return accessKeys(issuer)(header, jwt);
-				},
-				{ algorithms: ["RS256"], audience: config.aud, issuer },
-			));
-		} catch {
-			return c.text("Forbidden", 403);
-		}
+    let payload: JWTPayload;
+    try {
+      const issuer = `https://${config.teamDomain}`;
+      ({ payload } = await jwtVerify(
+        token,
+        (header, jwt) => {
+          if (typeof header.kid !== "string" || header.kid === "")
+            throw new Error("Missing JWT key ID");
+          return accessKeys(issuer)(header, jwt);
+        },
+        { algorithms: ["RS256"], audience: config.aud, issuer },
+      ));
+    } catch {
+      return c.text("Forbidden", 403);
+    }
 
-		if (!hasCommonClaims(payload)) return c.text("Forbidden", 403);
-		if (audience === "mcp" && !isIdentityAssertion(payload)) return c.text("Forbidden", 403);
+    if (!hasCommonClaims(payload)) return c.text("Forbidden", 403);
+    if (audience === "mcp" && !isIdentityAssertion(payload)) return c.text("Forbidden", 403);
 
-		return next();
-	};
+    return next();
+  };
 }

@@ -19,8 +19,8 @@ const KID = "poof-test-key";
 const ENCODER = new TextEncoder();
 
 interface KeyPair {
-	privateJwk: HonoJsonWebKey;
-	publicJwk: HonoJsonWebKey;
+  privateJwk: HonoJsonWebKey;
+  publicJwk: HonoJsonWebKey;
 }
 
 /**
@@ -28,20 +28,25 @@ interface KeyPair {
  * signs with the key ID required by the Access middleware.
  */
 async function keyPair(): Promise<KeyPair> {
-	// Both `generateKey` and `exportKey` are typed as unions over their
-	// overloads. RSA always yields a pair, and "jwk" always yields the object.
-	const pair = (await crypto.subtle.generateKey(
-		{ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
-		true,
-		["sign", "verify"],
-	)) as CryptoKeyPair;
-	const asJwk = async (key: CryptoKey): Promise<HonoJsonWebKey> => ({
-		...((await crypto.subtle.exportKey("jwk", key)) as JsonWebKey),
-		alg: "RS256",
-		kid: KID,
-	});
+  // Both `generateKey` and `exportKey` are typed as unions over their
+  // overloads. RSA always yields a pair, and "jwk" always yields the object.
+  const pair = (await crypto.subtle.generateKey(
+    {
+      name: "RSASSA-PKCS1-v1_5",
+      modulusLength: 2048,
+      publicExponent: new Uint8Array([1, 0, 1]),
+      hash: "SHA-256",
+    },
+    true,
+    ["sign", "verify"],
+  )) as CryptoKeyPair;
+  const asJwk = async (key: CryptoKey): Promise<HonoJsonWebKey> => ({
+    ...((await crypto.subtle.exportKey("jwk", key)) as JsonWebKey),
+    alg: "RS256",
+    kid: KID,
+  });
 
-	return { privateJwk: await asJwk(pair.privateKey), publicJwk: await asJwk(pair.publicKey) };
+  return { privateJwk: await asJwk(pair.privateKey), publicJwk: await asJwk(pair.publicKey) };
 }
 
 /**
@@ -53,7 +58,7 @@ async function keyPair(): Promise<KeyPair> {
  * body has to carry it.
  */
 function signAs(claims: Record<string, unknown>, key: HonoJsonWebKey): Promise<string> {
-	return sign(claims as JWTPayload, key);
+  return sign(claims as JWTPayload, key);
 }
 
 // The team's real key, and a second one with the same `kid` used to forge a
@@ -62,7 +67,7 @@ let team: KeyPair;
 let forger: KeyPair;
 
 beforeAll(async () => {
-	[team, forger] = await Promise.all([keyPair(), keyPair()]);
+  [team, forger] = await Promise.all([keyPair(), keyPair()]);
 });
 
 /**
@@ -77,33 +82,33 @@ beforeAll(async () => {
  * leaves no way to write a new test that forgets to.
  */
 beforeEach(() => {
-	const real = globalThis.fetch;
-	vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
-		const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-		if (url === CERTS_URL) return Promise.resolve(Response.json({ keys: [team.publicJwk] }));
-		return real(input as RequestInfo, init);
-	});
+  const real = globalThis.fetch;
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url === CERTS_URL) return Promise.resolve(Response.json({ keys: [team.publicJwk] }));
+    return real(input as RequestInfo, init);
+  });
 });
 
 afterEach(() => {
-	vi.unstubAllGlobals();
-	vi.useRealTimers();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 /** The identity payload Cloudflare documents for an interactive login. */
 function identityClaims(aud: string, now: number): Record<string, unknown> {
-	return {
-		aud: [aud],
-		country: "US",
-		email: "owner@example.com",
-		exp: now + 600,
-		iat: now,
-		identity_nonce: "6ei69kawdKzMIAPF",
-		iss: ISS,
-		nbf: now,
-		sub: "7335d417-61da-459d-899c-0a01c76a2f94",
-		type: "app",
-	};
+  return {
+    aud: [aud],
+    country: "US",
+    email: "owner@example.com",
+    exp: now + 600,
+    iat: now,
+    identity_nonce: "6ei69kawdKzMIAPF",
+    iss: ISS,
+    nbf: now,
+    sub: "7335d417-61da-459d-899c-0a01c76a2f94",
+    type: "app",
+  };
 }
 
 /**
@@ -111,21 +116,21 @@ function identityClaims(aud: string, now: number): Record<string, unknown> {
  * `email`, and an empty `sub`. Owner routes accept it; MCP rejects it.
  */
 function serviceClaims(aud: string, now: number): Record<string, unknown> {
-	return {
-		aud: [aud],
-		common_name: "e367826f93b8d71185e03fe518aff3b4.access",
-		exp: now + 600,
-		iat: now,
-		iss: ISS,
-		sub: "",
-		type: "app",
-	};
+  return {
+    aud: [aud],
+    common_name: "e367826f93b8d71185e03fe518aff3b4.access",
+    exp: now + 600,
+    iat: now,
+    iss: ISS,
+    sub: "",
+    type: "app",
+  };
 }
 
 /** Encode a JWT whose signature is never reached, for header-only rejections. */
 function tokenWithHeader(header: object, claims: object): string {
-	const part = (o: object) => b64url(ENCODER.encode(JSON.stringify(o)));
-	return `${part(header)}.${part(claims)}.c2lnbmF0dXJl`;
+  const part = (o: object) => b64url(ENCODER.encode(JSON.stringify(o)));
+  return `${part(header)}.${part(claims)}.c2lnbmF0dXJl`;
 }
 
 /**
@@ -133,269 +138,296 @@ function tokenWithHeader(header: object, claims: object): string {
  * `overrides` applied on top of the shared bindings.
  */
 async function fetchWithToken(
-	url: string,
-	token: string | null,
-	init: RequestInit = {},
-	overrides: Partial<Record<keyof Env, string | undefined>> = {},
+  url: string,
+  token: string | null,
+  init: RequestInit = {},
+  overrides: Partial<Record<keyof Env, string | undefined>> = {},
 ): Promise<Response> {
-	const headers = new Headers(init.headers);
-	if (token !== null) headers.set("Cf-Access-Jwt-Assertion", token);
+  const headers = new Headers(init.headers);
+  if (token !== null) headers.set("Cf-Access-Jwt-Assertion", token);
 
-	return fetchWorker(url, { DEV_DISABLE_ACCESS: "", ...overrides }, { ...init, headers });
+  return fetchWorker(url, { DEV_DISABLE_ACCESS: "", ...overrides }, { ...init, headers });
 }
 
 /** Reach the owner surface (`GET /api/documents`) with `claims` signed by the team key. */
 async function ownerRequest(claims: Record<string, unknown>): Promise<Response> {
-	return fetchWithToken(`${OWNER_BASE}/api/documents`, await signAs(claims, team.privateJwk));
+  return fetchWithToken(`${OWNER_BASE}/api/documents`, await signAs(claims, team.privateJwk));
 }
 
 /** Reach the MCP surface (`POST /mcp`) with `claims` signed by the team key. */
 async function mcpRequest(claims: Record<string, unknown>): Promise<Response> {
-	return fetchWithToken(`${MCP_BASE}/mcp`, await signAs(claims, team.privateJwk), MCP_CALL);
+  return fetchWithToken(`${MCP_BASE}/mcp`, await signAs(claims, team.privateJwk), MCP_CALL);
 }
 
 /** Give cache tests independent issuers without exposing a production reset hook. */
 function cachedTeam(publicKey = team.publicJwk) {
-	const domain = `keys-${crypto.randomUUID()}.example`;
-	const issuer = `https://${domain}`;
-	const real = globalThis.fetch;
-	const requests = vi.fn(async () => Response.json({ keys: [publicKey] }));
-	vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
-		const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-		return url === `${issuer}/cdn-cgi/access/certs` ? requests() : real(input as RequestInfo, init);
-	});
-	return {
-		requests,
-		async request(claims: Record<string, unknown> = {}, key = team.privateJwk) {
-			const token = await signAs({ ...identityClaims(OWNER_AUD, nowSeconds()), iss: issuer, ...claims }, key);
-			return fetchWithToken(`${OWNER_BASE}/api/documents`, token, {}, { ACCESS_TEAM_DOMAIN: domain });
-		},
-	};
+  const domain = `keys-${crypto.randomUUID()}.example`;
+  const issuer = `https://${domain}`;
+  const real = globalThis.fetch;
+  const requests = vi.fn(async () => Response.json({ keys: [publicKey] }));
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    return url === `${issuer}/cdn-cgi/access/certs` ? requests() : real(input as RequestInfo, init);
+  });
+  return {
+    requests,
+    async request(claims: Record<string, unknown> = {}, key = team.privateJwk) {
+      const token = await signAs(
+        { ...identityClaims(OWNER_AUD, nowSeconds()), iss: issuer, ...claims },
+        key,
+      );
+      return fetchWithToken(
+        `${OWNER_BASE}/api/documents`,
+        token,
+        {},
+        { ACCESS_TEAM_DOMAIN: domain },
+      );
+    },
+  };
 }
 
 describe("Access public key caching", () => {
-	it("fetches keys once for repeated requests and still verifies each assertion", async () => {
-		const access = cachedTeam();
-		for (let i = 0; i < 3; i++) expect((await access.request()).status).toBe(200);
-		expect((await access.request({}, forger.privateJwk)).status).toBe(403);
-		expect((await access.request({ aud: [MCP_AUD] })).status).toBe(403);
-		expect((await access.request({ exp: nowSeconds() - 1 })).status).toBe(403);
-		expect(access.requests).toHaveBeenCalledTimes(1);
-	});
+  it("fetches keys once for repeated requests and still verifies each assertion", async () => {
+    const access = cachedTeam();
+    for (let i = 0; i < 3; i++) expect((await access.request()).status).toBe(200);
+    expect((await access.request({}, forger.privateJwk)).status).toBe(403);
+    expect((await access.request({ aud: [MCP_AUD] })).status).toBe(403);
+    expect((await access.request({ exp: nowSeconds() - 1 })).status).toBe(403);
+    expect(access.requests).toHaveBeenCalledTimes(1);
+  });
 
-	it("refreshes expired public keys before accepting another request", async () => {
-		vi.useFakeTimers({ toFake: ["Date"] });
-		const access = cachedTeam();
-		expect((await access.request()).status).toBe(200);
-		vi.setSystemTime(Date.now() + 10 * 60 * 1000);
-		expect((await access.request()).status).toBe(200);
-		expect(access.requests).toHaveBeenCalledTimes(2);
-	});
+  it("refreshes expired public keys before accepting another request", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const access = cachedTeam();
+    expect((await access.request()).status).toBe(200);
+    vi.setSystemTime(Date.now() + 10 * 60 * 1000);
+    expect((await access.request()).status).toBe(200);
+    expect(access.requests).toHaveBeenCalledTimes(2);
+  });
 
-	it("refreshes a rotated key after the cooldown and limits unknown key retries", async () => {
-		vi.useFakeTimers({ toFake: ["Date"] });
-		const access = cachedTeam();
-		const rotated = { ...forger.privateJwk, kid: "rotated-key" };
-		expect((await access.request()).status).toBe(200);
-		access.requests.mockImplementation(async () =>
-			Response.json({ keys: [{ ...forger.publicJwk, kid: rotated.kid }] }),
-		);
-		for (let i = 0; i < 3; i++) expect((await access.request({}, rotated)).status).toBe(403);
-		expect(access.requests).toHaveBeenCalledTimes(1);
-		vi.setSystemTime(Date.now() + 30 * 1000);
-		expect((await access.request({}, rotated)).status).toBe(200);
-		expect(access.requests).toHaveBeenCalledTimes(2);
-		expect((await access.request()).status).toBe(403);
-	});
+  it("refreshes a rotated key after the cooldown and limits unknown key retries", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const access = cachedTeam();
+    const rotated = { ...forger.privateJwk, kid: "rotated-key" };
+    expect((await access.request()).status).toBe(200);
+    access.requests.mockImplementation(async () =>
+      Response.json({ keys: [{ ...forger.publicJwk, kid: rotated.kid }] }),
+    );
+    for (let i = 0; i < 3; i++) expect((await access.request({}, rotated)).status).toBe(403);
+    expect(access.requests).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(Date.now() + 30 * 1000);
+    expect((await access.request({}, rotated)).status).toBe(200);
+    expect(access.requests).toHaveBeenCalledTimes(2);
+    expect((await access.request()).status).toBe(403);
+  });
 
-	it("does not accept stale keys when a required refresh fails", async () => {
-		vi.useFakeTimers({ toFake: ["Date"] });
-		const access = cachedTeam();
-		expect((await access.request()).status).toBe(200);
-		vi.setSystemTime(Date.now() + 10 * 60 * 1000);
-		access.requests.mockResolvedValueOnce(new Response("Unavailable", { status: 503 }));
-		expect((await access.request()).status).toBe(403);
-		expect((await access.request()).status).toBe(200);
-		expect(access.requests).toHaveBeenCalledTimes(3);
-	});
+  it("does not accept stale keys when a required refresh fails", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const access = cachedTeam();
+    expect((await access.request()).status).toBe(200);
+    vi.setSystemTime(Date.now() + 10 * 60 * 1000);
+    access.requests.mockResolvedValueOnce(new Response("Unavailable", { status: 503 }));
+    expect((await access.request()).status).toBe(403);
+    expect((await access.request()).status).toBe(200);
+    expect(access.requests).toHaveBeenCalledTimes(3);
+  });
 
-	it("recovers from an initial key fetch failure", async () => {
-		const access = cachedTeam();
-		access.requests.mockRejectedValueOnce(new Error("Network unavailable"));
-		expect((await access.request()).status).toBe(403);
-		expect((await access.request()).status).toBe(200);
-		expect(access.requests).toHaveBeenCalledTimes(2);
-	});
+  it("recovers from an initial key fetch failure", async () => {
+    const access = cachedTeam();
+    access.requests.mockRejectedValueOnce(new Error("Network unavailable"));
+    expect((await access.request()).status).toBe(403);
+    expect((await access.request()).status).toBe(200);
+    expect(access.requests).toHaveBeenCalledTimes(2);
+  });
 
-	it("keeps different issuers with the same key ID isolated", async () => {
-		const first = cachedTeam();
-		const second = cachedTeam(forger.publicJwk);
-		expect((await first.request()).status).toBe(200);
-		expect((await second.request({}, forger.privateJwk)).status).toBe(200);
-		expect((await second.request()).status).toBe(403);
-		expect(first.requests).toHaveBeenCalledTimes(1);
-		expect(second.requests).toHaveBeenCalledTimes(1);
-	});
+  it("keeps different issuers with the same key ID isolated", async () => {
+    const first = cachedTeam();
+    const second = cachedTeam(forger.publicJwk);
+    expect((await first.request()).status).toBe(200);
+    expect((await second.request({}, forger.privateJwk)).status).toBe(200);
+    expect((await second.request()).status).toBe(403);
+    expect(first.requests).toHaveBeenCalledTimes(1);
+    expect(second.requests).toHaveBeenCalledTimes(1);
+  });
 
-	it("bounds retained issuers and reloads keys after eviction", async () => {
-		const first = cachedTeam();
-		expect((await first.request()).status).toBe(200);
-		for (let i = 0; i < 4; i++) expect((await cachedTeam().request()).status).toBe(200);
-		expect((await first.request()).status).toBe(200);
-		expect(first.requests).toHaveBeenCalledTimes(2);
-	});
+  it("bounds retained issuers and reloads keys after eviction", async () => {
+    const first = cachedTeam();
+    expect((await first.request()).status).toBe(200);
+    for (let i = 0; i < 4; i++) expect((await cachedTeam().request()).status).toBe(200);
+    expect((await first.request()).status).toBe(200);
+    expect(first.requests).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("Access JWT verification", () => {
-	it("accepts a valid user JWT on the owner surface", async () => {
-		const res = await ownerRequest(identityClaims(OWNER_AUD, nowSeconds()));
-		expect(res.status).toBe(200);
-	});
+  it("accepts a valid user JWT on the owner surface", async () => {
+    const res = await ownerRequest(identityClaims(OWNER_AUD, nowSeconds()));
+    expect(res.status).toBe(200);
+  });
 
-	// The common claim set is the intersection of the two documented payloads. A
-	// service-token JWT has no `nbf` and no `email`, so requiring either on the
-	// owner routes would lock the CLI and CI out.
-	it("accepts a service-token JWT on the owner surface, which carries no nbf and no email", async () => {
-		const res = await ownerRequest(serviceClaims(OWNER_AUD, nowSeconds()));
-		expect(res.status).toBe(200);
-	});
+  // The common claim set is the intersection of the two documented payloads. A
+  // service-token JWT has no `nbf` and no `email`, so requiring either on the
+  // owner routes would lock the CLI and CI out.
+  it("accepts a service-token JWT on the owner surface, which carries no nbf and no email", async () => {
+    const res = await ownerRequest(serviceClaims(OWNER_AUD, nowSeconds()));
+    expect(res.status).toBe(200);
+  });
 
-	it("accepts a user JWT at the MCP endpoint", async () => {
-		const res = await mcpRequest(identityClaims(MCP_AUD, nowSeconds()));
-		expect(res.status).toBe(200);
-	});
+  it("accepts a user JWT at the MCP endpoint", async () => {
+    const res = await mcpRequest(identityClaims(MCP_AUD, nowSeconds()));
+    expect(res.status).toBe(200);
+  });
 
-	it("rejects a request with no Cf-Access-Jwt-Assertion header", async () => {
-		const res = await fetchWithToken(`${OWNER_BASE}/api/documents`, null);
-		expect(res.status).toBe(403);
-		expect(await res.text()).toBe("Forbidden");
-	});
+  it("rejects a request with no Cf-Access-Jwt-Assertion header", async () => {
+    const res = await fetchWithToken(`${OWNER_BASE}/api/documents`, null);
+    expect(res.status).toBe(403);
+    expect(await res.text()).toBe("Forbidden");
+  });
 
-	it("rejects a signature the team's JWKS cannot verify", async () => {
-		// Same `kid`, so the key lookup succeeds and the signature check is what
-		// fails. A mismatched `kid` would prove nothing about the signature.
-		const forged = await signAs(identityClaims(OWNER_AUD, nowSeconds()), forger.privateJwk);
+  it("rejects a signature the team's JWKS cannot verify", async () => {
+    // Same `kid`, so the key lookup succeeds and the signature check is what
+    // fails. A mismatched `kid` would prove nothing about the signature.
+    const forged = await signAs(identityClaims(OWNER_AUD, nowSeconds()), forger.privateJwk);
 
-		const res = await fetchWithToken(`${OWNER_BASE}/api/documents`, forged);
-		expect(res.status).toBe(403);
-	});
+    const res = await fetchWithToken(`${OWNER_BASE}/api/documents`, forged);
+    expect(res.status).toBe(403);
+  });
 
-	it("rejects a token issued by another Cloudflare team", async () => {
-		const claims = { ...identityClaims(OWNER_AUD, nowSeconds()), iss: "https://other-team.cloudflareaccess.com" };
-		expect((await ownerRequest(claims)).status).toBe(403);
-	});
+  it("rejects a token issued by another Cloudflare team", async () => {
+    const claims = {
+      ...identityClaims(OWNER_AUD, nowSeconds()),
+      iss: "https://other-team.cloudflareaccess.com",
+    };
+    expect((await ownerRequest(claims)).status).toBe(403);
+  });
 
-	it("rejects a token with no iss claim", async () => {
-		const { iss: _iss, ...claims } = identityClaims(OWNER_AUD, nowSeconds());
-		expect((await ownerRequest(claims)).status).toBe(403);
-	});
+  it("rejects a token with no iss claim", async () => {
+    const { iss: _iss, ...claims } = identityClaims(OWNER_AUD, nowSeconds());
+    expect((await ownerRequest(claims)).status).toBe(403);
+  });
 
-	it("rejects a token for an audience this route does not serve", async () => {
-		expect((await ownerRequest(identityClaims("some-other-app", nowSeconds()))).status).toBe(403);
-	});
+  it("rejects a token for an audience this route does not serve", async () => {
+    expect((await ownerRequest(identityClaims("some-other-app", nowSeconds()))).status).toBe(403);
+  });
 
-	// Header-only rejections: the algorithm is checked before the signature, so
-	// these tokens carry a signature that is never examined.
-	it("rejects a symmetric algorithm", async () => {
-		const token = tokenWithHeader({ alg: "HS256", kid: KID, typ: "JWT" }, identityClaims(OWNER_AUD, nowSeconds()));
+  // Header-only rejections: the algorithm is checked before the signature, so
+  // these tokens carry a signature that is never examined.
+  it("rejects a symmetric algorithm", async () => {
+    const token = tokenWithHeader(
+      { alg: "HS256", kid: KID, typ: "JWT" },
+      identityClaims(OWNER_AUD, nowSeconds()),
+    );
 
-		expect((await fetchWithToken(`${OWNER_BASE}/api/documents`, token)).status).toBe(403);
-	});
+    expect((await fetchWithToken(`${OWNER_BASE}/api/documents`, token)).status).toBe(403);
+  });
 
-	it("rejects an asymmetric algorithm other than RS256", async () => {
-		const token = tokenWithHeader({ alg: "RS512", kid: KID, typ: "JWT" }, identityClaims(OWNER_AUD, nowSeconds()));
+  it("rejects an asymmetric algorithm other than RS256", async () => {
+    const token = tokenWithHeader(
+      { alg: "RS512", kid: KID, typ: "JWT" },
+      identityClaims(OWNER_AUD, nowSeconds()),
+    );
 
-		expect((await fetchWithToken(`${OWNER_BASE}/api/documents`, token)).status).toBe(403);
-	});
+    expect((await fetchWithToken(`${OWNER_BASE}/api/documents`, token)).status).toBe(403);
+  });
 
-	it("rejects a header with no kid", async () => {
-		const { kid: _kid, ...key } = team.privateJwk;
-		const token = await signAs(identityClaims(OWNER_AUD, nowSeconds()), key);
+  it("rejects a header with no kid", async () => {
+    const { kid: _kid, ...key } = team.privateJwk;
+    const token = await signAs(identityClaims(OWNER_AUD, nowSeconds()), key);
 
-		expect((await fetchWithToken(`${OWNER_BASE}/api/documents`, token)).status).toBe(403);
-	});
+    expect((await fetchWithToken(`${OWNER_BASE}/api/documents`, token)).status).toBe(403);
+  });
 
-	it("rejects an expired token", async () => {
-		const now = nowSeconds();
-		const claims = { ...identityClaims(OWNER_AUD, now), exp: now - 60, iat: now - 660 };
-		expect((await ownerRequest(claims)).status).toBe(403);
-	});
+  it("rejects an expired token", async () => {
+    const now = nowSeconds();
+    const claims = { ...identityClaims(OWNER_AUD, now), exp: now - 60, iat: now - 660 };
+    expect((await ownerRequest(claims)).status).toBe(403);
+  });
 
-	it.each(["exp", "iat", "nbf"])("rejects a signed %s numeric overflow", async (claim) => {
-		// JSON permits exponents that overflow JavaScript numbers. Sign the raw
-		// JSON because JSON.stringify replaces non-finite numbers with null.
-		const claims = { ...identityClaims(OWNER_AUD, nowSeconds()), [claim]: "overflow" };
-		const payload = JSON.stringify(claims).replace('"overflow"', claim === "exp" ? "1e400" : "-1e400");
-		const header = JSON.stringify({ alg: "RS256", kid: KID, typ: "JWT" });
-		const input = `${b64url(ENCODER.encode(header))}.${b64url(ENCODER.encode(payload))}`;
-		const key = await crypto.subtle.importKey(
-			"jwk",
-			team.privateJwk,
-			{ name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-			false,
-			["sign"],
-		);
-		const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, ENCODER.encode(input));
-		expect(
-			(await fetchWithToken(`${OWNER_BASE}/api/documents`, `${input}.${b64url(new Uint8Array(signature))}`)).status,
-		).toBe(403);
-	});
+  it.each(["exp", "iat", "nbf"])("rejects a signed %s numeric overflow", async (claim) => {
+    // JSON permits exponents that overflow JavaScript numbers. Sign the raw
+    // JSON because JSON.stringify replaces non-finite numbers with null.
+    const claims = { ...identityClaims(OWNER_AUD, nowSeconds()), [claim]: "overflow" };
+    const payload = JSON.stringify(claims).replace(
+      '"overflow"',
+      claim === "exp" ? "1e400" : "-1e400",
+    );
+    const header = JSON.stringify({ alg: "RS256", kid: KID, typ: "JWT" });
+    const input = `${b64url(ENCODER.encode(header))}.${b64url(ENCODER.encode(payload))}`;
+    const key = await crypto.subtle.importKey(
+      "jwk",
+      team.privateJwk,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, ENCODER.encode(input));
+    expect(
+      (
+        await fetchWithToken(
+          `${OWNER_BASE}/api/documents`,
+          `${input}.${b64url(new Uint8Array(signature))}`,
+        )
+      ).status,
+    ).toBe(403);
+  });
 
-	// JWT verification allows a missing exp claim, so the middleware must require it.
-	it("rejects a token with no exp claim", async () => {
-		const { exp: _exp, ...claims } = identityClaims(OWNER_AUD, nowSeconds());
-		expect((await ownerRequest(claims)).status).toBe(403);
-	});
+  // JWT verification allows a missing exp claim, so the middleware must require it.
+  it("rejects a token with no exp claim", async () => {
+    const { exp: _exp, ...claims } = identityClaims(OWNER_AUD, nowSeconds());
+    expect((await ownerRequest(claims)).status).toBe(403);
+  });
 
-	it("rejects a token with no iat claim", async () => {
-		const { iat: _iat, ...claims } = identityClaims(OWNER_AUD, nowSeconds());
-		expect((await ownerRequest(claims)).status).toBe(403);
-	});
+  it("rejects a token with no iat claim", async () => {
+    const { iat: _iat, ...claims } = identityClaims(OWNER_AUD, nowSeconds());
+    expect((await ownerRequest(claims)).status).toBe(403);
+  });
 
-	it("rejects a token issued in the future", async () => {
-		const now = nowSeconds();
-		const claims = { ...identityClaims(OWNER_AUD, now), iat: now + 600 };
-		expect((await ownerRequest(claims)).status).toBe(403);
-	});
+  it("rejects a token issued in the future", async () => {
+    const now = nowSeconds();
+    const claims = { ...identityClaims(OWNER_AUD, now), iat: now + 600 };
+    expect((await ownerRequest(claims)).status).toBe(403);
+  });
 
-	// `nbf` is not required, because service tokens do not carry one. It is still
-	// enforced on the identity tokens that do.
-	it("rejects a token that is not valid yet", async () => {
-		const now = nowSeconds();
-		expect((await ownerRequest({ ...identityClaims(OWNER_AUD, now), nbf: now + 600 })).status).toBe(403);
-	});
+  // `nbf` is not required, because service tokens do not carry one. It is still
+  // enforced on the identity tokens that do.
+  it("rejects a token that is not valid yet", async () => {
+    const now = nowSeconds();
+    expect((await ownerRequest({ ...identityClaims(OWNER_AUD, now), nbf: now + 600 })).status).toBe(
+      403,
+    );
+  });
 
-	// The same team key signs other Cloudflare token types. This route wants an
-	// application token.
-	it("rejects a token that is not an application token", async () => {
-		const claims = { ...identityClaims(OWNER_AUD, nowSeconds()), type: "org" };
-		expect((await ownerRequest(claims)).status).toBe(403);
-	});
+  // The same team key signs other Cloudflare token types. This route wants an
+  // application token.
+  it("rejects a token that is not an application token", async () => {
+    const claims = { ...identityClaims(OWNER_AUD, nowSeconds()), type: "org" };
+    expect((await ownerRequest(claims)).status).toBe(403);
+  });
 });
 
 // The whole point of the two hostnames: two Access applications, two AUD tags,
 // and a token minted for one that opens nothing on the other.
 describe("route-specific audiences", () => {
-	it("refuses the owner audience at the MCP endpoint", async () => {
-		// An identity assertion, so the audience is the only thing wrong with it.
-		const token = await signAs(identityClaims(OWNER_AUD, nowSeconds()), team.privateJwk);
+  it("refuses the owner audience at the MCP endpoint", async () => {
+    // An identity assertion, so the audience is the only thing wrong with it.
+    const token = await signAs(identityClaims(OWNER_AUD, nowSeconds()), team.privateJwk);
 
-		const res = await fetchWithToken(`${MCP_BASE}/mcp`, token, MCP_CALL);
-		expect(res.status).toBe(403);
-	});
+    const res = await fetchWithToken(`${MCP_BASE}/mcp`, token, MCP_CALL);
+    expect(res.status).toBe(403);
+  });
 
-	it("refuses the MCP audience on the owner surface", async () => {
-		const token = await signAs(serviceClaims(MCP_AUD, nowSeconds()), team.privateJwk);
+  it("refuses the MCP audience on the owner surface", async () => {
+    const token = await signAs(serviceClaims(MCP_AUD, nowSeconds()), team.privateJwk);
 
-		expect((await fetchWithToken(`${OWNER_BASE}/api/documents`, token)).status).toBe(403);
-		expect((await fetchWithToken(`${OWNER_BASE}/`, token)).status).toBe(403);
-	});
+    expect((await fetchWithToken(`${OWNER_BASE}/api/documents`, token)).status).toBe(403);
+    expect((await fetchWithToken(`${OWNER_BASE}/`, token)).status).toBe(403);
+  });
 
-	it("accepts each audience at its own endpoint", async () => {
-		const now = nowSeconds();
-		expect((await ownerRequest(serviceClaims(OWNER_AUD, now))).status).toBe(200);
-		expect((await mcpRequest(identityClaims(MCP_AUD, now))).status).toBe(200);
-	});
+  it("accepts each audience at its own endpoint", async () => {
+    const now = nowSeconds();
+    expect((await ownerRequest(serviceClaims(OWNER_AUD, now))).status).toBe(200);
+    expect((await mcpRequest(identityClaims(MCP_AUD, now))).status).toBe(200);
+  });
 });
 
 // The MCP endpoint is reached by a human through Managed OAuth, and its Access
@@ -403,139 +435,155 @@ describe("route-specific audiences", () => {
 // This is the Worker-side half of that: a static credential is refused here
 // even when it carries the right audience and a valid signature.
 describe("the MCP endpoint takes human logins only", () => {
-	it("refuses a service-token assertion carrying the MCP audience", async () => {
-		const res = await mcpRequest(serviceClaims(MCP_AUD, nowSeconds()));
-		expect(res.status).toBe(403);
-		expect(await res.text()).toBe("Forbidden");
-	});
+  it("refuses a service-token assertion carrying the MCP audience", async () => {
+    const res = await mcpRequest(serviceClaims(MCP_AUD, nowSeconds()));
+    expect(res.status).toBe(403);
+    expect(await res.text()).toBe("Forbidden");
+  });
 
-	// Each of the three signals is checked on its own, so no single one of them
-	// is load-bearing for the whole boundary.
-	it("refuses an assertion carrying common_name, however else it is dressed up", async () => {
-		const claims = { ...identityClaims(MCP_AUD, nowSeconds()), common_name: "e367826f93b8d71185e03fe518aff3b4.access" };
-		expect((await mcpRequest(claims)).status).toBe(403);
-	});
+  // Each of the three signals is checked on its own, so no single one of them
+  // is load-bearing for the whole boundary.
+  it("refuses an assertion carrying common_name, however else it is dressed up", async () => {
+    const claims = {
+      ...identityClaims(MCP_AUD, nowSeconds()),
+      common_name: "e367826f93b8d71185e03fe518aff3b4.access",
+    };
+    expect((await mcpRequest(claims)).status).toBe(403);
+  });
 
-	it("refuses an assertion with an empty sub", async () => {
-		expect((await mcpRequest({ ...identityClaims(MCP_AUD, nowSeconds()), sub: "" })).status).toBe(403);
-	});
+  it("refuses an assertion with an empty sub", async () => {
+    expect((await mcpRequest({ ...identityClaims(MCP_AUD, nowSeconds()), sub: "" })).status).toBe(
+      403,
+    );
+  });
 
-	it("refuses an assertion with no email", async () => {
-		const { email: _email, ...claims } = identityClaims(MCP_AUD, nowSeconds());
-		expect((await mcpRequest(claims)).status).toBe(403);
-	});
+  it("refuses an assertion with no email", async () => {
+    const { email: _email, ...claims } = identityClaims(MCP_AUD, nowSeconds());
+    expect((await mcpRequest(claims)).status).toBe(403);
+  });
 
-	// Service-token claims remain valid on owner routes for CI and headless jobs.
-	it("leaves the owner surface accepting service tokens", async () => {
-		expect((await ownerRequest(serviceClaims(OWNER_AUD, nowSeconds()))).status).toBe(200);
-	});
+  // Service-token claims remain valid on owner routes for CI and headless jobs.
+  it("leaves the owner surface accepting service tokens", async () => {
+    expect((await ownerRequest(serviceClaims(OWNER_AUD, nowSeconds()))).status).toBe(200);
+  });
 });
 
 // `sub` is documented in both payloads, so its presence is required everywhere
 // even though only the MCP boundary reads its value.
 describe("sub presence", () => {
-	it("refuses a token with no sub claim on either surface", async () => {
-		const { sub: _o, ...ownerClaims } = serviceClaims(OWNER_AUD, nowSeconds());
-		expect((await ownerRequest(ownerClaims)).status).toBe(403);
+  it("refuses a token with no sub claim on either surface", async () => {
+    const { sub: _o, ...ownerClaims } = serviceClaims(OWNER_AUD, nowSeconds());
+    expect((await ownerRequest(ownerClaims)).status).toBe(403);
 
-		const { sub: _m, ...mcpClaims } = identityClaims(MCP_AUD, nowSeconds());
-		expect((await mcpRequest(mcpClaims)).status).toBe(403);
-	});
+    const { sub: _m, ...mcpClaims } = identityClaims(MCP_AUD, nowSeconds());
+    expect((await mcpRequest(mcpClaims)).status).toBe(403);
+  });
 });
 
 // A blank value is a deployment that cannot enforce Access. It answers 503, not
 // 200 and not 403: the request is fine, the Worker is not configured.
 describe("fail-closed configuration", () => {
-	/**
-	 * Send a request that would otherwise succeed, so a 503 can only come from
-	 * `overrides` and never from the credential.
-	 */
-	async function fetchWithEnv(
-		url: string,
-		overrides: Partial<Record<keyof Env, string | undefined>>,
-		init: RequestInit = {},
-	) {
-		const token = await signAs(serviceClaims(OWNER_AUD, nowSeconds()), team.privateJwk);
-		return fetchWithToken(url, token, init, overrides);
-	}
+  /**
+   * Send a request that would otherwise succeed, so a 503 can only come from
+   * `overrides` and never from the credential.
+   */
+  async function fetchWithEnv(
+    url: string,
+    overrides: Partial<Record<keyof Env, string | undefined>>,
+    init: RequestInit = {},
+  ) {
+    const token = await signAs(serviceClaims(OWNER_AUD, nowSeconds()), team.privateJwk);
+    return fetchWithToken(url, token, init, overrides);
+  }
 
-	it("refuses every request when MCP_HOST is blank", async () => {
-		for (const url of [`${OWNER_BASE}/api/documents`, `${OWNER_BASE}/`, `${MCP_BASE}/mcp`]) {
-			const res = await fetchWithEnv(url, { MCP_HOST: "" });
-			expect(res.status, url).toBe(503);
-			expect(await res.text()).toBe("Service Unavailable");
-		}
-	});
+  it("refuses every request when MCP_HOST is blank", async () => {
+    for (const url of [`${OWNER_BASE}/api/documents`, `${OWNER_BASE}/`, `${MCP_BASE}/mcp`]) {
+      const res = await fetchWithEnv(url, { MCP_HOST: "" });
+      expect(res.status, url).toBe(503);
+      expect(await res.text()).toBe("Service Unavailable");
+    }
+  });
 
-	it("refuses every request when OWNER_HOST is blank", async () => {
-		expect((await fetchWithEnv(`${OWNER_BASE}/api/documents`, { OWNER_HOST: "" })).status).toBe(503);
-	});
+  it("refuses every request when OWNER_HOST is blank", async () => {
+    expect((await fetchWithEnv(`${OWNER_BASE}/api/documents`, { OWNER_HOST: "" })).status).toBe(
+      503,
+    );
+  });
 
-	it("refuses every request when the two hostnames are equal", async () => {
-		expect((await fetchWithEnv(`${OWNER_BASE}/`, { MCP_HOST: OWNER_BASE.replace("https://", "") })).status).toBe(503);
-	});
+  it("refuses every request when the two hostnames are equal", async () => {
+    expect(
+      (await fetchWithEnv(`${OWNER_BASE}/`, { MCP_HOST: OWNER_BASE.replace("https://", "") }))
+        .status,
+    ).toBe(503);
+  });
 
-	it("refuses the owner surface when ACCESS_TEAM_DOMAIN is blank", async () => {
-		const res = await fetchWithEnv(`${OWNER_BASE}/api/documents`, { ACCESS_TEAM_DOMAIN: "" });
-		expect(res.status).toBe(503);
-		expect(await res.text()).toBe("Service Unavailable");
-	});
+  it("refuses the owner surface when ACCESS_TEAM_DOMAIN is blank", async () => {
+    const res = await fetchWithEnv(`${OWNER_BASE}/api/documents`, { ACCESS_TEAM_DOMAIN: "" });
+    expect(res.status).toBe(503);
+    expect(await res.text()).toBe("Service Unavailable");
+  });
 
-	it("refuses the owner surface when ACCESS_AUD is blank", async () => {
-		expect((await fetchWithEnv(`${OWNER_BASE}/api/documents`, { ACCESS_AUD: "" })).status).toBe(503);
-	});
+  it("refuses the owner surface when ACCESS_AUD is blank", async () => {
+    expect((await fetchWithEnv(`${OWNER_BASE}/api/documents`, { ACCESS_AUD: "" })).status).toBe(
+      503,
+    );
+  });
 
-	it("refuses the MCP endpoint when ACCESS_MCP_AUD is blank, and leaves the owner surface alone", async () => {
-		expect((await fetchWithEnv(`${MCP_BASE}/mcp`, { ACCESS_MCP_AUD: "" }, MCP_CALL)).status).toBe(503);
-		expect((await fetchWithEnv(`${OWNER_BASE}/api/documents`, { ACCESS_MCP_AUD: "" })).status).toBe(200);
-	});
+  it("refuses the MCP endpoint when ACCESS_MCP_AUD is blank, and leaves the owner surface alone", async () => {
+    expect((await fetchWithEnv(`${MCP_BASE}/mcp`, { ACCESS_MCP_AUD: "" }, MCP_CALL)).status).toBe(
+      503,
+    );
+    expect((await fetchWithEnv(`${OWNER_BASE}/api/documents`, { ACCESS_MCP_AUD: "" })).status).toBe(
+      200,
+    );
+  });
 
-	// Equal AUD tags mean one Access application, so an MCP grant would also open
-	// the library. Neither surface has a safe half to keep serving.
-	it("refuses both surfaces when the two AUD tags are equal", async () => {
-		const same = { ACCESS_AUD: OWNER_AUD, ACCESS_MCP_AUD: OWNER_AUD };
-		expect((await fetchWithEnv(`${OWNER_BASE}/api/documents`, same)).status).toBe(503);
-		expect((await fetchWithEnv(`${MCP_BASE}/mcp`, same, MCP_CALL)).status).toBe(503);
-	});
+  // Equal AUD tags mean one Access application, so an MCP grant would also open
+  // the library. Neither surface has a safe half to keep serving.
+  it("refuses both surfaces when the two AUD tags are equal", async () => {
+    const same = { ACCESS_AUD: OWNER_AUD, ACCESS_MCP_AUD: OWNER_AUD };
+    expect((await fetchWithEnv(`${OWNER_BASE}/api/documents`, same)).status).toBe(503);
+    expect((await fetchWithEnv(`${MCP_BASE}/mcp`, same, MCP_CALL)).status).toBe(503);
+  });
 
-	// A var deleted from wrangler.jsonc arrives with no property at all, not as
-	// "". Reading `.trim()` straight off it would be a TypeError and a 500 where
-	// the documented 503 belongs, so absent and blank have to land the same way.
-	it("refuses without a TypeError when the Access vars are absent, not blank", async () => {
-		const absent: (keyof Env)[] = ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD"];
-		for (const key of absent) {
-			const res = await fetchWithEnv(`${OWNER_BASE}/api/documents`, { [key]: undefined });
-			expect(res.status, key).toBe(503);
-			expect(await res.text()).toBe("Service Unavailable");
-		}
-	});
+  // A var deleted from wrangler.jsonc arrives with no property at all, not as
+  // "". Reading `.trim()` straight off it would be a TypeError and a 500 where
+  // the documented 503 belongs, so absent and blank have to land the same way.
+  it("refuses without a TypeError when the Access vars are absent, not blank", async () => {
+    const absent: (keyof Env)[] = ["ACCESS_TEAM_DOMAIN", "ACCESS_AUD"];
+    for (const key of absent) {
+      const res = await fetchWithEnv(`${OWNER_BASE}/api/documents`, { [key]: undefined });
+      expect(res.status, key).toBe(503);
+      expect(await res.text()).toBe("Service Unavailable");
+    }
+  });
 
-	it("refuses the MCP endpoint when ACCESS_MCP_AUD is absent, not blank", async () => {
-		const res = await fetchWithEnv(`${MCP_BASE}/mcp`, { ACCESS_MCP_AUD: undefined }, MCP_CALL);
-		expect(res.status).toBe(503);
-		expect(await res.text()).toBe("Service Unavailable");
-	});
+  it("refuses the MCP endpoint when ACCESS_MCP_AUD is absent, not blank", async () => {
+    const res = await fetchWithEnv(`${MCP_BASE}/mcp`, { ACCESS_MCP_AUD: undefined }, MCP_CALL);
+    expect(res.status).toBe(503);
+    expect(await res.text()).toBe("Service Unavailable");
+  });
 
-	it("refuses every request when the host vars are absent, not blank", async () => {
-		for (const key of ["MCP_HOST", "OWNER_HOST"] as (keyof Env)[]) {
-			const res = await fetchWithEnv(`${OWNER_BASE}/`, { [key]: undefined });
-			expect(res.status, key).toBe(503);
-		}
-	});
+  it("refuses every request when the host vars are absent, not blank", async () => {
+    for (const key of ["MCP_HOST", "OWNER_HOST"] as (keyof Env)[]) {
+      const res = await fetchWithEnv(`${OWNER_BASE}/`, { [key]: undefined });
+      expect(res.status, key).toBe(503);
+    }
+  });
 
-	// A value that is neither blank nor a host is the third way to end up unable
-	// to tell the surfaces apart, and it fails the same way.
-	it("refuses every request when a host var is not a host", async () => {
-		for (const bad of ["https://poof.5n7.me", "poof.5n7.me/mcp", "poof 5n7 me", "/"]) {
-			const res = await fetchWithEnv(`${OWNER_BASE}/`, { OWNER_HOST: bad });
-			expect(res.status, bad).toBe(503);
-		}
-	});
+  // A value that is neither blank nor a host is the third way to end up unable
+  // to tell the surfaces apart, and it fails the same way.
+  it("refuses every request when a host var is not a host", async () => {
+    for (const bad of ["https://poof.5n7.me", "poof.5n7.me/mcp", "poof 5n7 me", "/"]) {
+      const res = await fetchWithEnv(`${OWNER_BASE}/`, { OWNER_HOST: bad });
+      expect(res.status, bad).toBe(503);
+    }
+  });
 
-	// Misconfiguration must not open the public paths either way: they stay
-	// readable when Access config is missing, because they never used it.
-	it("leaves the public paths alone when the Access audience is blank", async () => {
-		const res = await fetchWithEnv(`${OWNER_BASE}/raw/s_nonexistent000000000`, { ACCESS_AUD: "" });
-		expect(res.status).toBe(404);
-	});
+  // Misconfiguration must not open the public paths either way: they stay
+  // readable when Access config is missing, because they never used it.
+  it("leaves the public paths alone when the Access audience is blank", async () => {
+    const res = await fetchWithEnv(`${OWNER_BASE}/raw/s_nonexistent000000000`, { ACCESS_AUD: "" });
+    expect(res.status).toBe(404);
+  });
 });

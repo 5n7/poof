@@ -2,72 +2,72 @@ import { type DocumentKind, defaultMediaType } from "./content";
 import { defaultFilePath } from "./files";
 
 export interface DocumentRow {
-	id: string;
-	title: string;
-	current_version: number;
-	created_at: number;
-	updated_at: number;
-	expires_at: number | null;
+  id: string;
+  title: string;
+  current_version: number;
+  created_at: number;
+  updated_at: number;
+  expires_at: number | null;
 }
 
 export interface VersionMetadata {
-	title?: string | null;
-	filename?: string | null;
-	media_type?: string;
+  title?: string | null;
+  filename?: string | null;
+  media_type?: string;
 }
 
 export interface VersionRow extends VersionMetadata {
-	ready?: 0 | 1;
-	document_id: string;
-	version: number;
-	r2_key: string;
-	kind: DocumentKind;
-	created_at: number;
+  ready?: 0 | 1;
+  document_id: string;
+  version: number;
+  r2_key: string;
+  kind: DocumentKind;
+  created_at: number;
 }
 
 /** A document joined to one version. */
 export interface ResolvedDocument extends DocumentRow {
-	version: number;
-	r2_key: string;
-	version_title: string | null;
-	filename: string | null;
-	kind: DocumentKind;
-	media_type: string;
-	version_created_at: number;
+  version: number;
+  r2_key: string;
+  version_title: string | null;
+  filename: string | null;
+  kind: DocumentKind;
+  media_type: string;
+  version_created_at: number;
 }
 
 /** List projection: no r2_key (nothing outside the blob paths needs it). */
 export interface DocumentSummary extends DocumentRow {
-	kind: DocumentKind;
+  kind: DocumentKind;
 }
 
 /** A brand-new document plus the contents of its version 1. */
 export interface NewDocument extends VersionMetadata {
-	id: string;
-	title: string;
-	kind: DocumentKind;
-	r2_key: string;
-	created_at: number;
-	expires_at: number | null;
+  id: string;
+  title: string;
+  kind: DocumentKind;
+  r2_key: string;
+  created_at: number;
+  expires_at: number | null;
 }
 
 export interface DocumentFileRow {
-	document_id: string;
-	version: number;
-	path: string;
-	filename: string | null;
-	kind: DocumentKind;
-	media_type: string;
-	r2_key: string;
-	position: number;
+  document_id: string;
+  version: number;
+  path: string;
+  filename: string | null;
+  kind: DocumentKind;
+  media_type: string;
+  r2_key: string;
+  position: number;
 }
 
 export interface ShareRow {
-	token: string;
-	document_id: string;
-	created_at: number;
-	expires_at: number;
-	revoked: 0 | 1;
+  token: string;
+  document_id: string;
+  created_at: number;
+  expires_at: number;
+  revoked: 0 | 1;
 }
 
 // Never `SELECT d.*, dv.*`. Both tables have a `created_at` and D1 silently
@@ -88,7 +88,7 @@ const CURRENT_JOIN = `JOIN document_version dv
  * versioning keep their flat `doc/{id}.html` key (zero-copy backfill).
  */
 export function versionR2Key(id: string, version: number): string {
-	return `doc/${id}/v${version}.html`;
+  return `doc/${id}/v${version}.html`;
 }
 
 /**
@@ -96,57 +96,59 @@ export function versionR2Key(id: string, version: number): string {
  * code), so a duplicate (document_id, version) has to be matched by string.
  */
 function isUniqueViolation(err: unknown): boolean {
-	return err instanceof Error && err.message.includes("UNIQUE constraint failed");
+  return err instanceof Error && err.message.includes("UNIQUE constraint failed");
 }
 
 /** Insert a document and its version 1 in one batch (= one transaction). */
 export async function insertDocument(
-	db: D1Database,
-	doc: NewDocument,
-	files?: DocumentFileRow[],
-	pending = false,
+  db: D1Database,
+  doc: NewDocument,
+  files?: DocumentFileRow[],
+  pending = false,
 ): Promise<void> {
-	await db.batch([
-		db
-			.prepare(
-				`INSERT INTO document (id, title, created_at, updated_at, current_version, expires_at)
+  await db.batch([
+    db
+      .prepare(
+        `INSERT INTO document (id, title, created_at, updated_at, current_version, expires_at)
 					VALUES (?, ?, ?, ?, ?, ?)`,
-			)
-			.bind(doc.id, doc.title, doc.created_at, doc.created_at, pending ? 0 : 1, doc.expires_at),
-		db
-			.prepare(
-				`INSERT INTO document_version (document_id, version, kind, r2_key, created_at, filename, media_type, title, ready)
+      )
+      .bind(doc.id, doc.title, doc.created_at, doc.created_at, pending ? 0 : 1, doc.expires_at),
+    db
+      .prepare(
+        `INSERT INTO document_version (document_id, version, kind, r2_key, created_at, filename, media_type, title, ready)
 					VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)`,
-			)
-			.bind(
-				doc.id,
-				doc.kind,
-				doc.r2_key,
-				doc.created_at,
-				doc.filename ?? null,
-				doc.media_type ?? defaultMediaType(doc.kind),
-				doc.title,
-				pending ? 0 : 1,
-			),
-		...(files ?? [legacyFile({ ...doc, document_id: doc.id, version: 1 })]).map((file) => fileInsert(db, file)),
-	]);
+      )
+      .bind(
+        doc.id,
+        doc.kind,
+        doc.r2_key,
+        doc.created_at,
+        doc.filename ?? null,
+        doc.media_type ?? defaultMediaType(doc.kind),
+        doc.title,
+        pending ? 0 : 1,
+      ),
+    ...(files ?? [legacyFile({ ...doc, document_id: doc.id, version: 1 })]).map((file) =>
+      fileInsert(db, file),
+    ),
+  ]);
 }
 
 export async function listDocuments(db: D1Database): Promise<DocumentSummary[]> {
-	const { results } = await db
-		.prepare(
-			`SELECT ${SUMMARY_COLUMNS}
+  const { results } = await db
+    .prepare(
+      `SELECT ${SUMMARY_COLUMNS}
 			FROM document d
 			${CURRENT_JOIN}
 			ORDER BY d.created_at DESC`,
-		)
-		.all<DocumentSummary>();
-	return results;
+    )
+    .all<DocumentSummary>();
+  return results;
 }
 
 export interface DocumentWithShares extends DocumentSummary {
-	active_share_count: number;
-	next_share_expires_at: number | null;
+  active_share_count: number;
+  next_share_expires_at: number | null;
 }
 
 /**
@@ -156,10 +158,13 @@ export interface DocumentWithShares extends DocumentSummary {
  * `dv` is an inner join on the composite PK (1:1), so `dv.kind` under the
  * GROUP BY is deterministic.
  */
-export async function listDocumentsWithShares(db: D1Database, now: number): Promise<DocumentWithShares[]> {
-	const { results } = await db
-		.prepare(
-			`SELECT ${SUMMARY_COLUMNS},
+export async function listDocumentsWithShares(
+  db: D1Database,
+  now: number,
+): Promise<DocumentWithShares[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT ${SUMMARY_COLUMNS},
 				COUNT(s.token) AS active_share_count,
 				MIN(s.expires_at) AS next_share_expires_at
 			FROM document d
@@ -168,42 +173,46 @@ export async function listDocumentsWithShares(db: D1Database, now: number): Prom
 				ON s.document_id = d.id AND s.revoked = 0 AND s.expires_at > ?
 			GROUP BY d.id
 			ORDER BY d.created_at DESC`,
-		)
-		.bind(now)
-		.all<DocumentWithShares>();
-	return results;
+    )
+    .bind(now)
+    .all<DocumentWithShares>();
+  return results;
 }
 
 /** Read a document without joining a version. */
 export async function getDocument(db: D1Database, id: string): Promise<DocumentRow | null> {
-	return db.prepare("SELECT * FROM document WHERE id = ?").bind(id).first<DocumentRow>();
+  return db.prepare("SELECT * FROM document WHERE id = ?").bind(id).first<DocumentRow>();
 }
 
 /**
  * The current version of a document, or null when the document is missing or
  * its owner TTL is set and has passed.
  */
-export async function getLiveDocument(db: D1Database, id: string, now: number): Promise<ResolvedDocument | null> {
-	return db
-		.prepare(
-			`SELECT ${RESOLVED_COLUMNS}
+export async function getLiveDocument(
+  db: D1Database,
+  id: string,
+  now: number,
+): Promise<ResolvedDocument | null> {
+  return db
+    .prepare(
+      `SELECT ${RESOLVED_COLUMNS}
 			FROM document d
 			${CURRENT_JOIN}
 			WHERE d.id = ? AND (d.expires_at IS NULL OR d.expires_at >= ?)`,
-		)
-		.bind(id, now)
-		.first<ResolvedDocument>();
+    )
+    .bind(id, now)
+    .first<ResolvedDocument>();
 }
 
 /** Read the current snapshot and a candidate next version in one D1 request. */
 export async function getLiveUpdateSnapshot(
-	db: D1Database,
-	id: string,
-	now: number,
+  db: D1Database,
+  id: string,
+  now: number,
 ): Promise<{ doc: ResolvedDocument; files: DocumentFileRow[]; next_version: number } | null> {
-	const { results } = await db
-		.prepare(
-			`WITH next_version AS (
+  const { results } = await db
+    .prepare(
+      `WITH next_version AS (
 				SELECT COALESCE(MAX(version), 0) + 1 AS value
 				FROM document_version WHERE document_id = ?
 			)
@@ -216,36 +225,36 @@ export async function getLiveUpdateSnapshot(
 			LEFT JOIN document_file df ON df.document_id = d.id AND df.version = dv.version
 			WHERE d.id = ? AND (d.expires_at IS NULL OR d.expires_at >= ?)
 			ORDER BY df.position, df.path`,
-		)
-		.bind(id, id, now)
-		.all<
-			ResolvedDocument & {
-				next_version: number;
-				file_path: string | null;
-				file_filename: string | null;
-				file_kind: DocumentKind | null;
-				file_media_type: string | null;
-				file_r2_key: string | null;
-				file_position: number | null;
-			}
-		>();
-	const first = results[0];
-	if (!first) return null;
-	const files: DocumentFileRow[] = [];
-	for (const row of results) {
-		if (row.file_path === null) continue;
-		files.push({
-			document_id: id,
-			version: row.version,
-			path: row.file_path,
-			filename: row.file_filename,
-			kind: row.file_kind!,
-			media_type: row.file_media_type!,
-			r2_key: row.file_r2_key!,
-			position: row.file_position!,
-		});
-	}
-	return { doc: first, files, next_version: first.next_version };
+    )
+    .bind(id, id, now)
+    .all<
+      ResolvedDocument & {
+        next_version: number;
+        file_path: string | null;
+        file_filename: string | null;
+        file_kind: DocumentKind | null;
+        file_media_type: string | null;
+        file_r2_key: string | null;
+        file_position: number | null;
+      }
+    >();
+  const first = results[0];
+  if (!first) return null;
+  const files: DocumentFileRow[] = [];
+  for (const row of results) {
+    if (row.file_path === null) continue;
+    files.push({
+      document_id: id,
+      version: row.version,
+      path: row.file_path,
+      filename: row.file_filename,
+      kind: row.file_kind!,
+      media_type: row.file_media_type!,
+      r2_key: row.file_r2_key!,
+      position: row.file_position!,
+    });
+  }
+  return { doc: first, files, next_version: first.next_version };
 }
 
 /**
@@ -254,20 +263,20 @@ export async function getLiveUpdateSnapshot(
  * into the same uniform 404.
  */
 export async function getLiveDocumentAtVersion(
-	db: D1Database,
-	id: string,
-	version: number,
-	now: number,
+  db: D1Database,
+  id: string,
+  version: number,
+  now: number,
 ): Promise<ResolvedDocument | null> {
-	return db
-		.prepare(
-			`SELECT ${RESOLVED_COLUMNS}
+  return db
+    .prepare(
+      `SELECT ${RESOLVED_COLUMNS}
 			FROM document d
 			JOIN document_version dv ON dv.document_id = d.id AND dv.version = ? AND dv.ready = 1
 			WHERE d.id = ? AND (d.expires_at IS NULL OR d.expires_at >= ?)`,
-		)
-		.bind(version, id, now)
-		.first<ResolvedDocument>();
+    )
+    .bind(version, id, now)
+    .first<ResolvedDocument>();
 }
 
 /**
@@ -276,18 +285,20 @@ export async function getLiveDocumentAtVersion(
  * content route, `/raw` owner tokens, and the owner viewer page.
  */
 export function getLiveDocumentAt(
-	db: D1Database,
-	id: string,
-	version: number | null,
-	now: number,
+  db: D1Database,
+  id: string,
+  version: number | null,
+  now: number,
 ): Promise<ResolvedDocument | null> {
-	return version === null ? getLiveDocument(db, id, now) : getLiveDocumentAtVersion(db, id, version, now);
+  return version === null
+    ? getLiveDocument(db, id, now)
+    : getLiveDocumentAtVersion(db, id, version, now);
 }
 
 /** Delete a document row; cascades to its versions and shares. Returns whether a row existed. */
 export async function deleteDocument(db: D1Database, id: string): Promise<boolean> {
-	const res = await db.prepare("DELETE FROM document WHERE id = ?").bind(id).run();
-	return (res.meta.changes ?? 0) > 0;
+  const res = await db.prepare("DELETE FROM document WHERE id = ?").bind(id).run();
+  return (res.meta.changes ?? 0) > 0;
 }
 
 /**
@@ -296,209 +307,243 @@ export async function deleteDocument(db: D1Database, id: string): Promise<boolea
  * recorded history.
  */
 export async function nextVersion(db: D1Database, id: string): Promise<number> {
-	const row = await db
-		.prepare("SELECT COALESCE(MAX(version), 0) + 1 AS next FROM document_version WHERE document_id = ?")
-		.bind(id)
-		.first<{ next: number }>();
-	return row?.next ?? 1;
+  const row = await db
+    .prepare(
+      "SELECT COALESCE(MAX(version), 0) + 1 AS next FROM document_version WHERE document_id = ?",
+    )
+    .bind(id)
+    .first<{ next: number }>();
+  return row?.next ?? 1;
 }
 
 function legacyFile(row: VersionRow): DocumentFileRow {
-	return {
-		document_id: row.document_id,
-		version: row.version,
-		path: defaultFilePath(row.filename, row.kind),
-		filename: row.filename ?? null,
-		kind: row.kind,
-		media_type: row.media_type ?? defaultMediaType(row.kind),
-		r2_key: row.r2_key,
-		position: 0,
-	};
+  return {
+    document_id: row.document_id,
+    version: row.version,
+    path: defaultFilePath(row.filename, row.kind),
+    filename: row.filename ?? null,
+    kind: row.kind,
+    media_type: row.media_type ?? defaultMediaType(row.kind),
+    r2_key: row.r2_key,
+    position: 0,
+  };
 }
 
 function fileInsert(db: D1Database, file: DocumentFileRow): D1PreparedStatement {
-	return db
-		.prepare(
-			"INSERT INTO document_file (document_id, version, path, filename, kind, media_type, r2_key, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-		)
-		.bind(
-			file.document_id,
-			file.version,
-			file.path,
-			file.filename,
-			file.kind,
-			file.media_type,
-			file.r2_key,
-			file.position,
-		);
+  return db
+    .prepare(
+      "INSERT INTO document_file (document_id, version, path, filename, kind, media_type, r2_key, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(
+      file.document_id,
+      file.version,
+      file.path,
+      file.filename,
+      file.kind,
+      file.media_type,
+      file.r2_key,
+      file.position,
+    );
 }
 
-export async function listVersionFiles(db: D1Database, id: string, version: number): Promise<DocumentFileRow[]> {
-	const { results } = await db
-		.prepare("SELECT * FROM document_file WHERE document_id = ? AND version = ? ORDER BY position, path")
-		.bind(id, version)
-		.all<DocumentFileRow>();
-	return results;
+export async function listVersionFiles(
+  db: D1Database,
+  id: string,
+  version: number,
+): Promise<DocumentFileRow[]> {
+  const { results } = await db
+    .prepare(
+      "SELECT * FROM document_file WHERE document_id = ? AND version = ? ORDER BY position, path",
+    )
+    .bind(id, version)
+    .all<DocumentFileRow>();
+  return results;
 }
 
 export async function getVersionFile(
-	db: D1Database,
-	id: string,
-	version: number,
-	path?: string,
+  db: D1Database,
+  id: string,
+  version: number,
+  path?: string,
 ): Promise<DocumentFileRow | null> {
-	return path === undefined
-		? db
-				.prepare("SELECT * FROM document_file WHERE document_id = ? AND version = ? ORDER BY position, path LIMIT 1")
-				.bind(id, version)
-				.first<DocumentFileRow>()
-		: db
-				.prepare("SELECT * FROM document_file WHERE document_id = ? AND version = ? AND path = ?")
-				.bind(id, version, path)
-				.first<DocumentFileRow>();
+  return path === undefined
+    ? db
+        .prepare(
+          "SELECT * FROM document_file WHERE document_id = ? AND version = ? ORDER BY position, path LIMIT 1",
+        )
+        .bind(id, version)
+        .first<DocumentFileRow>()
+    : db
+        .prepare("SELECT * FROM document_file WHERE document_id = ? AND version = ? AND path = ?")
+        .bind(id, version, path)
+        .first<DocumentFileRow>();
 }
 
 /** Reserve a version and all its file references atomically. False means the number was taken. */
-export async function insertVersion(db: D1Database, row: VersionRow, files?: DocumentFileRow[]): Promise<boolean> {
-	try {
-		await db.batch([
-			db
-				.prepare(
-					"INSERT INTO document_version (document_id, version, kind, r2_key, created_at, filename, media_type, title, ready) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-				)
-				.bind(
-					row.document_id,
-					row.version,
-					row.kind,
-					row.r2_key,
-					row.created_at,
-					row.filename ?? null,
-					row.media_type ?? defaultMediaType(row.kind),
-					row.title ?? null,
-					row.ready ?? 1,
-				),
-			...(files ?? [legacyFile(row)]).map((file) => fileInsert(db, file)),
-		]);
-		return true;
-	} catch (err) {
-		if (isUniqueViolation(err)) return false;
-		throw err;
-	}
+export async function insertVersion(
+  db: D1Database,
+  row: VersionRow,
+  files?: DocumentFileRow[],
+): Promise<boolean> {
+  try {
+    await db.batch([
+      db
+        .prepare(
+          "INSERT INTO document_version (document_id, version, kind, r2_key, created_at, filename, media_type, title, ready) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(
+          row.document_id,
+          row.version,
+          row.kind,
+          row.r2_key,
+          row.created_at,
+          row.filename ?? null,
+          row.media_type ?? defaultMediaType(row.kind),
+          row.title ?? null,
+          row.ready ?? 1,
+        ),
+      ...(files ?? [legacyFile(row)]).map((file) => fileInsert(db, file)),
+    ]);
+    return true;
+  } catch (err) {
+    if (isUniqueViolation(err)) return false;
+    throw err;
+  }
 }
 
 /** All versions of a document, newest first. */
 export async function listVersions(db: D1Database, id: string): Promise<VersionRow[]> {
-	const { results } = await db
-		.prepare(
-			"SELECT document_id, version, kind, r2_key, created_at, filename, media_type, title FROM document_version WHERE document_id = ? AND ready = 1 ORDER BY version DESC",
-		)
-		.bind(id)
-		.all<VersionRow>();
-	return results;
+  const { results } = await db
+    .prepare(
+      "SELECT document_id, version, kind, r2_key, created_at, filename, media_type, title FROM document_version WHERE document_id = ? AND ready = 1 ORDER BY version DESC",
+    )
+    .bind(id)
+    .all<VersionRow>();
+  return results;
 }
 
-export async function getVersion(db: D1Database, id: string, version: number): Promise<VersionRow | null> {
-	return db
-		.prepare(
-			"SELECT document_id, version, kind, r2_key, created_at, filename, media_type, title FROM document_version WHERE document_id = ? AND version = ? AND ready = 1",
-		)
-		.bind(id, version)
-		.first<VersionRow>();
+export async function getVersion(
+  db: D1Database,
+  id: string,
+  version: number,
+): Promise<VersionRow | null> {
+  return db
+    .prepare(
+      "SELECT document_id, version, kind, r2_key, created_at, filename, media_type, title FROM document_version WHERE document_id = ? AND version = ? AND ready = 1",
+    )
+    .bind(id, version)
+    .first<VersionRow>();
 }
 
 /** List blob keys before deleting a row because the FK cascade removes its versions. */
 export async function listVersionKeys(db: D1Database, id: string): Promise<string[]> {
-	const { results } = await db
-		.prepare("SELECT DISTINCT r2_key FROM document_file WHERE document_id = ?")
-		.bind(id)
-		.all<{ r2_key: string }>();
-	return results.map((row) => row.r2_key);
+  const { results } = await db
+    .prepare("SELECT DISTINCT r2_key FROM document_file WHERE document_id = ?")
+    .bind(id)
+    .all<{ r2_key: string }>();
+  return results.map((row) => row.r2_key);
 }
 
 /** Publish a complete snapshot atomically, optionally requiring an unchanged current pointer. */
 export async function applyNewVersion(
-	db: D1Database,
-	id: string,
-	version: number,
-	now: number,
-	title: string | null,
-	expectedVersion?: number,
-	expectedTitle?: string,
+  db: D1Database,
+  id: string,
+  version: number,
+  now: number,
+  title: string | null,
+  expectedVersion?: number,
+  expectedTitle?: string,
 ): Promise<boolean> {
-	const [res] = await db.batch([
-		db
-			.prepare(`UPDATE document SET current_version = ?, updated_at = ?, title = COALESCE(?, title)
+  const [res] = await db.batch([
+    db
+      .prepare(`UPDATE document SET current_version = ?, updated_at = ?, title = COALESCE(?, title)
 			WHERE id = ? AND (? IS NULL OR current_version = ?) AND (? IS NULL OR title = ?) AND EXISTS (SELECT 1 FROM document_version WHERE document_id = document.id AND version = ?)`)
-			.bind(
-				version,
-				now,
-				title,
-				id,
-				expectedVersion ?? null,
-				expectedVersion ?? null,
-				expectedTitle ?? null,
-				expectedTitle ?? null,
-				version,
-			),
-		db
-			.prepare(`UPDATE document_version SET ready = 1 WHERE document_id = ? AND version = ?
+      .bind(
+        version,
+        now,
+        title,
+        id,
+        expectedVersion ?? null,
+        expectedVersion ?? null,
+        expectedTitle ?? null,
+        expectedTitle ?? null,
+        version,
+      ),
+    db
+      .prepare(`UPDATE document_version SET ready = 1 WHERE document_id = ? AND version = ?
 			AND EXISTS (SELECT 1 FROM document WHERE id = ? AND current_version = ?)`)
-			.bind(id, version, id, version),
-	]);
-	return (res!.meta.changes ?? 0) > 0;
+      .bind(id, version, id, version),
+  ]);
+  return (res!.meta.changes ?? 0) > 0;
 }
 
 /** Rename live metadata only. The returned row is the exact state this write committed. */
 export async function compareAndSetDocumentTitle(
-	db: D1Database,
-	id: string,
-	title: string,
-	expectedVersion: number,
-	expectedTitle: string,
-	now: number,
+  db: D1Database,
+  id: string,
+  title: string,
+  expectedVersion: number,
+  expectedTitle: string,
+  now: number,
 ): Promise<DocumentRow | null> {
-	return db
-		.prepare(`UPDATE document
+  return db
+    .prepare(`UPDATE document
 		SET title = ?, updated_at = CASE WHEN title = ? THEN updated_at ELSE ? END
 		WHERE id = ? AND current_version = ? AND title = ?
 		AND (expires_at IS NULL OR expires_at >= ?)
 		AND EXISTS (SELECT 1 FROM document_version WHERE document_id = document.id AND version = current_version AND ready = 1)
 		RETURNING id, title, current_version, created_at, updated_at, expires_at`)
-		.bind(title, title, now, id, expectedVersion, expectedTitle, now)
-		.first<DocumentRow>();
+    .bind(title, title, now, id, expectedVersion, expectedTitle, now)
+    .first<DocumentRow>();
 }
 
 /** Move the pointer to an existing version (rollback). false when it does not exist. */
-export async function setCurrentVersion(db: D1Database, id: string, version: number, now: number): Promise<boolean> {
-	const res = await db
-		.prepare(
-			`UPDATE document SET current_version = ?, updated_at = ?
+export async function setCurrentVersion(
+  db: D1Database,
+  id: string,
+  version: number,
+  now: number,
+): Promise<boolean> {
+  const res = await db
+    .prepare(
+      `UPDATE document SET current_version = ?, updated_at = ?
 			WHERE id = ? AND EXISTS (SELECT 1 FROM document_version WHERE document_id = document.id AND version = ? AND ready = 1)`,
-		)
-		.bind(version, now, id, version)
-		.run();
-	return (res.meta.changes ?? 0) > 0;
+    )
+    .bind(version, now, id, version)
+    .run();
+  return (res.meta.changes ?? 0) > 0;
 }
 
 /** Drop a staged version row after a failed blob write. */
 export async function deleteVersion(db: D1Database, id: string, version: number): Promise<void> {
-	await db.prepare("DELETE FROM document_version WHERE document_id = ? AND version = ?").bind(id, version).run();
+  await db
+    .prepare("DELETE FROM document_version WHERE document_id = ? AND version = ?")
+    .bind(id, version)
+    .run();
 }
 
 export async function insertShare(db: D1Database, row: ShareRow): Promise<void> {
-	await db
-		.prepare("INSERT INTO share (token, document_id, created_at, expires_at, revoked) VALUES (?, ?, ?, ?, ?)")
-		.bind(row.token, row.document_id, row.created_at, row.expires_at, row.revoked)
-		.run();
+  await db
+    .prepare(
+      "INSERT INTO share (token, document_id, created_at, expires_at, revoked) VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(row.token, row.document_id, row.created_at, row.expires_at, row.revoked)
+    .run();
 }
 
 /** Active (not revoked, not expired) shares for a document, newest first. */
-export async function listShares(db: D1Database, documentId: string, now: number): Promise<ShareRow[]> {
-	const { results } = await db
-		.prepare("SELECT * FROM share WHERE document_id = ? AND revoked = 0 AND expires_at > ? ORDER BY created_at DESC")
-		.bind(documentId, now)
-		.all<ShareRow>();
-	return results;
+export async function listShares(
+  db: D1Database,
+  documentId: string,
+  now: number,
+): Promise<ShareRow[]> {
+  const { results } = await db
+    .prepare(
+      "SELECT * FROM share WHERE document_id = ? AND revoked = 0 AND expires_at > ? ORDER BY created_at DESC",
+    )
+    .bind(documentId, now)
+    .all<ShareRow>();
+  return results;
 }
 
 /**
@@ -509,31 +554,35 @@ export async function listShares(db: D1Database, documentId: string, now: number
  * current one (SPEC §6.2).
  */
 export async function getLiveDocumentByShareToken(
-	db: D1Database,
-	token: string,
-	now: number,
+  db: D1Database,
+  token: string,
+  now: number,
 ): Promise<ResolvedDocument | null> {
-	return db
-		.prepare(
-			`SELECT ${RESOLVED_COLUMNS}
+  return db
+    .prepare(
+      `SELECT ${RESOLVED_COLUMNS}
 			FROM document d
 				${CURRENT_JOIN}
 				JOIN share s ON s.document_id = d.id
 				WHERE s.token = ? AND s.revoked = 0 AND s.expires_at > ?
 					AND (d.expires_at IS NULL OR d.expires_at >= ?)`,
-		)
-		.bind(token, now, now)
-		.first<ResolvedDocument>();
+    )
+    .bind(token, now, now)
+    .first<ResolvedDocument>();
 }
 
-export async function getLiveShare(db: D1Database, token: string, now: number): Promise<ShareRow | null> {
-	return db
-		.prepare("SELECT * FROM share WHERE token = ? AND revoked = 0 AND expires_at > ?")
-		.bind(token, now)
-		.first<ShareRow>();
+export async function getLiveShare(
+  db: D1Database,
+  token: string,
+  now: number,
+): Promise<ShareRow | null> {
+  return db
+    .prepare("SELECT * FROM share WHERE token = ? AND revoked = 0 AND expires_at > ?")
+    .bind(token, now)
+    .first<ShareRow>();
 }
 
 export async function revokeShare(db: D1Database, token: string): Promise<boolean> {
-	const res = await db.prepare("UPDATE share SET revoked = 1 WHERE token = ?").bind(token).run();
-	return (res.meta.changes ?? 0) > 0;
+  const res = await db.prepare("UPDATE share SET revoked = 1 WHERE token = ?").bind(token).run();
+  return (res.meta.changes ?? 0) > 0;
 }
