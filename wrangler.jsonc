@@ -15,12 +15,14 @@
 		{ "pattern": "poof.5n7.me", "custom_domain": true },
 		{ "pattern": "mcp.poof.5n7.me", "custom_domain": true },
 	],
-	"d1_databases": [{
-		"binding": "DB",
-		"database_name": "poof-db",
-		"database_id": "b1fbd43f-72f2-4b66-9353-680c82890405",
-		"migrations_dir": "migrations",
-	}],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "poof-db",
+			"database_id": "b1fbd43f-72f2-4b66-9353-680c82890405",
+			"migrations_dir": "migrations",
+		},
+	],
 	"r2_buckets": [{ "binding": "BLOBS", "bucket_name": "poof-blobs" }],
 	"ai": { "binding": "AI" },
 	"triggers": { "crons": ["0 3 * * 1"] },
