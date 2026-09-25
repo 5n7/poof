@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 // Interactive and headless client for the poof JSON API.
 
-import { defineCommand, runMain } from "citty";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+
+import { defineCommand, runMain } from "citty";
 
 import {
 	api,
