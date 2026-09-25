@@ -25,16 +25,16 @@ const TERMINAL_TITLE = "untitled";
 // review. Its 60-character limit leaves room below AI_TITLE_MAX_LENGTH for a
 // slightly long response.
 const SYSTEM_PROMPT =
-	"You generate titles for documents. Reply with the title and nothing else. Use one line of at most 60 characters, " +
-	"written in the same language as the document. Do not use quotation marks, Markdown, a trailing period, a preamble, " +
-	"or an explanation.";
+  "You generate titles for documents. Reply with the title and nothing else. Use one line of at most 60 characters, " +
+  "written in the same language as the document. Do not use quotation marks, Markdown, a trailing period, a preamble, " +
+  "or an explanation.";
 
 // The model returned English titles for two of three Japanese documents when
 // asked to match the document's language. This prompt names Japanese directly
 // and JA_ONE_SHOT gives it one example.
 const SYSTEM_PROMPT_JA =
-	"You generate titles for documents. Reply with the title and nothing else. Use one line of at most 60 characters. " +
-	"Reply in Japanese. Do not use quotation marks, Markdown, a trailing period, a preamble, or an explanation.";
+  "You generate titles for documents. Reply with the title and nothing else. Use one line of at most 60 characters. " +
+  "Reply in Japanese. Do not use quotation marks, Markdown, a trailing period, a preamble, or an explanation.";
 
 /**
  * Build both the example request and the real request in the same format.
@@ -43,7 +43,7 @@ const SYSTEM_PROMPT_JA =
  * is not a security boundary. lib/render.ts and hono/jsx escape the title.
  */
 function documentTurn(excerpt: string) {
-	return { role: "user", content: `Title this document:\n\n<document>\n${excerpt}\n</document>` };
+  return { role: "user", content: `Title this document:\n\n<document>\n${excerpt}\n</document>` };
 }
 
 /**
@@ -52,11 +52,11 @@ function documentTurn(excerpt: string) {
  * language without steering titles toward this app's usual subjects.
  */
 const JA_ONE_SHOT = [
-	documentTurn(
-		"ベランダのプランターで育てているミニトマトが、五月の植え付けからようやく色づきはじめた。" +
-			"水やりは朝と夕方の二回で、土が湿っている日は控える。葉の裏に虫がつきやすいため、週末にまとめて確認している。",
-	),
-	{ role: "assistant", content: "ミニトマトの水やりと虫よけ" },
+  documentTurn(
+    "ベランダのプランターで育てているミニトマトが、五月の植え付けからようやく色づきはじめた。" +
+      "水やりは朝と夕方の二回で、土が湿っている日は控える。葉の裏に虫がつきやすいため、週末にまとめて確認している。",
+  ),
+  { role: "assistant", content: "ミニトマトの水やりと虫よけ" },
 ];
 
 /**
@@ -97,7 +97,8 @@ const MIN_KANA_CHARS = 3;
  * an ordinary way for a title to start. Missing a preamble merely means a poor
  * title gets used, while a false positive throws a good one away.
  */
-const REFUSAL_PREFIX = /^(?:(?:sure|of course|certainly|okay)\s*[,!:]|here(?:['’]s| is)\b|i\s+(?:cannot|can['’]?t)\b)/i;
+const REFUSAL_PREFIX =
+  /^(?:(?:sure|of course|certainly|okay)\s*[,!:]|here(?:['’]s| is)\b|i\s+(?:cannot|can['’]?t)\b)/i;
 
 /**
  * Reject titles made only of punctuation, invisible characters, or emoji. The
@@ -110,13 +111,13 @@ const EMPHASIS_MARKERS = ["**", "__", "*", "_"];
 
 /** Only unwrapped when the pair matches at both ends. */
 const QUOTE_PAIRS: [string, string][] = [
-	['"', '"'],
-	["'", "'"],
-	["`", "`"],
-	["“", "”"],
-	["‘", "’"],
-	["「", "」"],
-	["『", "』"],
+  ['"', '"'],
+  ["'", "'"],
+  ["`", "`"],
+  ["“", "”"],
+  ["‘", "’"],
+  ["「", "」"],
+  ["『", "』"],
 ];
 
 /**
@@ -124,8 +125,8 @@ const QUOTE_PAIRS: [string, string][] = [
  * shapes.
  */
 interface TextOutput {
-	response?: unknown;
-	choices?: { message?: { content?: unknown } }[];
+  response?: unknown;
+  choices?: { message?: { content?: unknown } }[];
 }
 
 /**
@@ -137,27 +138,27 @@ interface TextOutput {
  * that surround the full title.
  */
 function unwrapEmphasis(text: string): string {
-	for (const marker of EMPHASIS_MARKERS) {
-		if (text.length <= marker.length * 2) continue;
-		if (!text.startsWith(marker) || !text.endsWith(marker)) continue;
-		const inner = text.slice(marker.length, -marker.length);
-		// `*a* and *b*` opens and closes with the marker without being wrapped in it.
-		if (inner.includes(marker)) continue;
-		return inner.trim();
-	}
-	return text;
+  for (const marker of EMPHASIS_MARKERS) {
+    if (text.length <= marker.length * 2) continue;
+    if (!text.startsWith(marker) || !text.endsWith(marker)) continue;
+    const inner = text.slice(marker.length, -marker.length);
+    // `*a* and *b*` opens and closes with the marker without being wrapped in it.
+    if (inner.includes(marker)) continue;
+    return inner.trim();
+  }
+  return text;
 }
 
 /** One layer of matched surrounding quotes, or the string unchanged. */
 function unwrapQuotes(text: string): string {
-	for (const [open, close] of QUOTE_PAIRS) {
-		if (text.length <= 1 || !text.startsWith(open) || !text.endsWith(close)) continue;
-		const inner = text.slice(open.length, -close.length);
-		// Do not unwrap titles such as `「設計」と「実装」` or `"Alpha" vs "Beta"`.
-		if (inner.includes(open) || inner.includes(close)) continue;
-		return inner.trim();
-	}
-	return text;
+  for (const [open, close] of QUOTE_PAIRS) {
+    if (text.length <= 1 || !text.startsWith(open) || !text.endsWith(close)) continue;
+    const inner = text.slice(open.length, -close.length);
+    // Do not unwrap titles such as `「設計」と「実装」` or `"Alpha" vs "Beta"`.
+    if (inner.includes(open) || inner.includes(close)) continue;
+    return inner.trim();
+  }
+  return text;
 }
 
 /**
@@ -169,74 +170,74 @@ function unwrapQuotes(text: string): string {
  * Do not HTML-escape here. lib/render.ts and hono/jsx escape at render time.
  */
 export function sanitizeAiTitle(raw: unknown): string | null {
-	if (typeof raw !== "string" || !raw) return null;
+  if (typeof raw !== "string" || !raw) return null;
 
-	// Reasoning models may wrap scratch text in <think> tags. Keep what
-	// follows the last close tag.
-	let text = raw;
-	const thinkEnd = text.lastIndexOf("</think>");
-	if (thinkEnd !== -1) text = text.slice(thinkEnd + "</think>".length);
-	// An opener still standing here never closed. With max_tokens set to 32, this
-	// usually means the answer was cut off mid-thought. There is
-	// nothing after the block to keep, and the opening of a model thinking out
-	// loud ("Okay, the user wants a title for…") must not become the title.
-	if (/<think\b/i.test(text)) return null;
+  // Reasoning models may wrap scratch text in <think> tags. Keep what
+  // follows the last close tag.
+  let text = raw;
+  const thinkEnd = text.lastIndexOf("</think>");
+  if (thinkEnd !== -1) text = text.slice(thinkEnd + "</think>".length);
+  // An opener still standing here never closed. With max_tokens set to 32, this
+  // usually means the answer was cut off mid-thought. There is
+  // nothing after the block to keep, and the opening of a model thinking out
+  // loud ("Okay, the user wants a title for…") must not become the title.
+  if (/<think\b/i.test(text)) return null;
 
-	// Control and format characters. \n survives so the line split below still
-	// works and \t so the whitespace collapse below sees it as a separator instead
-	// of stripping it and welding two words together. Matched by Unicode category,
-	// since a literal control range in a regex is a lint error; a BOM is U+FEFF and
-	// falls out with the rest of Cf.
-	//
-	// Cf is stripped rather than merely rejected, and for the same reason `table()`
-	// in routes/mcp.ts flattens it: it is invisible, so it cannot be judged by
-	// reading the title. RLO, U+202E, reverses the display direction of everything
-	// after it in a library row. U+200C and
-	// U+200D are the exceptions: ZWNJ is orthographically required in Persian and
-	// Devanagari, and ZWJ is what holds an emoji sequence together, so dropping
-	// either mangles a legitimate title instead of cleaning it.
-	text = text.replace(/[\p{Cc}\p{Cf}]/gu, (ch) => ("\n\t\u200C\u200D".includes(ch) ? ch : ""));
+  // Control and format characters. \n survives so the line split below still
+  // works and \t so the whitespace collapse below sees it as a separator instead
+  // of stripping it and welding two words together. Matched by Unicode category,
+  // since a literal control range in a regex is a lint error; a BOM is U+FEFF and
+  // falls out with the rest of Cf.
+  //
+  // Cf is stripped rather than merely rejected, and for the same reason `table()`
+  // in routes/mcp.ts flattens it: it is invisible, so it cannot be judged by
+  // reading the title. RLO, U+202E, reverses the display direction of everything
+  // after it in a library row. U+200C and
+  // U+200D are the exceptions: ZWNJ is orthographically required in Persian and
+  // Devanagari, and ZWJ is what holds an emoji sequence together, so dropping
+  // either mangles a legitimate title instead of cleaning it.
+  text = text.replace(/[\p{Cc}\p{Cf}]/gu, (ch) => ("\n\t\u200C\u200D".includes(ch) ? ch : ""));
 
-	const lines = text
-		.split(/\r?\n/)
-		.map((line) => line.trim())
-		.filter((line) => line !== "");
-	if (lines.length === 0) return null;
-	let title = lines[0];
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  if (lines.length === 0) return null;
+  let title = lines[0];
 
-	// A `Title:` / `タイトル:` label, either with the title on the same line or
-	// (when the model put the label alone on its own line) on the next one.
-	const labelled = /^(?:title|タイトル)\s*[:：]\s*(.*)$/i.exec(title);
-	if (labelled) title = labelled[1].trim() || lines[1] || "";
+  // A `Title:` / `タイトル:` label, either with the title on the same line or
+  // (when the model put the label alone on its own line) on the next one.
+  const labelled = /^(?:title|タイトル)\s*[:：]\s*(.*)$/i.exec(title);
+  if (labelled) title = labelled[1].trim() || lines[1] || "";
 
-	// A heading, bullet or numbered-list marker the model added on its own. The
-	// whitespace after the hashes is required, not optional: an ATX heading has to
-	// have it (as `firstMarkdownHeading` below already insists), and without that
-	// `#hashtag`, `#1 Priority` and `######Deep` all lose their leading text.
-	title = title.replace(/^(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)/, "");
-	// Unwrap a Markdown link only when it spans the whole title.
-	title = title.replace(/^\[([^\]]+)\]\([^)]*\)$/, "$1");
-	title = unwrapEmphasis(title);
-	// Up to three layers, e.g. a quoted title inside a code span.
-	for (let i = 0; i < 3; i++) {
-		const unwrapped = unwrapQuotes(title);
-		if (unwrapped === title) break;
-		title = unwrapped;
-	}
-	// Sentence terminators only, and all of a run of them (`The End...`). `?` and
-	// `？` are NOT stripped: a question is a perfectly good title.
-	title = title.replace(/[.。!！]+$/, "");
-	// Collapse whitespace runs except U+3000, the ideographic space. It is a
-	// deliberate part of a Japanese title and not padding to be normalized away.
-	title = title.replace(/[^\S\u3000]+/g, " ").trim();
+  // A heading, bullet or numbered-list marker the model added on its own. The
+  // whitespace after the hashes is required, not optional: an ATX heading has to
+  // have it (as `firstMarkdownHeading` below already insists), and without that
+  // `#hashtag`, `#1 Priority` and `######Deep` all lose their leading text.
+  title = title.replace(/^(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)/, "");
+  // Unwrap a Markdown link only when it spans the whole title.
+  title = title.replace(/^\[([^\]]+)\]\([^)]*\)$/, "$1");
+  title = unwrapEmphasis(title);
+  // Up to three layers, e.g. a quoted title inside a code span.
+  for (let i = 0; i < 3; i++) {
+    const unwrapped = unwrapQuotes(title);
+    if (unwrapped === title) break;
+    title = unwrapped;
+  }
+  // Sentence terminators only, and all of a run of them (`The End...`). `?` and
+  // `？` are NOT stripped: a question is a perfectly good title.
+  title = title.replace(/[.。!！]+$/, "");
+  // Collapse whitespace runs except U+3000, the ideographic space. It is a
+  // deliberate part of a Japanese title and not padding to be normalized away.
+  title = title.replace(/[^\S\u3000]+/g, " ").trim();
 
-	if (title.length < 1) return null;
-	if (!HAS_CONTENT.test(title)) return null;
-	// Code points, not UTF-16 units: emoji and some CJK would otherwise be
-	// counted double and a perfectly good Japanese title thrown away.
-	if ([...title].length > AI_TITLE_MAX_LENGTH) return null;
-	if (REFUSAL_PREFIX.test(title)) return null;
-	return title;
+  if (title.length < 1) return null;
+  if (!HAS_CONTENT.test(title)) return null;
+  // Code points, not UTF-16 units: emoji and some CJK would otherwise be
+  // counted double and a perfectly good Japanese title thrown away.
+  if ([...title].length > AI_TITLE_MAX_LENGTH) return null;
+  if (REFUSAL_PREFIX.test(title)) return null;
+  return title;
 }
 
 /**
@@ -263,8 +264,8 @@ export function sanitizeAiTitle(raw: unknown): string | null {
 const MD_HEADING = /(?:^|\n)#[^\S\n]+(.+?)[^\S\n]*\r?(?=\n|$)/;
 
 export function firstMarkdownHeading(content: string): string | null {
-	const match = MD_HEADING.exec(content);
-	return match ? match[1] : null;
+  const match = MD_HEADING.exec(content);
+  return match ? match[1] : null;
 }
 
 /**
@@ -288,10 +289,10 @@ export function firstMarkdownHeading(content: string): string | null {
  * Exported for tests.
  */
 export function looksJapanese(excerpt: string): boolean {
-	const kana = excerpt.match(KANA)?.length ?? 0;
-	if (kana < MIN_KANA_CHARS) return false;
-	const latin = excerpt.match(LATIN)?.length ?? 0;
-	return kana / (kana + latin) >= MIN_KANA_RATIO;
+  const kana = excerpt.match(KANA)?.length ?? 0;
+  if (kana < MIN_KANA_CHARS) return false;
+  const latin = excerpt.match(LATIN)?.length ?? 0;
+  return kana / (kana + latin) >= MIN_KANA_RATIO;
 }
 
 /**
@@ -304,80 +305,84 @@ export function looksJapanese(excerpt: string): boolean {
  * line is far cheaper than a document that could not be created.
  */
 function describeError(err: unknown): string {
-	try {
-		return err instanceof Error ? String(err.message) : String(err);
-	} catch {
-		return "unreadable error";
-	}
+  try {
+    return err instanceof Error ? String(err.message) : String(err);
+  } catch {
+    return "unreadable error";
+  }
 }
 
 /**
  * Ask Workers AI for a title. Return `null` for a missing binding, timeout,
  * retired model, or unusable output.
  */
-export async function generateAiTitle(env: Env, source: string, languageSource = source): Promise<string | null> {
-	const controller = new AbortController();
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	try {
-		// Both env reads sit inside the try: neither is guaranteed to be a plain
-		// property read, and "never throws" has to hold unconditionally.
-		//
-		// DEV_DISABLE_AI_TITLES skips the call during local development (mirrors
-		// DEV_DISABLE_ACCESS). Read off an optional shape rather than through Env
-		// because `wrangler types` generates the key from whatever `.dev.vars` the
-		// machine that ran it happens to hold. This is how DEV_DISABLE_ACCESS got
-		// into worker-configuration.d.ts. It is declared in some checkouts and
-		// absent in others, and never set in production at all.
-		if ((env as { DEV_DISABLE_AI_TITLES?: string }).DEV_DISABLE_AI_TITLES === "1") return null;
-		if (!env.AI) return null;
+export async function generateAiTitle(
+  env: Env,
+  source: string,
+  languageSource = source,
+): Promise<string | null> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // Both env reads sit inside the try: neither is guaranteed to be a plain
+    // property read, and "never throws" has to hold unconditionally.
+    //
+    // DEV_DISABLE_AI_TITLES skips the call during local development (mirrors
+    // DEV_DISABLE_ACCESS). Read off an optional shape rather than through Env
+    // because `wrangler types` generates the key from whatever `.dev.vars` the
+    // machine that ran it happens to hold. This is how DEV_DISABLE_ACCESS got
+    // into worker-configuration.d.ts. It is declared in some checkouts and
+    // absent in others, and never set in production at all.
+    if ((env as { DEV_DISABLE_AI_TITLES?: string }).DEV_DISABLE_AI_TITLES === "1") return null;
+    if (!env.AI) return null;
 
-		// AbortController + setTimeout, not AbortSignal.timeout(): the latter can
-		// raise an uncatchable async DOMException under workerd (workerd#1020),
-		// which could make an upload fail.
-		const timeout = new Promise<never>((_, reject) => {
-			timer = setTimeout(() => {
-				controller.abort();
-				reject(new Error("ai title timed out"));
-			}, AI_TITLE_TIMEOUT_MS);
-		});
+    // AbortController + setTimeout, not AbortSignal.timeout(): the latter can
+    // raise an uncatchable async DOMException under workerd (workerd#1020),
+    // which could make an upload fail.
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error("ai title timed out"));
+      }, AI_TITLE_TIMEOUT_MS);
+    });
 
-		// Multi-file suggestions pass their content excerpts separately so English
-		// filenames and request scaffolding do not determine the title language.
-		const excerpt = source.slice(0, AI_TITLE_MAX_CHARS);
-		const japanese = looksJapanese(languageSource.slice(0, AI_TITLE_MAX_CHARS));
+    // Multi-file suggestions pass their content excerpts separately so English
+    // filenames and request scaffolding do not determine the title language.
+    const excerpt = source.slice(0, AI_TITLE_MAX_CHARS);
+    const japanese = looksJapanese(languageSource.slice(0, AI_TITLE_MAX_CHARS));
 
-		const call = env.AI.run(
-			AI_TITLE_MODEL,
-			{
-				messages: [
-					{ role: "system", content: japanese ? SYSTEM_PROMPT_JA : SYSTEM_PROMPT },
-					// One-shot on the Japanese branch only. The English path is proven in
-					// production and gets exactly the messages it always got.
-					...(japanese ? JA_ONE_SHOT : []),
-					documentTurn(excerpt),
-				],
-				max_tokens: 32,
-				temperature: 0,
-			},
-			{ signal: controller.signal },
-		);
-		// The race enforces the bound. The signal requests upstream
-		// cancellation. A rejection arriving after the race must not surface as an
-		// unhandled rejection once the response has already been sent.
-		call.catch(() => {});
+    const call = env.AI.run(
+      AI_TITLE_MODEL,
+      {
+        messages: [
+          { role: "system", content: japanese ? SYSTEM_PROMPT_JA : SYSTEM_PROMPT },
+          // One-shot on the Japanese branch only. The English path is proven in
+          // production and gets exactly the messages it always got.
+          ...(japanese ? JA_ONE_SHOT : []),
+          documentTurn(excerpt),
+        ],
+        max_tokens: 32,
+        temperature: 0,
+      },
+      { signal: controller.signal },
+    );
+    // The race enforces the bound. The signal requests upstream
+    // cancellation. A rejection arriving after the race must not surface as an
+    // unhandled rejection once the response has already been sent.
+    call.catch(() => {});
 
-		const out: TextOutput = await Promise.race([call, timeout]);
-		return sanitizeAiTitle(out?.response ?? out?.choices?.[0]?.message?.content);
-	} catch (err) {
-		// Log failures so a retired model does not go unnoticed. Log only the message
-		// through describeError because an error object can carry
-		// the request that produced it, and that request is the first 2000
-		// characters of a private document.
-		console.warn("ai title failed", describeError(err));
-		return null;
-	} finally {
-		clearTimeout(timer);
-	}
+    const out: TextOutput = await Promise.race([call, timeout]);
+    return sanitizeAiTitle(out?.response ?? out?.choices?.[0]?.message?.content);
+  } catch (err) {
+    // Log failures so a retired model does not go unnoticed. Log only the message
+    // through describeError because an error object can carry
+    // the request that produced it, and that request is the first 2000
+    // characters of a private document.
+    console.warn("ai title failed", describeError(err));
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -393,18 +398,18 @@ export async function generateAiTitle(env: Env, source: string, languageSource =
  * title only labels the library row.
  */
 export async function resolveNewTitle(
-	env: Env,
-	input: { fallback: string; kind: "html" | "md"; source: string },
+  env: Env,
+  input: { fallback: string; kind: "html" | "md"; source: string },
 ): Promise<string> {
-	// A caller's fallback is not guaranteed usable, and an empty title is an empty
-	// library row and an empty browser tab. Neither adapter is known to pass a
-	// blank one today. workerd hands a `filename=""` multipart part to the create
-	// route as a string field, not a File, so readUpload returns 400 first. Keep the
-	// final fallback here so every caller gets a nonblank title.
-	const fallback = input.fallback.trim() || TERMINAL_TITLE;
-	if (input.kind !== "md") return fallback;
-	// `|| null`, not `??`: a `#` followed by nothing but spaces captures a blank
-	// heading, which labels a document no better than an empty file name does.
-	const heading = firstMarkdownHeading(input.source)?.trim() || null;
-	return (await generateAiTitle(env, input.source)) ?? heading ?? fallback;
+  // A caller's fallback is not guaranteed usable, and an empty title is an empty
+  // library row and an empty browser tab. Neither adapter is known to pass a
+  // blank one today. workerd hands a `filename=""` multipart part to the create
+  // route as a string field, not a File, so readUpload returns 400 first. Keep the
+  // final fallback here so every caller gets a nonblank title.
+  const fallback = input.fallback.trim() || TERMINAL_TITLE;
+  if (input.kind !== "md") return fallback;
+  // `|| null`, not `??`: a `#` followed by nothing but spaces captures a blank
+  // heading, which labels a document no better than an empty file name does.
+  const heading = firstMarkdownHeading(input.source)?.trim() || null;
+  return (await generateAiTitle(env, input.source)) ?? heading ?? fallback;
 }

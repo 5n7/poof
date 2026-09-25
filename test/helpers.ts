@@ -3,12 +3,12 @@ import { createExecutionContext, env, waitOnExecutionContext } from "cloudflare:
 import worker from "../src/index";
 import type { DocumentKind } from "../src/lib/content";
 import {
-	deleteVersion,
-	insertDocument,
-	insertShare,
-	insertVersion,
-	setCurrentVersion,
-	versionR2Key,
+  deleteVersion,
+  insertDocument,
+  insertShare,
+  insertVersion,
+  setCurrentVersion,
+  versionR2Key,
 } from "../src/lib/db";
 
 /** Must match `OWNER_HOST` in vitest.config.ts. */
@@ -19,39 +19,39 @@ export const MCP_BASE = "https://mcp.poof.5n7.me";
 
 /** A minimal call with the `Accept` value required by Streamable HTTP. */
 export const MCP_CALL: RequestInit = {
-	method: "POST",
-	headers: { Accept: "application/json, text/event-stream", "Content-Type": "application/json" },
-	body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+  method: "POST",
+  headers: { Accept: "application/json, text/event-stream", "Content-Type": "application/json" },
+  body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
 };
 
 /** Build a test environment; an explicit `undefined` removes a binding. */
 export function envWith(overrides: Partial<Record<keyof Env, string | undefined>>): Env {
-	const merged: Env = { ...env };
-	const mutable = merged as Partial<Record<keyof Env, unknown>>;
+  const merged: Env = { ...env };
+  const mutable = merged as Partial<Record<keyof Env, unknown>>;
 
-	for (const [key, value] of Object.entries(overrides) as [keyof Env, string | undefined][]) {
-		if (value === undefined) delete mutable[key];
-		else mutable[key] = value;
-	}
-	return merged;
+  for (const [key, value] of Object.entries(overrides) as [keyof Env, string | undefined][]) {
+    if (value === undefined) delete mutable[key];
+    else mutable[key] = value;
+  }
+  return merged;
 }
 
 /** Call the Worker directly with binding overrides and wait for its execution context. */
 export async function fetchWorker(
-	url: string,
-	overrides: Partial<Record<keyof Env, string | undefined>> = {},
-	init?: RequestInit,
+  url: string,
+  overrides: Partial<Record<keyof Env, string | undefined>> = {},
+  init?: RequestInit,
 ): Promise<Response> {
-	const ctx = createExecutionContext();
-	const res = await worker.fetch!(new Request(url, init), envWith(overrides), ctx);
-	await waitOnExecutionContext(ctx);
-	return res;
+  const ctx = createExecutionContext();
+  const res = await worker.fetch!(new Request(url, init), envWith(overrides), ctx);
+  await waitOnExecutionContext(ctx);
+  return res;
 }
 
 function defaultSource(kind: DocumentKind, text: string): string {
-	if (kind === "md") return `# ${text}`;
-	if (kind === "html") return `<html><body>${text}</body></html>`;
-	return text;
+  if (kind === "md") return `# ${text}`;
+  if (kind === "html") return `<html><body>${text}</body></html>`;
+  return text;
 }
 
 /**
@@ -63,38 +63,44 @@ function defaultSource(kind: DocumentKind, text: string): string {
  * MAX(version) + 1 numbering tests).
  */
 export async function seedDoc(
-	id: string,
-	opts: {
-		title?: string;
-		kind?: DocumentKind;
-		createdAt?: number;
-		expiresAt?: number | null;
-		body?: string | null;
-		version?: number;
-		r2Key?: string;
-	} = {},
+  id: string,
+  opts: {
+    title?: string;
+    kind?: DocumentKind;
+    createdAt?: number;
+    expiresAt?: number | null;
+    body?: string | null;
+    version?: number;
+    r2Key?: string;
+  } = {},
 ): Promise<string> {
-	const version = opts.version ?? 1;
-	const createdAt = opts.createdAt ?? 0;
-	const kind = opts.kind ?? "html";
-	const r2Key = opts.r2Key ?? (version === 1 ? `doc/${id}.html` : versionR2Key(id, version));
-	if (opts.body !== null) await env.BLOBS.put(r2Key, opts.body ?? defaultSource(kind, "doc"));
-	await insertDocument(env.DB, {
-		id,
-		title: opts.title ?? id,
-		kind,
-		r2_key: r2Key,
-		created_at: createdAt,
-		expires_at: opts.expiresAt ?? null,
-	});
-	if (version !== 1) {
-		// insertDocument always writes version 1; renumber by adding the requested
-		// version, moving the pointer (never leaving it dangling), then dropping 1.
-		await insertVersion(env.DB, { document_id: id, version, kind, r2_key: r2Key, created_at: createdAt });
-		await setCurrentVersion(env.DB, id, version, createdAt);
-		await deleteVersion(env.DB, id, 1);
-	}
-	return r2Key;
+  const version = opts.version ?? 1;
+  const createdAt = opts.createdAt ?? 0;
+  const kind = opts.kind ?? "html";
+  const r2Key = opts.r2Key ?? (version === 1 ? `doc/${id}.html` : versionR2Key(id, version));
+  if (opts.body !== null) await env.BLOBS.put(r2Key, opts.body ?? defaultSource(kind, "doc"));
+  await insertDocument(env.DB, {
+    id,
+    title: opts.title ?? id,
+    kind,
+    r2_key: r2Key,
+    created_at: createdAt,
+    expires_at: opts.expiresAt ?? null,
+  });
+  if (version !== 1) {
+    // insertDocument always writes version 1; renumber by adding the requested
+    // version, moving the pointer (never leaving it dangling), then dropping 1.
+    await insertVersion(env.DB, {
+      document_id: id,
+      version,
+      kind,
+      r2_key: r2Key,
+      created_at: createdAt,
+    });
+    await setCurrentVersion(env.DB, id, version, createdAt);
+    await deleteVersion(env.DB, id, 1);
+  }
+  return r2Key;
 }
 
 /**
@@ -103,37 +109,43 @@ export async function seedDoc(
  * defaults to true, mirroring what a real upload does.
  */
 export async function seedVersion(
-	id: string,
-	version: number,
-	opts: { kind?: DocumentKind; body?: string | null; createdAt?: number; setCurrent?: boolean } = {},
+  id: string,
+  version: number,
+  opts: {
+    kind?: DocumentKind;
+    body?: string | null;
+    createdAt?: number;
+    setCurrent?: boolean;
+  } = {},
 ): Promise<string> {
-	const createdAt = opts.createdAt ?? 0;
-	const r2Key = versionR2Key(id, version);
-	if (opts.body !== null) await env.BLOBS.put(r2Key, opts.body ?? defaultSource(opts.kind ?? "html", `v${version}`));
-	await insertVersion(env.DB, {
-		document_id: id,
-		version,
-		kind: opts.kind ?? "html",
-		r2_key: r2Key,
-		created_at: createdAt,
-	});
-	if (opts.setCurrent !== false) await setCurrentVersion(env.DB, id, version, createdAt);
-	return r2Key;
+  const createdAt = opts.createdAt ?? 0;
+  const r2Key = versionR2Key(id, version);
+  if (opts.body !== null)
+    await env.BLOBS.put(r2Key, opts.body ?? defaultSource(opts.kind ?? "html", `v${version}`));
+  await insertVersion(env.DB, {
+    document_id: id,
+    version,
+    kind: opts.kind ?? "html",
+    r2_key: r2Key,
+    created_at: createdAt,
+  });
+  if (opts.setCurrent !== false) await setCurrentVersion(env.DB, id, version, createdAt);
+  return r2Key;
 }
 
 /** Seed a share row through the real insert path. */
 export async function seedShare(
-	token: string,
-	documentId: string,
-	opts: { createdAt?: number; expiresAt: number; revoked?: 0 | 1 },
+  token: string,
+  documentId: string,
+  opts: { createdAt?: number; expiresAt: number; revoked?: 0 | 1 },
 ): Promise<void> {
-	await insertShare(env.DB, {
-		token,
-		document_id: documentId,
-		created_at: opts.createdAt ?? 0,
-		expires_at: opts.expiresAt,
-		revoked: opts.revoked ?? 0,
-	});
+  await insertShare(env.DB, {
+    token,
+    document_id: documentId,
+    created_at: opts.createdAt ?? 0,
+    expires_at: opts.expiresAt,
+    revoked: opts.revoked ?? 0,
+  });
 }
 
 /**
@@ -141,9 +153,9 @@ export async function seedShare(
  * assertions can then check headers that the spec does not name individually.
  */
 export function headerDump(res: Response): string {
-	let all = "";
-	res.headers.forEach((v, k) => {
-		all += `${k}: ${v}\n`;
-	});
-	return all;
+  let all = "";
+  res.headers.forEach((v, k) => {
+    all += `${k}: ${v}\n`;
+  });
+  return all;
 }

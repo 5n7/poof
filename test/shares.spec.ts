@@ -8,214 +8,223 @@ import { seedDoc, seedShare } from "./helpers";
 const BASE = "https://poof.5n7.me";
 
 async function upload(source: string, kind = "md", title?: string, ttl?: string) {
-	const fd = new FormData();
-	fd.set("file", new File([source], "test.md"), "test.md");
-	fd.set("kind", kind);
-	if (title) fd.set("title", title);
-	if (ttl) fd.set("ttl", ttl);
-	return SELF.fetch(`${BASE}/api/documents`, { method: "POST", body: fd });
+  const fd = new FormData();
+  fd.set("file", new File([source], "test.md"), "test.md");
+  fd.set("kind", kind);
+  if (title) fd.set("title", title);
+  if (ttl) fd.set("ttl", ttl);
+  return SELF.fetch(`${BASE}/api/documents`, { method: "POST", body: fd });
 }
 
 /** Call the share API without conflicting with the core `issueShare` import. */
 async function postShare(id: string, ttl?: string) {
-	return SELF.fetch(`${BASE}/api/documents/${id}/shares`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify(ttl ? { ttl } : {}),
-	});
+  return SELF.fetch(`${BASE}/api/documents/${id}/shares`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(ttl ? { ttl } : {}),
+  });
 }
 
 describe("share lifecycle through the API", () => {
-	it("uploads, shares (default 1d TTL), views, revokes, and re-issues", async () => {
-		const upRes = await upload("# Hello\n\nbody text", "md", "My Doc");
-		expect(upRes.status).toBe(201);
-		const doc = await upRes.json<{ id: string; url: string; title: string }>();
-		expect(doc.title).toBe("My Doc");
-		expect(doc.url).toBe(`/d/${doc.id}`);
+  it("uploads, shares (default 1d TTL), views, revokes, and re-issues", async () => {
+    const upRes = await upload("# Hello\n\nbody text", "md", "My Doc");
+    expect(upRes.status).toBe(201);
+    const doc = await upRes.json<{ id: string; url: string; title: string }>();
+    expect(doc.title).toBe("My Doc");
+    expect(doc.url).toBe(`/d/${doc.id}`);
 
-		// Issue a share with the default TTL (1 day).
-		const before = (Date.now() / 1000) | 0;
-		const shRes = await postShare(doc.id);
-		expect(shRes.status).toBe(201);
-		const share = await shRes.json<{ token: string; expires_at: number; url: string }>();
-		expect(share.token.startsWith("s_")).toBe(true);
-		expect(share.url).toBe(`/v/${share.token}`);
-		// Default TTL = now + 86400 (allow a couple seconds of clock drift).
-		expect(share.expires_at).toBeGreaterThanOrEqual(before + 86400);
-		expect(share.expires_at).toBeLessThanOrEqual(before + 86400 + 5);
+    // Issue a share with the default TTL (1 day).
+    const before = (Date.now() / 1000) | 0;
+    const shRes = await postShare(doc.id);
+    expect(shRes.status).toBe(201);
+    const share = await shRes.json<{ token: string; expires_at: number; url: string }>();
+    expect(share.token.startsWith("s_")).toBe(true);
+    expect(share.url).toBe(`/v/${share.token}`);
+    // Default TTL = now + 86400 (allow a couple seconds of clock drift).
+    expect(share.expires_at).toBeGreaterThanOrEqual(before + 86400);
+    expect(share.expires_at).toBeLessThanOrEqual(before + 86400 + 5);
 
-		// Public viewer renders a sandboxed iframe pointing at the raw share URL.
-		const vRes = await SELF.fetch(`${BASE}/v/${share.token}`);
-		expect(vRes.status).toBe(200);
-		const vHtml = await vRes.text();
-		expect(vHtml).toContain('sandbox="allow-scripts allow-popups"');
-		expect(vHtml).toContain(`/raw/${share.token}`);
-		expect(vHtml).not.toContain("allow-same-origin");
+    // Public viewer renders a sandboxed iframe pointing at the raw share URL.
+    const vRes = await SELF.fetch(`${BASE}/v/${share.token}`);
+    expect(vRes.status).toBe(200);
+    const vHtml = await vRes.text();
+    expect(vHtml).toContain('sandbox="allow-scripts allow-popups"');
+    expect(vHtml).toContain(`/raw/${share.token}`);
+    expect(vHtml).not.toContain("allow-same-origin");
 
-		// Raw share endpoint serves the rendered document.
-		const rawRes = await SELF.fetch(`${BASE}/raw/${share.token}`);
-		expect(rawRes.status).toBe(200);
-		expect(await rawRes.text()).toContain("<h1>Hello</h1>");
+    // Raw share endpoint serves the rendered document.
+    const rawRes = await SELF.fetch(`${BASE}/raw/${share.token}`);
+    expect(rawRes.status).toBe(200);
+    expect(await rawRes.text()).toContain("<h1>Hello</h1>");
 
-		// Revocation makes both /v and /raw return 404 immediately.
-		const revRes = await SELF.fetch(`${BASE}/api/shares/${share.token}`, { method: "DELETE" });
-		expect(revRes.status).toBe(200);
-		expect(await revRes.json()).toEqual({ revoked: true });
+    // Revocation makes both /v and /raw return 404 immediately.
+    const revRes = await SELF.fetch(`${BASE}/api/shares/${share.token}`, { method: "DELETE" });
+    expect(revRes.status).toBe(200);
+    expect(await revRes.json()).toEqual({ revoked: true });
 
-		const vAfter = await SELF.fetch(`${BASE}/v/${share.token}`);
-		expect(vAfter.status).toBe(404);
-		expect(await vAfter.text()).toBe("Not Found");
-		const rawAfter = await SELF.fetch(`${BASE}/raw/${share.token}`);
-		expect(rawAfter.status).toBe(404);
+    const vAfter = await SELF.fetch(`${BASE}/v/${share.token}`);
+    expect(vAfter.status).toBe(404);
+    expect(await vAfter.text()).toBe("Not Found");
+    const rawAfter = await SELF.fetch(`${BASE}/raw/${share.token}`);
+    expect(rawAfter.status).toBe(404);
 
-		// Re-issuing a new share for the same document works.
-		const reRes = await postShare(doc.id, "1h");
-		expect(reRes.status).toBe(201);
-		const reShare = await reRes.json<{ token: string }>();
-		const reView = await SELF.fetch(`${BASE}/raw/${reShare.token}`);
-		expect(reView.status).toBe(200);
-	});
+    // Re-issuing a new share for the same document works.
+    const reRes = await postShare(doc.id, "1h");
+    expect(reRes.status).toBe(201);
+    const reShare = await reRes.json<{ token: string }>();
+    const reView = await SELF.fetch(`${BASE}/raw/${reShare.token}`);
+    expect(reView.status).toBe(200);
+  });
 
-	it("lists only active shares (excludes revoked and expired)", async () => {
-		const up = await upload("# List test", "md");
-		const doc = await up.json<{ id: string; title: string }>();
-		// With no supplied title, the document heading becomes the title.
-		expect(doc.title).toBe("List test");
+  it("lists only active shares (excludes revoked and expired)", async () => {
+    const up = await upload("# List test", "md");
+    const doc = await up.json<{ id: string; title: string }>();
+    // With no supplied title, the document heading becomes the title.
+    expect(doc.title).toBe("List test");
 
-		const active = await (await postShare(doc.id, "1d")).json<{ token: string }>();
-		const revoked = await (await postShare(doc.id, "1d")).json<{ token: string }>();
-		await SELF.fetch(`${BASE}/api/shares/${revoked.token}`, { method: "DELETE" });
+    const active = await (await postShare(doc.id, "1d")).json<{ token: string }>();
+    const revoked = await (await postShare(doc.id, "1d")).json<{ token: string }>();
+    await SELF.fetch(`${BASE}/api/shares/${revoked.token}`, { method: "DELETE" });
 
-		// Seed an already-expired share directly.
-		const t = (Date.now() / 1000) | 0;
-		await seedShare("s_expiredlisttest0000000", doc.id, { createdAt: t, expiresAt: t - 10 });
+    // Seed an already-expired share directly.
+    const t = (Date.now() / 1000) | 0;
+    await seedShare("s_expiredlisttest0000000", doc.id, { createdAt: t, expiresAt: t - 10 });
 
-		const listRes = await SELF.fetch(`${BASE}/api/documents/${doc.id}/shares`);
-		const { shares } = await listRes.json<{ shares: { token: string }[] }>();
-		const tokens = shares.map((s) => s.token);
-		expect(tokens).toContain(active.token);
-		expect(tokens).not.toContain(revoked.token);
-		expect(tokens).not.toContain("s_expiredlisttest0000000");
-	});
+    const listRes = await SELF.fetch(`${BASE}/api/documents/${doc.id}/shares`);
+    const { shares } = await listRes.json<{ shares: { token: string }[] }>();
+    const tokens = shares.map((s) => s.token);
+    expect(tokens).toContain(active.token);
+    expect(tokens).not.toContain(revoked.token);
+    expect(tokens).not.toContain("s_expiredlisttest0000000");
+  });
 
-	it("deletes the R2 blob and invalidates the share token", async () => {
-		const up = await upload("# Cascade", "md");
-		const doc = await up.json<{ id: string; title: string }>();
-		// With no supplied title, the document heading becomes the title.
-		expect(doc.title).toBe("Cascade");
-		const share = await (await postShare(doc.id)).json<{ token: string }>();
-		const r2Key = `doc/${doc.id}/v1.html`;
+  it("deletes the R2 blob and invalidates the share token", async () => {
+    const up = await upload("# Cascade", "md");
+    const doc = await up.json<{ id: string; title: string }>();
+    // With no supplied title, the document heading becomes the title.
+    expect(doc.title).toBe("Cascade");
+    const share = await (await postShare(doc.id)).json<{ token: string }>();
+    const r2Key = `doc/${doc.id}/v1.html`;
 
-		expect(await env.BLOBS.get(r2Key)).not.toBeNull();
+    expect(await env.BLOBS.get(r2Key)).not.toBeNull();
 
-		const delRes = await SELF.fetch(`${BASE}/api/documents/${doc.id}`, { method: "DELETE" });
-		expect(delRes.status).toBe(200);
-		expect(await delRes.json()).toEqual({ deleted: true });
+    const delRes = await SELF.fetch(`${BASE}/api/documents/${doc.id}`, { method: "DELETE" });
+    expect(delRes.status).toBe(200);
+    expect(await delRes.json()).toEqual({ deleted: true });
 
-		// Blob removed and share token no longer resolves.
-		expect(await env.BLOBS.get(r2Key)).toBeNull();
-		const rawRes = await SELF.fetch(`${BASE}/raw/${share.token}`);
-		expect(rawRes.status).toBe(404);
+    // Blob removed and share token no longer resolves.
+    expect(await env.BLOBS.get(r2Key)).toBeNull();
+    const rawRes = await SELF.fetch(`${BASE}/raw/${share.token}`);
+    expect(rawRes.status).toBe(404);
 
-		// Second delete of the same id is a 404.
-		const delAgain = await SELF.fetch(`${BASE}/api/documents/${doc.id}`, { method: "DELETE" });
-		expect(delAgain.status).toBe(404);
-	});
+    // Second delete of the same id is a 404.
+    const delAgain = await SELF.fetch(`${BASE}/api/documents/${doc.id}`, { method: "DELETE" });
+    expect(delAgain.status).toBe(404);
+  });
 
-	it("rejects uploads over 10 MiB with 413", async () => {
-		const tooBig = new Uint8Array(10 * 1024 * 1024 + 1);
-		const fd = new FormData();
-		fd.set("file", new File([tooBig], "big.md"), "big.md");
-		fd.set("kind", "md");
-		const res = await SELF.fetch(`${BASE}/api/documents`, { method: "POST", body: fd });
-		expect(res.status).toBe(413);
-	});
+  it("rejects uploads over 10 MiB with 413", async () => {
+    const tooBig = new Uint8Array(10 * 1024 * 1024 + 1);
+    const fd = new FormData();
+    fd.set("file", new File([tooBig], "big.md"), "big.md");
+    fd.set("kind", "md");
+    const res = await SELF.fetch(`${BASE}/api/documents`, { method: "POST", body: fd });
+    expect(res.status).toBe(413);
+  });
 
-	it("embeds a working o_ raw URL in the owner viewer page", async () => {
-		const up = await upload("# Owner view\n\ncontent here", "md", "Owner Doc");
-		const doc = await up.json<{ id: string }>();
+  it("embeds a working o_ raw URL in the owner viewer page", async () => {
+    const up = await upload("# Owner view\n\ncontent here", "md", "Owner Doc");
+    const doc = await up.json<{ id: string }>();
 
-		const dRes = await SELF.fetch(`${BASE}/d/${doc.id}`);
-		expect(dRes.status).toBe(200);
-		const dHtml = await dRes.text();
-		expect(dHtml).toContain('sandbox="allow-scripts allow-popups"');
+    const dRes = await SELF.fetch(`${BASE}/d/${doc.id}`);
+    expect(dRes.status).toBe(200);
+    const dHtml = await dRes.text();
+    expect(dHtml).toContain('sandbox="allow-scripts allow-popups"');
 
-		// Extract the minted o_ token from the iframe src and fetch it.
-		const match = dHtml.match(/<iframe[^>]*src="\/raw\/(o_[^"]+)"/);
-		expect(match).not.toBeNull();
-		const oToken = match![1];
-		const rawRes = await SELF.fetch(`${BASE}/raw/${oToken}`);
-		expect(rawRes.status).toBe(200);
-		expect(await rawRes.text()).toContain("<h1>Owner view</h1>");
-	});
+    // Extract the minted o_ token from the iframe src and fetch it.
+    const match = dHtml.match(/<iframe[^>]*src="\/raw\/(o_[^"]+)"/);
+    expect(match).not.toBeNull();
+    const oToken = match![1];
+    const rawRes = await SELF.fetch(`${BASE}/raw/${oToken}`);
+    expect(rawRes.status).toBe(200);
+    expect(await rawRes.text()).toContain("<h1>Owner view</h1>");
+  });
 });
 
 // When both checks fail, return 404 before validating the TTL. Returning 400
 // would reveal that the document id exists. Test the order through the API and
 // in `issueShare` below.
 describe("refusing to issue a share through the API", () => {
-	it("answers 404 for an unknown id even when the ttl is invalid too", async () => {
-		const res = await postShare("no_such_document", "1y");
-		expect(res.status).toBe(404);
-		expect(await res.text()).toBe("Not Found");
-	});
+  it("answers 404 for an unknown id even when the ttl is invalid too", async () => {
+    const res = await postShare("no_such_document", "1y");
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe("Not Found");
+  });
 
-	it("answers 404 for an unknown id with a valid ttl", async () => {
-		expect((await postShare("no_such_document", "1d")).status).toBe(404);
-	});
+  it("answers 404 for an unknown id with a valid ttl", async () => {
+    expect((await postShare("no_such_document", "1d")).status).toBe(404);
+  });
 
-	it("answers 400 for an invalid ttl on a live document", async () => {
-		const doc = await (await upload("# Bad ttl", "md")).json<{ id: string }>();
+  it("answers 400 for an invalid ttl on a live document", async () => {
+    const doc = await (await upload("# Bad ttl", "md")).json<{ id: string }>();
 
-		const res = await postShare(doc.id, "1y");
-		expect(res.status).toBe(400);
-		expect(await res.json()).toEqual({ error: "invalid ttl" });
-	});
+    const res = await postShare(doc.id, "1y");
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid ttl" });
+  });
 
-	it("treats a body that is not JSON as no ttl at all, i.e. the 1d default", async () => {
-		const doc = await (await upload("# No body", "md")).json<{ id: string }>();
+  it("treats a body that is not JSON as no ttl at all, i.e. the 1d default", async () => {
+    const doc = await (await upload("# No body", "md")).json<{ id: string }>();
 
-		const before = (Date.now() / 1000) | 0;
-		const res = await SELF.fetch(`${BASE}/api/documents/${doc.id}/shares`, { method: "POST" });
-		expect(res.status).toBe(201);
-		const share = await res.json<{ expires_at: number }>();
-		expect(share.expires_at).toBeGreaterThanOrEqual(before + 86400);
-		expect(share.expires_at).toBeLessThanOrEqual(before + 86400 + 5);
-	});
+    const before = (Date.now() / 1000) | 0;
+    const res = await SELF.fetch(`${BASE}/api/documents/${doc.id}/shares`, { method: "POST" });
+    expect(res.status).toBe(201);
+    const share = await res.json<{ expires_at: number }>();
+    expect(share.expires_at).toBeGreaterThanOrEqual(before + 86400);
+    expect(share.expires_at).toBeLessThanOrEqual(before + 86400 + 5);
+  });
 });
 
 // Test the core rule from SPEC §11.5 that shares require a live document.
 describe("issueShare", () => {
-	const now = (Date.now() / 1000) | 0;
+  const now = (Date.now() / 1000) | 0;
 
-	it("refuses an owner-expired document and inserts nothing", async () => {
-		await seedDoc("core_share_expired", { createdAt: now - 7200, expiresAt: now - 3600 });
+  it("refuses an owner-expired document and inserts nothing", async () => {
+    await seedDoc("core_share_expired", { createdAt: now - 7200, expiresAt: now - 3600 });
 
-		expect(await issueShare(env, "core_share_expired", now, "1d")).toEqual({ ok: false, reason: "not-found" });
+    expect(await issueShare(env, "core_share_expired", now, "1d")).toEqual({
+      ok: false,
+      reason: "not-found",
+    });
 
-		const rows = await env.DB.prepare("SELECT COUNT(*) AS n FROM share WHERE document_id = ?")
-			.bind("core_share_expired")
-			.first<{ n: number }>();
-		expect(rows!.n).toBe(0);
-	});
+    const rows = await env.DB.prepare("SELECT COUNT(*) AS n FROM share WHERE document_id = ?")
+      .bind("core_share_expired")
+      .first<{ n: number }>();
+    expect(rows!.n).toBe(0);
+  });
 
-	it("resolves the document before it parses the ttl", async () => {
-		await seedDoc("core_share_live", { createdAt: now });
+  it("resolves the document before it parses the ttl", async () => {
+    await seedDoc("core_share_live", { createdAt: now });
 
-		// An unknown id with a bad TTL returns "not-found". A live id with the same
-		// TTL returns "invalid-ttl", proving the result depends on check order.
-		expect(await issueShare(env, "core_share_missing", now, "1y")).toEqual({ ok: false, reason: "not-found" });
-		expect(await issueShare(env, "core_share_live", now, "1y")).toEqual({ ok: false, reason: "invalid-ttl" });
-	});
+    // An unknown id with a bad TTL returns "not-found". A live id with the same
+    // TTL returns "invalid-ttl", proving the result depends on check order.
+    expect(await issueShare(env, "core_share_missing", now, "1y")).toEqual({
+      ok: false,
+      reason: "not-found",
+    });
+    expect(await issueShare(env, "core_share_live", now, "1y")).toEqual({
+      ok: false,
+      reason: "invalid-ttl",
+    });
+  });
 
-	it("inserts the row it hands back", async () => {
-		await seedDoc("core_share_ok", { createdAt: now });
+  it("inserts the row it hands back", async () => {
+    await seedDoc("core_share_ok", { createdAt: now });
 
-		const issued = await issueShare(env, "core_share_ok", now, "1h");
-		if (!issued.ok) throw new Error(`expected a share, got ${issued.reason}`);
+    const issued = await issueShare(env, "core_share_ok", now, "1h");
+    if (!issued.ok) throw new Error(`expected a share, got ${issued.reason}`);
 
-		expect(issued.share.document_id).toBe("core_share_ok");
-		expect(issued.share.expires_at).toBe(now + 3600);
-		expect(await getLiveShare(env.DB, issued.share.token, now)).toEqual(issued.share);
-	});
+    expect(issued.share.document_id).toBe("core_share_ok");
+    expect(issued.share.expires_at).toBe(now + 3600);
+    expect(await getLiveShare(env.DB, issued.share.token, now)).toEqual(issued.share);
+  });
 });

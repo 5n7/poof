@@ -9,13 +9,13 @@ import type { Context, MiddlewareHandler, Next } from "hono";
  * an absent value must pass. Safe methods (GET) are never guarded.
  */
 export async function csrfProtection(c: Context<{ Bindings: Env }>, next: Next) {
-	if (c.req.method !== "GET") {
-		const site = c.req.header("Sec-Fetch-Site");
-		if (site !== undefined && site !== "same-origin" && site !== "none") {
-			return c.text("Forbidden", 403);
-		}
-	}
-	return next();
+  if (c.req.method !== "GET") {
+    const site = c.req.header("Sec-Fetch-Site");
+    if (site !== undefined && site !== "same-origin" && site !== "none") {
+      return c.text("Forbidden", 403);
+    }
+  }
+  return next();
 }
 
 /**
@@ -24,7 +24,7 @@ export async function csrfProtection(c: Context<{ Bindings: Env }>, next: Next) 
  * out the content type keeps a browser from sniffing the body into markup.
  */
 function plain(body: string, status: number): Response {
-	return new Response(body, { headers: { "Content-Type": "text/plain; charset=UTF-8" }, status });
+  return new Response(body, { headers: { "Content-Type": "text/plain; charset=UTF-8" }, status });
 }
 
 /**
@@ -38,7 +38,7 @@ function plain(body: string, status: number): Response {
  * failures would be indistinguishable in the logs.
  */
 export function notConfigured(): Response {
-	return plain("Service Unavailable", 503);
+  return plain("Service Unavailable", 503);
 }
 
 /**
@@ -47,7 +47,7 @@ export function notConfigured(): Response {
  * reveals nothing about which hostnames do.
  */
 export function unknownHost(): Response {
-	return plain("Not Found", 404);
+  return plain("Not Found", 404);
 }
 
 /**
@@ -55,7 +55,7 @@ export function unknownHost(): Response {
  * paths). Missing, expired, and revoked tokens are indistinguishable (SPEC §6.3).
  */
 export function uniform404(c: Context): Response {
-	return c.text("Not Found", 404);
+  return c.text("Not Found", 404);
 }
 
 /** Match a positive integer without a leading zero. */
@@ -66,7 +66,7 @@ const VERSION_PATTERN = /^[1-9][0-9]*$/;
  * 400, while viewer pages use the uniform 404 (SPEC §12.4).
  */
 export function isVersionString(raw: string): boolean {
-	return VERSION_PATTERN.test(raw);
+  return VERSION_PATTERN.test(raw);
 }
 
 /**
@@ -78,11 +78,11 @@ export function isVersionString(raw: string): boolean {
  * 404s keep the `uniform404` `text/plain` type.
  */
 export const RAW_HEADERS: Record<string, string> = {
-	"Content-Security-Policy": "sandbox allow-scripts allow-popups",
-	"Referrer-Policy": "no-referrer",
-	"X-Robots-Tag": "noindex",
-	"X-Content-Type-Options": "nosniff",
-	"Cache-Control": "no-store",
+  "Content-Security-Policy": "sandbox allow-scripts allow-popups",
+  "Referrer-Policy": "no-referrer",
+  "X-Robots-Tag": "noindex",
+  "X-Content-Type-Options": "nosniff",
+  "Cache-Control": "no-store",
 };
 
 /**
@@ -96,17 +96,17 @@ export const RAW_HEADERS: Record<string, string> = {
  * keep their own JSON / `uniform404` types.
  */
 export const API_CONTENT_HEADERS: Record<string, string> = {
-	"Content-Security-Policy": "sandbox",
-	"Referrer-Policy": "no-referrer",
-	"X-Robots-Tag": "noindex",
-	"X-Content-Type-Options": "nosniff",
-	"Cache-Control": "no-store",
+  "Content-Security-Policy": "sandbox",
+  "Referrer-Policy": "no-referrer",
+  "X-Robots-Tag": "noindex",
+  "X-Content-Type-Options": "nosniff",
+  "Cache-Control": "no-store",
 };
 
 /** Headers on viewer pages (`/d/*`, `/v/*`). See SPEC §9. */
 export const VIEWER_HEADERS: Record<string, string> = {
-	"Referrer-Policy": "no-referrer",
-	"X-Robots-Tag": "noindex",
+  "Referrer-Policy": "no-referrer",
+  "X-Robots-Tag": "noindex",
 };
 
 /**
@@ -115,14 +115,14 @@ export const VIEWER_HEADERS: Record<string, string> = {
  * every exit path carries them.
  */
 export function withHeaders(headers: Record<string, string>): MiddlewareHandler {
-	const entries = Object.entries(headers);
-	return async (c, next) => {
-		await next();
-		for (const [k, v] of entries) c.res.headers.set(k, v);
-	};
+  const entries = Object.entries(headers);
+  return async (c, next) => {
+    await next();
+    for (const [k, v] of entries) c.res.headers.set(k, v);
+  };
 }
 
 /** Apply a fixed header set to the response being built for `c`. */
 export function applyHeaders(c: Context, headers: Record<string, string>): void {
-	for (const [k, v] of Object.entries(headers)) c.header(k, v);
+  for (const [k, v] of Object.entries(headers)) c.header(k, v);
 }

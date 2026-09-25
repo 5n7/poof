@@ -3,13 +3,13 @@ import type { Child, FC, PropsWithChildren } from "hono/jsx";
 
 import type { DocumentFileRow, ResolvedDocument } from "../lib/db";
 import {
-	getLiveDocument,
-	getLiveDocumentAt,
-	getLiveShare,
-	listDocumentsWithShares,
-	listShares,
-	listVersions,
-	listVersionFiles,
+  getLiveDocument,
+  getLiveDocumentAt,
+  getLiveShare,
+  listDocumentsWithShares,
+  listShares,
+  listVersions,
+  listVersionFiles,
 } from "../lib/db";
 import { documentTitleState } from "../lib/documents";
 import { rawFileUrl, viewerFileUrl } from "../lib/file-links";
@@ -28,13 +28,13 @@ const ACCENT_HOVER = "oklch(0.62 0.17 52)";
 // Inlined as data URIs so the icon also loads on /v/* pages, where anonymous
 // visitors could not fetch a favicon path sitting behind Cloudflare Access.
 const FAVICON_SVG =
-	"data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2096%2096'%3E%3Crect%20width='96'%20height='96'%20rx='24'%20fill='%231a1a1e'/%3E%3Ctext%20x='26'%20y='60'%20font-family='ui-monospace,Menlo,SF%20Mono,Consolas,monospace'%20font-weight='650'%20font-size='54'%20fill='%23fff'%3Ep%3C/text%3E%3Ccircle%20cx='66'%20cy='52'%20r='8'%20fill='%23e8823f'/%3E%3C/svg%3E";
+  "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2096%2096'%3E%3Crect%20width='96'%20height='96'%20rx='24'%20fill='%231a1a1e'/%3E%3Ctext%20x='26'%20y='60'%20font-family='ui-monospace,Menlo,SF%20Mono,Consolas,monospace'%20font-weight='650'%20font-size='54'%20fill='%23fff'%3Ep%3C/text%3E%3Ccircle%20cx='66'%20cy='52'%20r='8'%20fill='%23e8823f'/%3E%3C/svg%3E";
 const FAVICON_PNG =
-	"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAC40lEQVR4AcxWX0iTURT/bW3lwinZg6G2lQ/9eRBJe1IkB1pPQhhCkW+SRgQ99qC5jYGkoPXQW++BD5EJmj5tezQIIZfENrYoEYTY6GHNjbWvcy6fN76xzblvbY577j33nO/+fr97d74/RuT82tou9Le02FytrXYvjUolTMVy5VCJqUYAkbmy2ayXMk5FUfpprEhTsZyEzxvSCJECKMkJZ0UYi4OwEOYSVwkBVSQXpNRJEUIAB8iq3Zxcb0Z199UmF3xUb/1Gg8FwQ8xq0DG3Ua3QGtADzH1QAzURwKTHW4DFYsH29mdhy8vvMDs7g3D4K3Z2vmFraxO9vT28CV1W9ARMJhMaGxuFdXd3YXT0PlgUFQ+ampqwuPgGdrvt/wnIRU6n01hZ+YBMJiNSLMTjcQu/3K7oCeSCDg3dxvj4Q0xOPpOpzs5O6ZfjlCyAdx0IfBEcq6trYuSuocHKg8barAbcungCV88eDn/4FSo03bOqBySTSenz3yAn5IxcMcF7z4JXg6ewfKcOT66bKVq4lSzAbDbDZjsvkAYHB8TIXSKR4EHaVM9J6bPzuMsMe0NhmsIZXp1jS0tvMTHxAHNzz2UmGo1K/0ydAadNciqdc/UG6ec6RxLQ3NyM6ekpWK31EsfjmZF+fF9B4GdWztlJ03Rz7w+7ea1kAfF4HJFIRAMyP/8CGxsfNbGnvjQ+7RErRaO/FDxaTyFdmB8lC+Ai7OtzwOEYwNjYONrbL2Fh4SXRaFswlsXd9/u4/Po3bi4m4f9RhJ2WliyArhUtGAxhbW0dqVRKzAt1WaVQRhs/sgDtcv2zogL44ROLxcAWCoX1s+VBKCqAHzgdHdfANjw8kme5/hB/kvn0w5SHQE9RH3+S+ctbrn8V3Vl+I/1qdgK7u99dRvq6YQH6XurlHYbgFEXISghDBGisRnOrnP+ehGqgGiIkOe9UnAA7bCyCjF9dbq5Qjuk1Xq9iuaneHITv4tiB/QUAAP//NJmctQAAAAZJREFUAwAtzvtXfUxb5gAAAABJRU5ErkJggg==";
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAC40lEQVR4AcxWX0iTURT/bW3lwinZg6G2lQ/9eRBJe1IkB1pPQhhCkW+SRgQ99qC5jYGkoPXQW++BD5EJmj5tezQIIZfENrYoEYTY6GHNjbWvcy6fN76xzblvbY577j33nO/+fr97d74/RuT82tou9Le02FytrXYvjUolTMVy5VCJqUYAkbmy2ayXMk5FUfpprEhTsZyEzxvSCJECKMkJZ0UYi4OwEOYSVwkBVSQXpNRJEUIAB8iq3Zxcb0Z199UmF3xUb/1Gg8FwQ8xq0DG3Ua3QGtADzH1QAzURwKTHW4DFYsH29mdhy8vvMDs7g3D4K3Z2vmFraxO9vT28CV1W9ARMJhMaGxuFdXd3YXT0PlgUFQ+ampqwuPgGdrvt/wnIRU6n01hZ+YBMJiNSLMTjcQu/3K7oCeSCDg3dxvj4Q0xOPpOpzs5O6ZfjlCyAdx0IfBEcq6trYuSuocHKg8barAbcungCV88eDn/4FSo03bOqBySTSenz3yAn5IxcMcF7z4JXg6ewfKcOT66bKVq4lSzAbDbDZjsvkAYHB8TIXSKR4EHaVM9J6bPzuMsMe0NhmsIZXp1jS0tvMTHxAHNzz2UmGo1K/0ydAadNciqdc/UG6ec6RxLQ3NyM6ekpWK31EsfjmZF+fF9B4GdWztlJ03Rz7w+7ea1kAfF4HJFIRAMyP/8CGxsfNbGnvjQ+7RErRaO/FDxaTyFdmB8lC+Ai7OtzwOEYwNjYONrbL2Fh4SXRaFswlsXd9/u4/Po3bi4m4f9RhJ2WliyArhUtGAxhbW0dqVRKzAt1WaVQRhs/sgDtcv2zogL44ROLxcAWCoX1s+VBKCqAHzgdHdfANjw8kme5/hB/kvn0w5SHQE9RH3+S+ctbrn8V3Vl+I/1qdgK7u99dRvq6YQH6XurlHYbgFEXISghDBGisRnOrnP+ehGqgGiIkOe9UnAA7bCyCjF9dbq5Qjuk1Xq9iuaneHITv4tiB/QUAAP//NJmctQAAAAZJREFUAwAtzvtXfUxb5gAAAABJRU5ErkJggg==";
 
 const PAGE_CSS =
-	TITLE_EDITOR_CSS +
-	`
+  TITLE_EDITOR_CSS +
+  `
 .file-tabs { display: flex; flex: 0 0 auto; overflow-x: auto; border-bottom: 1px solid #e6e6eb; padding: 0 16px; background: #fafafa; scrollbar-width: thin; }
 .file-tab { flex: 0 0 auto; padding: 12px 14px; border-bottom: 2px solid transparent; color: #62626b; font-size: 12px; white-space: nowrap; }
 .file-tab:hover { color: #1a1a1e; background: #f1f1f5; }
@@ -567,62 +567,66 @@ if (removeFile) removeFile.addEventListener("click", async function () {
 
 const VIEWER_SCRIPT = CORE_JS + TITLE_EDITOR_JS + UPLOAD_JS + VERSIONS_JS + VIEWER_JS + FILES_JS;
 
-const Layout: FC<PropsWithChildren<{ title: string; pageCss?: string }>> = ({ title, pageCss, children }) => (
-	<html lang="en">
-		<head>
-			<meta charset="utf-8" />
-			<meta name="viewport" content="width=device-width, initial-scale=1" />
-			<link rel="icon" type="image/png" sizes="32x32" href={FAVICON_PNG} />
-			<link rel="icon" type="image/svg+xml" href={FAVICON_SVG} />
-			<title>{title}</title>
-			<style dangerouslySetInnerHTML={{ __html: PAGE_CSS + (pageCss ?? "") }} />
-		</head>
-		<body>{children}</body>
-	</html>
+const Layout: FC<PropsWithChildren<{ title: string; pageCss?: string }>> = ({
+  title,
+  pageCss,
+  children,
+}) => (
+  <html lang="en">
+    <head>
+      <meta charset="utf-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1" />
+      <link rel="icon" type="image/png" sizes="32x32" href={FAVICON_PNG} />
+      <link rel="icon" type="image/svg+xml" href={FAVICON_SVG} />
+      <title>{title}</title>
+      <style dangerouslySetInnerHTML={{ __html: PAGE_CSS + (pageCss ?? "") }} />
+    </head>
+    <body>{children}</body>
+  </html>
 );
 
 // Shared viewer scaffold: topbar (contents vary per page) above the sandboxed
 // iframe. The sandbox attribute enforces the security boundary (SPEC §6.1).
 // Never add `allow-same-origin`.
 const ViewerShell: FC<
-	PropsWithChildren<{
-		src: string;
-		banner?: Child;
-		files: DocumentFileRow[];
-		selected: DocumentFileRow;
-		base: string;
-		version?: number;
-	}>
+  PropsWithChildren<{
+    src: string;
+    banner?: Child;
+    files: DocumentFileRow[];
+    selected: DocumentFileRow;
+    base: string;
+    version?: number;
+  }>
 > = ({ src, banner, files, selected, base, version, children }) => (
-	<div class="viewer">
-		<div class="topbar">
-			{children}
-			<a class="tb-ver" href={`${src}?format=raw`} download>
-				Download
-			</a>
-		</div>
-		{banner}
-		<nav class={files.length > 1 ? "file-tabs" : "single-file-nav"} aria-label="Document files">
-			{files.map((file) => (
-				<a
-					class="file-tab"
-					href={viewerFileUrl(base, file.path, version)}
-					data-file-path={file.path}
-					aria-current={file.path === selected.path ? "page" : undefined}
-					title={file.path}
-				>
-					{file.path}
-				</a>
-			))}
-		</nav>
-		<iframe
-			id="document-frame"
-			title={selected.path}
-			class="frame"
-			sandbox="allow-scripts allow-popups"
-			src={`${src}?view=1`}
-		/>
-	</div>
+  <div class="viewer">
+    <div class="topbar">
+      {children}
+      <a class="tb-ver" href={`${src}?format=raw`} download>
+        Download
+      </a>
+    </div>
+    {banner}
+    <nav class={files.length > 1 ? "file-tabs" : "single-file-nav"} aria-label="Document files">
+      {files.map((file) => (
+        <a
+          class="file-tab"
+          href={viewerFileUrl(base, file.path, version)}
+          data-file-path={file.path}
+          aria-current={file.path === selected.path ? "page" : undefined}
+          title={file.path}
+        >
+          {file.path}
+        </a>
+      ))}
+    </nav>
+    <iframe
+      id="document-frame"
+      title={selected.path}
+      class="frame"
+      sandbox="allow-scripts allow-popups"
+      src={`${src}?view=1`}
+    />
+  </div>
 );
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -633,10 +637,10 @@ const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "
  * rewrites `[data-created]` to the browser's local zone on load.
  */
 function fmtCreated(sec: number): string {
-	const d = new Date(sec * 1000);
-	const hh = String(d.getUTCHours()).padStart(2, "0");
-	const mm = String(d.getUTCMinutes()).padStart(2, "0");
-	return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${hh}:${mm}`;
+  const d = new Date(sec * 1000);
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}, ${hh}:${mm}`;
 }
 
 /**
@@ -644,176 +648,202 @@ function fmtCreated(sec: number): string {
  * Mirror the client-side `fmtRemaining` in CORE_JS. Keep both copies in sync.
  */
 function formatRemaining(secondsUntil: number): string {
-	if (secondsUntil >= 172800) return `${Math.floor(secondsUntil / 86400)}d`;
-	if (secondsUntil >= 3600) return `${Math.floor(secondsUntil / 3600)}h`;
-	return `${Math.max(0, Math.floor(secondsUntil / 60))}m`;
+  if (secondsUntil >= 172800) return `${Math.floor(secondsUntil / 86400)}d`;
+  if (secondsUntil >= 3600) return `${Math.floor(secondsUntil / 3600)}h`;
+  return `${Math.max(0, Math.floor(secondsUntil / 60))}m`;
 }
 
 /** Render the library page for `GET /`. */
 export async function libraryPage(c: Ctx) {
-	const now = nowSeconds();
-	const docs = await listDocumentsWithShares(c.env.DB, now);
-	const titleStates = await Promise.all(docs.map(documentTitleState));
-	return c.html(
-		<Layout title="poof">
-			<div class="wrap">
-				<div class="lib">
-					<div class="brand-row">
-						<span class="brand">
-							poof<span class="dot">.</span>
-						</span>
-						<span class="spacer" />
-						<a
-							class="gh"
-							href="https://github.com/5n7/poof"
-							target="_blank"
-							rel="noopener noreferrer"
-							aria-label="GitHub"
-						>
-							<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-								<path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8" />
-							</svg>
-						</a>
-					</div>
-					<div class="rows">
-						{docs.map((d, index) => {
-							const shared = d.active_share_count > 0 && d.next_share_expires_at !== null;
-							const hasTtl = !shared && d.expires_at !== null;
-							return (
-								<div class="row" data-id={d.id} data-title={d.title} data-state={titleStates[index]}>
-									<div class="row-main">
-										<div class="row-title">{d.title}</div>
-										<div class="row-meta">
-											{/* The timestamp sits in its own node: LIBRARY_JS replaces the
+  const now = nowSeconds();
+  const docs = await listDocumentsWithShares(c.env.DB, now);
+  const titleStates = await Promise.all(docs.map(documentTitleState));
+  return c.html(
+    <Layout title="poof">
+      <div class="wrap">
+        <div class="lib">
+          <div class="brand-row">
+            <span class="brand">
+              poof<span class="dot">.</span>
+            </span>
+            <span class="spacer" />
+            <a
+              class="gh"
+              href="https://github.com/5n7/poof"
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="GitHub"
+            >
+              <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8" />
+              </svg>
+            </a>
+          </div>
+          <div class="rows">
+            {docs.map((d, index) => {
+              const shared = d.active_share_count > 0 && d.next_share_expires_at !== null;
+              const hasTtl = !shared && d.expires_at !== null;
+              return (
+                <div
+                  class="row"
+                  data-id={d.id}
+                  data-title={d.title}
+                  data-state={titleStates[index]}
+                >
+                  <div class="row-main">
+                    <div class="row-title">{d.title}</div>
+                    <div class="row-meta">
+                      {/* The timestamp sits in its own node: LIBRARY_JS replaces the
 											    text content of [data-created] wholesale. */}
-											<span data-created={String(d.created_at)}>{fmtCreated(d.created_at)}</span>
-											{d.current_version > 1 ? <span>{` · v${d.current_version}`}</span> : null}
-										</div>
-									</div>
-									{shared ? (
-										<span class="shared-label">
-											<span class="shared-dot" />
-											{formatRemaining(d.next_share_expires_at! - now)}
-										</span>
-									) : null}
-									{hasTtl ? <span class="ttl-label">expires {formatRemaining(d.expires_at! - now)}</span> : null}
-									<button type="button" class="menu-btn" data-menu aria-label="Document actions" aria-expanded="false">
-										···
-									</button>
-									<div class="menu" data-menu-pop style="display:none">
-										<button type="button" class="menu-item" data-rename>
-											Rename…
-										</button>
-										<button type="button" class="menu-item" data-share>
-											Share…
-										</button>
-										<button type="button" class="menu-item del" data-delete>
-											Delete
-										</button>
-									</div>
-								</div>
-							);
-						})}
-						<div class="line" />
-					</div>
-					<button type="button" class="hint" id="hint">
-						Drop files anywhere, paste with ⌘V, or select files
-					</button>
-					<button type="button" class="folder-link" data-folder>
-						Upload a folder
-					</button>
-					<a class="connect-link" href="/guide">
-						Connect an AI assistant →
-					</a>
-				</div>
-			</div>
+                      <span data-created={String(d.created_at)}>{fmtCreated(d.created_at)}</span>
+                      {d.current_version > 1 ? <span>{` · v${d.current_version}`}</span> : null}
+                    </div>
+                  </div>
+                  {shared ? (
+                    <span class="shared-label">
+                      <span class="shared-dot" />
+                      {formatRemaining(d.next_share_expires_at! - now)}
+                    </span>
+                  ) : null}
+                  {hasTtl ? (
+                    <span class="ttl-label">expires {formatRemaining(d.expires_at! - now)}</span>
+                  ) : null}
+                  <button
+                    type="button"
+                    class="menu-btn"
+                    data-menu
+                    aria-label="Document actions"
+                    aria-expanded="false"
+                  >
+                    ···
+                  </button>
+                  <div class="menu" data-menu-pop style="display:none">
+                    <button type="button" class="menu-item" data-rename>
+                      Rename…
+                    </button>
+                    <button type="button" class="menu-item" data-share>
+                      Share…
+                    </button>
+                    <button type="button" class="menu-item del" data-delete>
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+            <div class="line" />
+          </div>
+          <button type="button" class="hint" id="hint">
+            Drop files anywhere, paste with ⌘V, or select files
+          </button>
+          <button type="button" class="folder-link" data-folder>
+            Upload a folder
+          </button>
+          <a class="connect-link" href="/guide">
+            Connect an AI assistant →
+          </a>
+        </div>
+      </div>
 
-			<div class="drop" id="drop" style="display:none" data-endpoint="/api/documents" data-with-title="1">
-				<div style="text-align:center">
-					<div class="drop-icon">↓</div>
-					<div class="drop-title">Drop it into poof</div>
-					<div class="drop-sub">Any format · up to 10 MB per upload · one document</div>
-				</div>
-			</div>
+      <div
+        class="drop"
+        id="drop"
+        style="display:none"
+        data-endpoint="/api/documents"
+        data-with-title="1"
+      >
+        <div style="text-align:center">
+          <div class="drop-icon">↓</div>
+          <div class="drop-title">Drop it into poof</div>
+          <div class="drop-sub">Any format · up to 10 MB per upload · one document</div>
+        </div>
+      </div>
 
-			<div id="modal-root" />
-			<input type="file" id="file" multiple style="display:none" />
-			<input type="file" id="folder" multiple webkitdirectory="" style="display:none" />
-			<script dangerouslySetInnerHTML={{ __html: LIBRARY_SCRIPT }} />
-		</Layout>,
-	);
+      <div id="modal-root" />
+      <input type="file" id="file" multiple style="display:none" />
+      <input type="file" id="folder" multiple webkitdirectory="" style="display:none" />
+      <script dangerouslySetInnerHTML={{ __html: LIBRARY_SCRIPT }} />
+    </Layout>,
+  );
 }
 
 /** Render the owner-only guide for connecting an MCP client. */
 export function guidePage(c: Ctx) {
-	const mcpOrigin = originForHost(new URL(c.req.url), c.env.MCP_HOST);
-	if (mcpOrigin === null) throw new Error("MCP_HOST is missing, blank, or not a host");
-	const mcpUrl = new URL("/mcp", mcpOrigin).toString();
+  const mcpOrigin = originForHost(new URL(c.req.url), c.env.MCP_HOST);
+  if (mcpOrigin === null) throw new Error("MCP_HOST is missing, blank, or not a host");
+  const mcpUrl = new URL("/mcp", mcpOrigin).toString();
 
-	return c.html(
-		<Layout title="Connect an AI assistant · poof" pageCss={GUIDE_CSS}>
-			<main class="guide">
-				<a class="guide-back" href="/">
-					← Library
-				</a>
-				<h1 class="guide-title">Connect an AI assistant</h1>
-				<p class="guide-lede">
-					Use poof from an MCP-capable assistant to save documents, update them, and create expiring share links.
-				</p>
+  return c.html(
+    <Layout title="Connect an AI assistant · poof" pageCss={GUIDE_CSS}>
+      <main class="guide">
+        <a class="guide-back" href="/">
+          ← Library
+        </a>
+        <h1 class="guide-title">Connect an AI assistant</h1>
+        <p class="guide-lede">
+          Use poof from an MCP-capable assistant to save documents, update them, and create expiring
+          share links.
+        </p>
 
-				<section class="guide-section">
-					<h2>Server URL</h2>
-					<p>Use this exact URL, with no trailing slash.</p>
-					<code class="guide-command">{mcpUrl}</code>
-				</section>
+        <section class="guide-section">
+          <h2>Server URL</h2>
+          <p>Use this exact URL, with no trailing slash.</p>
+          <code class="guide-command">{mcpUrl}</code>
+        </section>
 
-				<section class="guide-section">
-					<h2>Connect</h2>
-					<p>Register the server, then complete the Cloudflare login when your client prompts you.</p>
-					<h3 class="guide-client">Claude Code</h3>
-					<code class="guide-command">claude mcp add --transport http poof {mcpUrl}</code>
-					<h3 class="guide-client">Codex</h3>
-					<code class="guide-command">
-						codex mcp add poof --url {mcpUrl}
-						{"\n"}codex mcp login poof
-					</code>
-				</section>
+        <section class="guide-section">
+          <h2>Connect</h2>
+          <p>
+            Register the server, then complete the Cloudflare login when your client prompts you.
+          </p>
+          <h3 class="guide-client">Claude Code</h3>
+          <code class="guide-command">claude mcp add --transport http poof {mcpUrl}</code>
+          <h3 class="guide-client">Codex</h3>
+          <code class="guide-command">
+            codex mcp add poof --url {mcpUrl}
+            {"\n"}codex mcp login poof
+          </code>
+        </section>
 
-				<section class="guide-section">
-					<h2>Keep links safe</h2>
-					<ul>
-						<li>
-							<code>/d/</code> links are owner-only. Do not send them to recipients.
-						</li>
-						<li>
-							<code>/v/</code> share links are public to anyone who has the URL. Treat them as secrets and use short
-							expiry times.
-						</li>
-						<li>Updates and rollbacks change every live share link immediately.</li>
-					</ul>
-				</section>
+        <section class="guide-section">
+          <h2>Keep links safe</h2>
+          <ul>
+            <li>
+              <code>/d/</code> links are owner-only. Do not send them to recipients.
+            </li>
+            <li>
+              <code>/v/</code> share links are public to anyone who has the URL. Treat them as
+              secrets and use short expiry times.
+            </li>
+            <li>Updates and rollbacks change every live share link immediately.</li>
+          </ul>
+        </section>
 
-				<section class="guide-section">
-					<h2>Need help?</h2>
-					<p>
-						Read the{" "}
-						<a href="https://github.com/5n7/poof#mcp-server" target="_blank" rel="noopener noreferrer">
-							MCP connection guide
-						</a>{" "}
-						or the{" "}
-						<a
-							href="https://github.com/5n7/poof/blob/main/docs/MCP-OAUTH-RUNBOOK.md"
-							target="_blank"
-							rel="noopener noreferrer"
-						>
-							management runbook
-						</a>
-						.
-					</p>
-				</section>
-			</main>
-		</Layout>,
-	);
+        <section class="guide-section">
+          <h2>Need help?</h2>
+          <p>
+            Read the{" "}
+            <a
+              href="https://github.com/5n7/poof#mcp-server"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              MCP connection guide
+            </a>{" "}
+            or the{" "}
+            <a
+              href="https://github.com/5n7/poof/blob/main/docs/MCP-OAUTH-RUNBOOK.md"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              management runbook
+            </a>
+            .
+          </p>
+        </section>
+      </main>
+    </Layout>,
+  );
 }
 
 /**
@@ -821,89 +851,113 @@ export function guidePage(c: Ctx) {
  * a short-lived o_ token pinned to the requested version (SPEC §6.2).
  */
 export async function ownerViewerPage(c: Ctx<"/d/:id">) {
-	const id = c.req.param("id");
-	const now = nowSeconds();
+  const id = c.req.param("id");
+  const now = nowSeconds();
 
-	// A malformed `?v=` is a missing page, not an API error. Unknown versions use
-	// the same uniform 404 below.
-	const rawVersion = c.req.query("v");
-	if (rawVersion !== undefined && !isVersionString(rawVersion)) return uniform404(c);
-	const asked = rawVersion === undefined ? null : Number(rawVersion);
+  // A malformed `?v=` is a missing page, not an API error. Unknown versions use
+  // the same uniform 404 below.
+  const rawVersion = c.req.query("v");
+  if (rawVersion !== undefined && !isVersionString(rawVersion)) return uniform404(c);
+  const asked = rawVersion === undefined ? null : Number(rawVersion);
 
-	const doc = await getLiveDocumentAt(c.env.DB, id, asked, now);
-	if (!doc) return uniform404(c);
-	// `?v=` naming the live version is the normal page. Never render the current
-	// content as a read-only dead end.
-	if (asked !== null && asked !== doc.current_version) return pinnedViewerPage(c, doc);
+  const doc = await getLiveDocumentAt(c.env.DB, id, asked, now);
+  if (!doc) return uniform404(c);
+  // `?v=` naming the live version is the normal page. Never render the current
+  // content as a read-only dead end.
+  if (asked !== null && asked !== doc.current_version) return pinnedViewerPage(c, doc);
 
-	const [shares, oToken, files, titleState] = await Promise.all([
-		listShares(c.env.DB, id, now),
-		mintOwnerToken(id, c.env.OWNER_TOKEN_SECRET),
-		listVersionFiles(c.env.DB, id, doc.version),
-		documentTitleState(doc),
-	]);
-	const selected =
-		c.req.query("file") === undefined ? files[0] : files.find((file) => file.path === c.req.query("file"));
-	if (!selected) return uniform404(c);
-	let chip: string | null = null;
-	if (shares.length) {
-		const soonest = Math.min(...shares.map((s) => s.expires_at));
-		chip = `shared · ${formatRemaining(soonest - now)} left`;
-	}
-	applyHeaders(c, VIEWER_HEADERS);
-	return c.html(
-		<Layout title={doc.title}>
-			<ViewerShell src={rawFileUrl(oToken, selected.path)} files={files} selected={selected} base={`/d/${id}`}>
-				<a href="/" class="back">
-					←
-				</a>
-				<span class="tb-brand">poof</span>
-				<button
-					type="button"
-					class="tb-rename"
-					id="rename-current"
-					data-id={id}
-					data-title={doc.title}
-					data-state={titleState}
-					aria-label="Rename document"
-				>
-					<span class="tb-title">{doc.title}</span>
-					<span class="tb-rename-label">Rename</span>
-				</button>
-				<span class="spacer" />
-				{chip ? <span class="tb-chip">{chip}</span> : null}
-				<button type="button" class="tb-ver" data-upload>
-					Add files
-				</button>
-				<button type="button" class="tb-ver" data-folder>
-					Upload folder
-				</button>
-				{files.length > 1 ? (
-					<button type="button" class="tb-ver remove-file" id="remove-file" data-id={id} data-path={selected.path}>
-						Remove file
-					</button>
-				) : null}
-				{/* Shown even at v1: it is how the history and "you can add a version" are discoverable. */}
-				<button type="button" id="ver-btn" class="tb-ver" data-id={id}>
-					v{doc.current_version}
-				</button>
-				<button type="button" id="share-current" class="share-btn" data-id={id} data-title={doc.title}>
-					Share
-				</button>
-			</ViewerShell>
-			<div class="drop" id="drop" style="display:none" data-endpoint={`/api/documents/${id}/versions`}>
-				<div style="text-align:center">
-					<div class="drop-icon">↓</div>
-					<div class="drop-title">Add or update files</div>
-					<div class="drop-sub">Files with the same path are updated. Other files stay.</div>
-				</div>
-			</div>
-			<div id="modal-root" />
-			<input type="file" id="file" multiple style="display:none" />
-			<input type="file" id="folder" multiple webkitdirectory="" style="display:none" />
-			<script dangerouslySetInnerHTML={{ __html: VIEWER_SCRIPT }} />
-		</Layout>,
-	);
+  const [shares, oToken, files, titleState] = await Promise.all([
+    listShares(c.env.DB, id, now),
+    mintOwnerToken(id, c.env.OWNER_TOKEN_SECRET),
+    listVersionFiles(c.env.DB, id, doc.version),
+    documentTitleState(doc),
+  ]);
+  const selected =
+    c.req.query("file") === undefined
+      ? files[0]
+      : files.find((file) => file.path === c.req.query("file"));
+  if (!selected) return uniform404(c);
+  let chip: string | null = null;
+  if (shares.length) {
+    const soonest = Math.min(...shares.map((s) => s.expires_at));
+    chip = `shared · ${formatRemaining(soonest - now)} left`;
+  }
+  applyHeaders(c, VIEWER_HEADERS);
+  return c.html(
+    <Layout title={doc.title}>
+      <ViewerShell
+        src={rawFileUrl(oToken, selected.path)}
+        files={files}
+        selected={selected}
+        base={`/d/${id}`}
+      >
+        <a href="/" class="back">
+          ←
+        </a>
+        <span class="tb-brand">poof</span>
+        <button
+          type="button"
+          class="tb-rename"
+          id="rename-current"
+          data-id={id}
+          data-title={doc.title}
+          data-state={titleState}
+          aria-label="Rename document"
+        >
+          <span class="tb-title">{doc.title}</span>
+          <span class="tb-rename-label">Rename</span>
+        </button>
+        <span class="spacer" />
+        {chip ? <span class="tb-chip">{chip}</span> : null}
+        <button type="button" class="tb-ver" data-upload>
+          Add files
+        </button>
+        <button type="button" class="tb-ver" data-folder>
+          Upload folder
+        </button>
+        {files.length > 1 ? (
+          <button
+            type="button"
+            class="tb-ver remove-file"
+            id="remove-file"
+            data-id={id}
+            data-path={selected.path}
+          >
+            Remove file
+          </button>
+        ) : null}
+        {/* Shown even at v1: it is how the history and "you can add a version" are discoverable. */}
+        <button type="button" id="ver-btn" class="tb-ver" data-id={id}>
+          v{doc.current_version}
+        </button>
+        <button
+          type="button"
+          id="share-current"
+          class="share-btn"
+          data-id={id}
+          data-title={doc.title}
+        >
+          Share
+        </button>
+      </ViewerShell>
+      <div
+        class="drop"
+        id="drop"
+        style="display:none"
+        data-endpoint={`/api/documents/${id}/versions`}
+      >
+        <div style="text-align:center">
+          <div class="drop-icon">↓</div>
+          <div class="drop-title">Add or update files</div>
+          <div class="drop-sub">Files with the same path are updated. Other files stay.</div>
+        </div>
+      </div>
+      <div id="modal-root" />
+      <input type="file" id="file" multiple style="display:none" />
+      <input type="file" id="folder" multiple webkitdirectory="" style="display:none" />
+      <script dangerouslySetInnerHTML={{ __html: VIEWER_SCRIPT }} />
+    </Layout>,
+  );
 }
 
 /**
@@ -913,75 +967,89 @@ export async function ownerViewerPage(c: Ctx<"/d/:id">) {
  * "drop a file while looking at v2" has no meaning).
  */
 async function pinnedViewerPage(c: Ctx<"/d/:id">, doc: ResolvedDocument) {
-	const [versions, oToken, files] = await Promise.all([
-		listVersions(c.env.DB, doc.id),
-		mintOwnerToken(doc.id, c.env.OWNER_TOKEN_SECRET, 600, doc.version),
-		listVersionFiles(c.env.DB, doc.id, doc.version),
-	]);
-	const selected =
-		c.req.query("file") === undefined ? files[0] : files.find((file) => file.path === c.req.query("file"));
-	if (!selected) return uniform404(c);
-	applyHeaders(c, VIEWER_HEADERS);
-	return c.html(
-		<Layout title={doc.version_title ?? doc.title}>
-			<ViewerShell
-				src={rawFileUrl(oToken, selected.path)}
-				files={files}
-				selected={selected}
-				base={`/d/${doc.id}`}
-				version={doc.version}
-				banner={
-					<div class="banner">
-						<span>Viewing version {doc.version} · read-only</span>
-						<span class="spacer" />
-						<span class="banner-act" id="ver-restore" data-id={doc.id} data-version={String(doc.version)}>
-							Restore this version
-						</span>
-						<a class="banner-act" href={`/d/${doc.id}`}>
-							Back to current
-						</a>
-					</div>
-				}
-			>
-				<a href="/" class="back">
-					←
-				</a>
-				<span class="tb-brand">poof</span>
-				<span class="tb-title">{doc.version_title ?? doc.title}</span>
-				<span class="spacer" />
-				<span class="tb-chip">
-					v{doc.version} of {versions.length}
-				</span>
-			</ViewerShell>
-			<div id="modal-root" />
-			<script dangerouslySetInnerHTML={{ __html: VIEWER_SCRIPT }} />
-		</Layout>,
-	);
+  const [versions, oToken, files] = await Promise.all([
+    listVersions(c.env.DB, doc.id),
+    mintOwnerToken(doc.id, c.env.OWNER_TOKEN_SECRET, 600, doc.version),
+    listVersionFiles(c.env.DB, doc.id, doc.version),
+  ]);
+  const selected =
+    c.req.query("file") === undefined
+      ? files[0]
+      : files.find((file) => file.path === c.req.query("file"));
+  if (!selected) return uniform404(c);
+  applyHeaders(c, VIEWER_HEADERS);
+  return c.html(
+    <Layout title={doc.version_title ?? doc.title}>
+      <ViewerShell
+        src={rawFileUrl(oToken, selected.path)}
+        files={files}
+        selected={selected}
+        base={`/d/${doc.id}`}
+        version={doc.version}
+        banner={
+          <div class="banner">
+            <span>Viewing version {doc.version} · read-only</span>
+            <span class="spacer" />
+            <span
+              class="banner-act"
+              id="ver-restore"
+              data-id={doc.id}
+              data-version={String(doc.version)}
+            >
+              Restore this version
+            </span>
+            <a class="banner-act" href={`/d/${doc.id}`}>
+              Back to current
+            </a>
+          </div>
+        }
+      >
+        <a href="/" class="back">
+          ←
+        </a>
+        <span class="tb-brand">poof</span>
+        <span class="tb-title">{doc.version_title ?? doc.title}</span>
+        <span class="spacer" />
+        <span class="tb-chip">
+          v{doc.version} of {versions.length}
+        </span>
+      </ViewerShell>
+      <div id="modal-root" />
+      <script dangerouslySetInnerHTML={{ __html: VIEWER_SCRIPT }} />
+    </Layout>,
+  );
 }
 
 /** Render the public shared viewer for `GET /v/:token` (SPEC §12.4). */
 export async function publicViewerPage(c: Ctx<"/v/:token">) {
-	const token = c.req.param("token");
-	const now = nowSeconds();
-	const share = await getLiveShare(c.env.DB, token, now);
-	if (!share) return uniform404(c);
-	const doc = await getLiveDocument(c.env.DB, share.document_id, now);
-	if (!doc) return uniform404(c);
-	const files = await listVersionFiles(c.env.DB, doc.id, doc.version);
-	const selected =
-		c.req.query("file") === undefined ? files[0] : files.find((file) => file.path === c.req.query("file"));
-	if (!selected) return uniform404(c);
+  const token = c.req.param("token");
+  const now = nowSeconds();
+  const share = await getLiveShare(c.env.DB, token, now);
+  if (!share) return uniform404(c);
+  const doc = await getLiveDocument(c.env.DB, share.document_id, now);
+  if (!doc) return uniform404(c);
+  const files = await listVersionFiles(c.env.DB, doc.id, doc.version);
+  const selected =
+    c.req.query("file") === undefined
+      ? files[0]
+      : files.find((file) => file.path === c.req.query("file"));
+  if (!selected) return uniform404(c);
 
-	applyHeaders(c, VIEWER_HEADERS);
-	return c.html(
-		<Layout title={doc.title}>
-			<ViewerShell src={rawFileUrl(token, selected.path)} files={files} selected={selected} base={`/v/${token}`}>
-				<span class="tb-brand">poof</span>
-				<span class="tb-title">{doc.title}</span>
-				<span class="spacer" />
-				<span class="tb-chip">expires in {formatRemaining(share.expires_at - now)}</span>
-			</ViewerShell>
-			<script dangerouslySetInnerHTML={{ __html: FILES_JS }} />
-		</Layout>,
-	);
+  applyHeaders(c, VIEWER_HEADERS);
+  return c.html(
+    <Layout title={doc.title}>
+      <ViewerShell
+        src={rawFileUrl(token, selected.path)}
+        files={files}
+        selected={selected}
+        base={`/v/${token}`}
+      >
+        <span class="tb-brand">poof</span>
+        <span class="tb-title">{doc.title}</span>
+        <span class="spacer" />
+        <span class="tb-chip">expires in {formatRemaining(share.expires_at - now)}</span>
+      </ViewerShell>
+      <script dangerouslySetInnerHTML={{ __html: FILES_JS }} />
+    </Layout>,
+  );
 }

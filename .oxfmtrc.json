@@ -1,16 +1,5 @@
 {
-	"$schema": "./node_modules/oxfmt/configuration_schema.json",
-	"printWidth": 120,
-	"useTabs": true,
-	"ignorePatterns": ["bun.lock", "worker-configuration.d.ts"],
-	"overrides": [
-		{
-			"files": ["**/*.md", "**/*.toml", "**/*.yaml", "**/*.yml"],
-			"options": {
-				"useTabs": false
-			}
-		}
-	],
-	"sortImports": true,
-	"sortPackageJson": false
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "ignorePatterns": ["bun.lock", "worker-configuration.d.ts"],
+  "sortImports": true
 }
