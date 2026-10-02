@@ -793,11 +793,15 @@ export function guidePage(c: Ctx) {
 
         <section class="guide-section">
           <h2>Connect</h2>
-          <p>
-            Register the server, then complete the Cloudflare login when your client prompts you.
-          </p>
+          <p>Register the server, then log in with Cloudflare.</p>
           <h3 class="guide-client">Claude Code</h3>
-          <code class="guide-command">claude mcp add --transport http poof {mcpUrl}</code>
+          <code class="guide-command">
+            claude mcp add --transport http --scope user --callback-port 3119 poof {mcpUrl}
+          </code>
+          <p>
+            Then run <code>/mcp</code> in Claude Code to log in. The fixed port is required by this
+            deployment's login configuration.
+          </p>
           <h3 class="guide-client">Codex</h3>
           <code class="guide-command">
             codex mcp add poof --url {mcpUrl}

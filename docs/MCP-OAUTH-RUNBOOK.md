@@ -184,15 +184,15 @@ hand gets a 403 rather than the tool set.
 
 On the new application, open **Advanced settings**:
 
-| Setting                 | Value                    | API field                                            |
-| ----------------------- | ------------------------ | ---------------------------------------------------- |
-| Access token lifetime   | `15m`                    | `grant.access_token_lifetime`                        |
-| Allow localhost clients | off                      | `dynamic_client_registration.allow_any_on_localhost` |
-| Allow loopback clients  | on                       | `dynamic_client_registration.allow_any_on_loopback`  |
-| Allowed redirect URIs   | leave empty until step 7 | `dynamic_client_registration.allowed_uris`           |
-| Dynamic registration    | on                       | `dynamic_client_registration.enabled`                |
-| Grant session duration  | `336h` (14 days)         | `grant.session_duration`                             |
-| Managed OAuth           | on                       | `oauth_configuration.enabled`                        |
+| Setting                 | Value                  | API field                                            |
+| ----------------------- | ---------------------- | ---------------------------------------------------- |
+| Access token lifetime   | `15m`                  | `grant.access_token_lifetime`                        |
+| Allow localhost clients | off                    | `dynamic_client_registration.allow_any_on_localhost` |
+| Allow loopback clients  | on                     | `dynamic_client_registration.allow_any_on_loopback`  |
+| Allowed redirect URIs   | Claude Code URI, below | `dynamic_client_registration.allowed_uris`           |
+| Dynamic registration    | on                     | `dynamic_client_registration.enabled`                |
+| Grant session duration  | `336h` (14 days)       | `grant.session_duration`                             |
+| Managed OAuth           | on                     | `oauth_configuration.enabled`                        |
 
 Cloudflare's own advice is a short access token lifetime with a longer grant,
 and 15 minutes is its documented default.
@@ -202,10 +202,32 @@ Loopback is on and localhost is off on purpose. Loopback means literal
 name, and a name can be pointed somewhere else by a resolver, a hosts file, or
 DNS rebinding. Local CLI clients use loopback anyway; RFC 8252 tells them to.
 
-Leave **Allowed redirect URIs** empty here. ChatGPT does not show its callback
-until the connector exists, so step 7 creates the connector first and comes back
-with the value. The empty list blocks hosted callbacks while the explicit
-loopback setting still allows local clients such as Codex.
+Codex registers a `127.0.0.1` redirect URI, so the loopback setting alone lets
+it through. Claude Code's `--callback-port` documents a redirect URI of the form
+`http://localhost:<port>/callback` instead. With localhost off and the list
+empty, Dynamic Client Registration fails with
+`invalid_client_metadata: redirect_uri is not allowed by the account
+configuration`. Add this one exact URI to **Allowed redirect URIs**:
+
+```text
+http://localhost:3119/callback
+```
+
+Then register Claude Code with the same port, since it otherwise picks a random
+one and the allowlist would not match:
+
+```sh
+claude mcp add --transport http --scope user --callback-port 3119 poof https://mcp.poof.5n7.me/mcp
+```
+
+Do not turn on **Allow localhost clients** instead. That would accept any
+`localhost` redirect URI, which is the DNS rebinding exposure the previous
+paragraph avoids. The single allowlisted URI keeps that setting off.
+
+ChatGPT does not show its callback until the connector exists, so step 7 creates
+the connector first and comes back to add its value to the same list. Until
+then the list holds only the Claude Code URI, which blocks hosted callbacks
+while the loopback setting still allows Codex.
 
 ## 6. Copy the AUD tag into the Worker
 

@@ -27,7 +27,9 @@ describe("GET / library chrome", () => {
     expect(guide.status).toBe(200);
     const guideHtml = await guide.text();
     expect(guideHtml).toContain(MCP_URL);
-    expect(guideHtml).toContain("claude mcp add --transport http poof");
+    expect(guideHtml).toContain(
+      "claude mcp add --transport http --scope user --callback-port 3119 poof",
+    );
     expect(guideHtml).toContain("codex mcp add poof --url");
     expect(guideHtml).toContain("codex mcp login poof");
     expect(guideHtml).toContain("https://github.com/5n7/poof#mcp-server");
@@ -43,7 +45,9 @@ describe("GET / library chrome", () => {
     });
     const html = await guide.text();
     expect(html).toContain("https://mcp.staging.example/mcp");
-    expect(html).toContain("claude mcp add --transport http poof https://mcp.staging.example/mcp");
+    expect(html).toContain(
+      "claude mcp add --transport http --scope user --callback-port 3119 poof https://mcp.staging.example/mcp",
+    );
     expect(html).toContain("codex mcp add poof --url https://mcp.staging.example/mcp");
 
     const localGuide = await fetchWorker("http://localhost:8787/guide", {

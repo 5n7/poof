@@ -124,12 +124,16 @@ authenticates clients with Managed OAuth, so each client logs in through
 Cloudflare with a separate grant. The CLI's OAuth token belongs to the owner
 application and cannot open the MCP endpoint. No local process is required.
 
-Register it with an OAuth-capable client. Claude Code prompts for the Cloudflare
-login on first use:
+Register it with an OAuth-capable client. Claude Code's `--callback-port`
+documents a `localhost` redirect URI of the form `http://localhost:<port>/callback`,
+so the Access application needs that URI allowlisted and the port pinned (see
+[docs/MCP-OAUTH-RUNBOOK.md](docs/MCP-OAUTH-RUNBOOK.md), step 5):
 
 ```sh
-claude mcp add --transport http poof https://mcp.poof.5n7.me/mcp
+claude mcp add --transport http --scope user --callback-port 3119 poof https://mcp.poof.5n7.me/mcp
 ```
+
+Then run `/mcp` in Claude Code to complete the Cloudflare login.
 
 Codex separates registration from login:
 

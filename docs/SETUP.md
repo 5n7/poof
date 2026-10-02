@@ -355,11 +355,14 @@ application, the identity provider, the Managed OAuth settings, the
 None of it is optional. Keep `ACCESS_MCP_AUD` blank through step 5 of the
 runbook. Step 6 enables `/mcp` after the Access configuration has been checked.
 
-Register it with a client that speaks OAuth. Claude Code prompts for the
-Cloudflare login on first use:
+Register it with a client that speaks OAuth. Claude Code's `--callback-port`
+documents a `localhost` redirect URI of the form `http://localhost:<port>/callback`,
+which the Access application should have allowlisted
+([MCP-OAUTH-RUNBOOK.md](MCP-OAUTH-RUNBOOK.md), step 5). Pin the callback port so
+that URI stays stable, then run `/mcp` to log in:
 
 ```sh
-claude mcp add --transport http poof https://mcp.poof.5n7.me/mcp
+claude mcp add --transport http --scope user --callback-port 3119 poof https://mcp.poof.5n7.me/mcp
 ```
 
 Codex separates registration from login:
