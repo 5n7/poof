@@ -27,11 +27,13 @@ describe("GET / library chrome", () => {
     expect(guide.status).toBe(200);
     const guideHtml = await guide.text();
     expect(guideHtml).toContain(MCP_URL);
+    // The visible commands are split into styled words, so assert the one-line
+    // forms the copy buttons carry.
     expect(guideHtml).toContain(
-      "claude mcp add --transport http --scope user --callback-port 3119 poof",
+      `data-copy="claude mcp add --transport http --scope user --callback-port 3119 poof ${MCP_URL}"`,
     );
-    expect(guideHtml).toContain("codex mcp add poof --url");
-    expect(guideHtml).toContain("codex mcp login poof");
+    expect(guideHtml).toContain(`data-copy="codex mcp add poof --url ${MCP_URL}"`);
+    expect(guideHtml).toContain('data-copy="codex mcp login poof"');
     expect(guideHtml).toContain("https://github.com/5n7/poof#mcp-server");
     expect(guideHtml).toContain("https://github.com/5n7/poof/blob/main/docs/MCP-OAUTH-RUNBOOK.md");
     expect(guideHtml).toContain("Keep links safe");
@@ -46,9 +48,9 @@ describe("GET / library chrome", () => {
     const html = await guide.text();
     expect(html).toContain("https://mcp.staging.example/mcp");
     expect(html).toContain(
-      "claude mcp add --transport http --scope user --callback-port 3119 poof https://mcp.staging.example/mcp",
+      'data-copy="claude mcp add --transport http --scope user --callback-port 3119 poof https://mcp.staging.example/mcp"',
     );
-    expect(html).toContain("codex mcp add poof --url https://mcp.staging.example/mcp");
+    expect(html).toContain('data-copy="codex mcp add poof --url https://mcp.staging.example/mcp"');
 
     const localGuide = await fetchWorker("http://localhost:8787/guide", {
       MCP_HOST: "127.0.0.1:8787",
