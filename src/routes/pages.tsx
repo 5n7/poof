@@ -146,7 +146,31 @@ const GUIDE_CSS = `
 .guide-section p, .guide-section li { color: #62626b; font-size: 13px; line-height: 1.55; }
 .guide-section p { margin: 0 0 10px; }
 .guide-section ul { margin: 0; padding-left: 19px; }
-.guide-command { display: block; overflow-x: auto; margin: 12px 0; padding: 11px 12px; border: 1px solid #e0e0e6; border-radius: 8px; background: #fff; color: #1a1a1e; font: 400 12px ui-monospace, Menlo, monospace; white-space: pre; }`;
+.guide-section p code, .guide-section li code { padding: 1px 5px; border-radius: 4px; background: #f1f1f5; color: #1a1a1e; font: 400 12px ui-monospace, Menlo, monospace; }
+.guide-steps { margin: 0; padding: 0; list-style: none; counter-reset: step; }
+.guide-steps > li { position: relative; margin-top: 14px; padding-left: 30px; counter-increment: step; }
+.guide-steps > li::before { content: counter(step); position: absolute; left: 0; top: 0; width: 20px; height: 20px; border-radius: 99px; background: #f1f1f5; color: #62626b; font-size: 11px; font-weight: 600; line-height: 20px; text-align: center; }
+.guide-steps > li > p { margin: 0 0 4px; }
+.guide-step-note { font-size: 12px; }
+
+/* Wrap instead of scrolling sideways: each logical line hangs its overflow, and
+   a float reserves room for the copy button on the first line only. Words stay
+   whole so a line never breaks after the "--" of a flag or strands a trailing
+   "\\"; only URLs, which can outgrow the box, wrap inside themselves. */
+.cmd { position: relative; margin: 10px 0 12px; border: 1px solid #e0e0e6; border-radius: 10px; background: #fff; }
+.cmd-text { margin: 0; padding: 12px 14px; color: #1a1a1e; font: 400 12.5px/1.65 ui-monospace, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.cmd-text::before { content: ""; float: right; width: 26px; height: 1em; }
+.cmd-line { display: block; }
+.cmd.prompt .cmd-line { padding-left: 6ch; text-indent: -6ch; }
+.cmd-word { white-space: nowrap; }
+.cmd.prompt .cmd-line:first-child::before { content: "$ " / ""; color: #b3b3bb; }
+.cmd-copy { position: absolute; top: 9px; right: 8px; display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 1px solid transparent; border-radius: 6px; background: none; color: #8b8b94; cursor: pointer; }
+.cmd-copy:hover { border-color: #e0e0e6; background: #f1f1f5; color: #1a1a1e; }
+.cmd-copy svg { width: 14px; height: 14px; }
+.cmd-copy-status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.cmd-copy .icon-done, .cmd-copy.copied .icon-copy { display: none; }
+.cmd-copy.copied .icon-done { display: block; }
+.cmd-copy.copied { border-color: oklch(0.68 0.17 52 / .45); background: oklch(0.68 0.17 52 / .07); color: oklch(0.5 0.17 52); }`;
 
 // Shared client logic: toast, the share modal (built with textContent only, no
 // innerHTML with user data), remaining-time formatting, and Esc-to-close.
@@ -567,6 +591,103 @@ if (removeFile) removeFile.addEventListener("click", async function () {
 
 const VIEWER_SCRIPT = CORE_JS + TITLE_EDITOR_JS + UPLOAD_JS + VERSIONS_JS + VIEWER_JS + FILES_JS;
 
+// Copy each command's single-line form, which pastes into any shell. On
+// failure, select the visible command so the user can copy it by hand.
+const GUIDE_JS = `
+document.querySelectorAll(".cmd-copy").forEach(function (btn) {
+	const block = btn.parentElement;
+	const status = block.querySelector(".cmd-copy-status");
+	let resetT;
+	// Clear first so a repeat of the same message is announced again.
+	function announce(msg) {
+		status.textContent = "";
+		requestAnimationFrame(function () { status.textContent = msg; });
+	}
+	btn.addEventListener("click", function () {
+		copyToClipboard(btn.dataset.copy).then(function (ok) {
+			if (!ok) {
+				const range = document.createRange();
+				range.selectNodeContents(block.querySelector(".cmd-text"));
+				const sel = window.getSelection();
+				sel.removeAllRanges();
+				sel.addRange(range);
+				toast("Could not copy \\u2014 the text is selected instead");
+				announce("Could not copy; command selected");
+				return;
+			}
+			btn.classList.add("copied");
+			announce("Copied");
+			clearTimeout(resetT);
+			resetT = setTimeout(function () {
+				btn.classList.remove("copied");
+				status.textContent = "";
+			}, 1600);
+		});
+	});
+});`;
+
+const GUIDE_SCRIPT = CORE_JS + GUIDE_JS;
+
+// Show a long command as shell continuation lines but copy it as one line. Each
+// continued line ends in a real newline, so the text stays valid shell when
+// selected by hand or read without CSS.
+const CopyBlock: FC<{ lines: string[]; label: string; prompt?: boolean }> = ({
+  lines,
+  label,
+  prompt,
+}) => (
+  <div class={prompt ? "cmd prompt" : "cmd"}>
+    <pre class="cmd-text">
+      {lines.map((line, i) => {
+        const continued = i < lines.length - 1;
+        return (
+          <span class="cmd-line">
+            {i > 0 ? "    " : ""}
+            {line.split(" ").map((word, j, words) => {
+              const text = continued && j === words.length - 1 ? `${word} \\` : word;
+              return (
+                <>
+                  {j > 0 ? " " : ""}
+                  {word.includes("://") ? text : <span class="cmd-word">{text}</span>}
+                </>
+              );
+            })}
+            {continued ? "\n" : ""}
+          </span>
+        );
+      })}
+    </pre>
+    <button
+      type="button"
+      class="cmd-copy"
+      data-copy={lines.join(" ")}
+      aria-label={label}
+      title={label}
+    >
+      <svg
+        class="icon-copy"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.5"
+      >
+        <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+        <path d="M10.5 5.5V3.5a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2" />
+      </svg>
+      <svg
+        class="icon-done"
+        viewBox="0 0 16 16"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="1.75"
+      >
+        <path d="M3.5 8.5l3 3 6-6.5" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+    </button>
+    <span class="cmd-copy-status" aria-live="polite" />
+  </div>
+);
+
 const Layout: FC<PropsWithChildren<{ title: string; pageCss?: string }>> = ({
   title,
   pageCss,
@@ -788,25 +909,50 @@ export function guidePage(c: Ctx) {
         <section class="guide-section">
           <h2>Server URL</h2>
           <p>Use this exact URL, with no trailing slash.</p>
-          <code class="guide-command">{mcpUrl}</code>
+          <CopyBlock lines={[mcpUrl]} label="Copy server URL" />
         </section>
 
         <section class="guide-section">
           <h2>Connect</h2>
           <p>Register the server, then log in with Cloudflare.</p>
           <h3 class="guide-client">Claude Code</h3>
-          <code class="guide-command">
-            claude mcp add --transport http --scope user --callback-port 3119 poof {mcpUrl}
-          </code>
-          <p>
-            Then run <code>/mcp</code> in Claude Code to log in. The fixed port is required by this
-            deployment's login configuration.
-          </p>
+          <ol class="guide-steps">
+            <li>
+              <p>Register the server.</p>
+              <CopyBlock
+                prompt
+                lines={[
+                  "claude mcp add --transport http --scope user",
+                  "--callback-port 3119",
+                  `poof ${mcpUrl}`,
+                ]}
+                label="Copy Claude Code command"
+              />
+              <p class="guide-step-note">
+                Keep port 3119. This deployment's login only accepts that callback.
+              </p>
+            </li>
+            <li>
+              <p>
+                Run <code>/mcp</code> in Claude Code, select <code>poof</code>, and log in.
+              </p>
+            </li>
+          </ol>
           <h3 class="guide-client">Codex</h3>
-          <code class="guide-command">
-            codex mcp add poof --url {mcpUrl}
-            {"\n"}codex mcp login poof
-          </code>
+          <ol class="guide-steps">
+            <li>
+              <p>Register the server.</p>
+              <CopyBlock
+                prompt
+                lines={[`codex mcp add poof --url ${mcpUrl}`]}
+                label="Copy Codex add command"
+              />
+            </li>
+            <li>
+              <p>Log in.</p>
+              <CopyBlock prompt lines={["codex mcp login poof"]} label="Copy Codex login command" />
+            </li>
+          </ol>
         </section>
 
         <section class="guide-section">
@@ -846,6 +992,7 @@ export function guidePage(c: Ctx) {
           </p>
         </section>
       </main>
+      <script dangerouslySetInnerHTML={{ __html: GUIDE_SCRIPT }} />
     </Layout>,
   );
 }
