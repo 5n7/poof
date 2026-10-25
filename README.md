@@ -22,6 +22,7 @@ poof auth logout                           # revoke the OAuth grant and forget i
 poof cat <doc-id>                          # print source text; HTML becomes Markdown
 poof cat <doc-id> --file adr/001.md        # select a file
 poof cat <doc-id> --raw > file             # download original bytes
+poof extend <share-token> --share-ttl 1w   # make a live share link last a week from now
 poof files <doc-id>                        # list paths in the current version
 poof ls                                    # list documents
 poof push report.md --share                # upload + print a share URL (1d TTL)
@@ -147,7 +148,7 @@ Set `ACCESS_MCP_AUD` only after creating and checking the Access application in
 `POST /mcp` returns `503 Service Unavailable`. Once configured, the endpoint
 accepts a human OAuth login and no other credential.
 
-After login, the client exposes the same twelve document tools as the CLI. `push` and
+After login, the client exposes the same thirteen document tools as the CLI. `push` and
 `update` accept `files: [{path, content, encoding?}]` with mixed file types, or
 the existing single `content` argument. `update` accepts `delete_paths` for
 explicit removals. Use `files` to list paths and `cat` with `file` to read one.

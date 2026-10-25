@@ -289,7 +289,7 @@ allowlisted.
 
 4. **Authenticate.** Start the connector's login. It should redirect to a
    Cloudflare account login, prompt for the second factor, and come back
-   connected with the twelve tools listed.
+   connected with the thirteen tools listed.
 
 ## Verify
 

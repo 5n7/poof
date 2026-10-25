@@ -372,7 +372,7 @@ codex mcp add poof --url https://mcp.poof.5n7.me/mcp
 codex mcp login poof
 ```
 
-`claude mcp list` should then show `poof` as connected, and the twelve tools
+`claude mcp list` should then show `poof` as connected, and the thirteen tools
 appear as `mcp__poof__ls`, `mcp__poof__push`, and so on.
 
 To check the endpoint without a client, send the MCP handshake by hand with an
