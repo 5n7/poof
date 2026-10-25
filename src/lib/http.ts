@@ -103,8 +103,35 @@ export const API_CONTENT_HEADERS: Record<string, string> = {
   "Cache-Control": "no-store",
 };
 
+/**
+ * Content-Security-Policy for every HTML page the Worker renders. Styles and
+ * scripts come only from `/v/assets/`, so an injected tag cannot run, and the
+ * owner pages (which hold full API authority) can talk to nothing but this
+ * origin. `style-src-attr` allows the per-row `--fade` custom property. The
+ * document itself lives in the `/raw/` iframe under its own sandbox CSP.
+ */
+export const PAGE_CSP = [
+  "default-src 'none'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "style-src-attr 'unsafe-inline'",
+  "font-src 'self'",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "frame-src 'self'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join("; ");
+
+/** Headers on the library and guide pages. */
+export const PAGE_HEADERS: Record<string, string> = {
+  "Content-Security-Policy": PAGE_CSP,
+};
+
 /** Headers on viewer pages (`/d/*`, `/v/*`). See SPEC §9. */
 export const VIEWER_HEADERS: Record<string, string> = {
+  ...PAGE_HEADERS,
   "Referrer-Policy": "no-referrer",
   "X-Robots-Tag": "noindex",
 };

@@ -1,6 +1,7 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+import { ASSET_URLS } from "../src/ui/assets";
 import { OWNER_BASE, seedDoc, seedShare, seedVersion } from "./helpers";
 
 describe("owner title editing", () => {
@@ -16,7 +17,7 @@ describe("owner title editing", () => {
     expect(library).toContain(
       `data-id="${id}" data-title="A &lt;draft&gt; &amp; &quot;review&quot;" data-state="${metadata.state}"`,
     );
-    expect(library).toContain('class="menu-item" data-rename');
+    expect(library).toContain('aria-label="Document actions"');
     const viewer = await (await SELF.fetch(`${OWNER_BASE}/d/${id}`)).text();
     expect(viewer).toContain('id="rename-current"');
     expect(viewer).toContain(
@@ -60,9 +61,8 @@ describe("owner title editing", () => {
     expect(past).toContain("read-only");
     expect(current).toContain("<title>Renamed live title</title>");
     expect(past).toContain(`<title>${id}</title>`);
-    expect(past).toContain(`<span class="tb-title">${id}</span>`);
+    expect(past).toContain(`<span class="title">${id}</span>`);
     expect(past).not.toContain('id="rename-current"');
-    expect(past).not.toContain('class="menu-item" data-rename');
   });
 
   it("keeps the public viewer free of editing controls and editing scripts", async () => {
@@ -74,6 +74,6 @@ describe("owner title editing", () => {
     expect(response.status).toBe(200);
     const viewer = await response.text();
     expect(viewer).not.toContain('id="rename-current"');
-    expect(viewer).not.toContain("function openTitleEditor");
+    expect(viewer).not.toContain(ASSET_URLS.ownerJs);
   });
 });

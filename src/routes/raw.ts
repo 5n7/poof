@@ -10,9 +10,10 @@ import {
 } from "../lib/db";
 import { linkDocumentFiles } from "../lib/file-links";
 import { RAW_HEADERS, uniform404, withHeaders } from "../lib/http";
-import { escapeHtml, renderMarkdown, wrapViewerHtml } from "../lib/render";
+import { escapeHtml, renderMarkdown } from "../lib/render";
 import { nowSeconds } from "../lib/time";
 import { verifyOwnerToken } from "../lib/tokens";
+import { wrapViewerHtml } from "../ui/document";
 
 /**
  * Serve public document HTML from `GET /raw/:token` (SPEC §6.2). Accept two token

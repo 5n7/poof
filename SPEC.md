@@ -450,12 +450,13 @@ Every route below is on `poof.5n7.me` except `POST /mcp`, which is on `mcp.poof.
 | `POST /api/documents/:id/versions/:version/rollback` | Access                       | Point the document at an existing version                                |
 | `DELETE /api/shares/:token`                          | Access                       | Revoke (`revoked=1`, immediate)                                          |
 | `GET /d/:id`                                         | Access                       | Private viewer page (mints `o_` token, embeds iframe)                    |
-| `GET /d/:id?v=N`                                     | Access                       | Read-only view of version N (banner, no Share, no uploader)              |
+| `GET /d/:id?v=N`                                     | Access                       | Read-only view of version N (notice, no Share, no uploader)              |
 | `GET /guide`                                         | Access                       | Owner guide page                                                         |
 | `POST /mcp`                                          | Access, MCP application      | MCP server (Streamable HTTP): twelve tools over the same core (§11)      |
 | `GET /raw/:token`                                    | none (token is the auth)     | Rendered content with sandbox headers; `?format=raw` downloads source    |
 | `GET /raw/:token/*`                                  | none (token is the auth)     | Linked file or asset with the same sandbox headers                       |
 | `GET /v/:token`                                      | none                         | Public shared viewer page; **always the current version**                |
+| `GET /v/assets/:file`                                | none                         | Content-hashed fonts, styles, and scripts for every page; cached a year  |
 
 Weekly Cron cleanup is described in §7.
 
@@ -476,7 +477,7 @@ Version routes follow these rules:
 
 **Cloudflare Access configuration.** Two applications, one per hostname (§6.5). The `poof.5n7.me` application allows the owner's exact email through the Cloudflare identity provider, enables Managed OAuth for the CLI, and keeps a Service Auth policy only for CI. The `mcp.poof.5n7.me` application allows the same owner identity and has **no Service Auth policy**. A service token there would skip the account login. Bypass applications cover only `poof.5n7.me/v/*` and `poof.5n7.me/raw/*`. `docs/SETUP.md` and `docs/MCP-OAUTH-RUNBOOK.md` have the configuration.
 
-Viewer pages (`/d/*`, `/v/*`) also send `Referrer-Policy: no-referrer` so links inside documents can't leak token URLs via `Referer`.
+Viewer pages (`/d/*`, `/v/*`) also send `Referrer-Policy: no-referrer` so links inside documents can't leak token URLs via `Referer`. Every HTML page (`/`, `/guide`, `/d/*`, `/v/*`) sends a strict `Content-Security-Policy` that allows scripts, stylesheets, fonts, fetches, and frames only from the same origin. The page bundles live under `/v/assets/`; the only exceptions are inline `style` attributes and `data:` images for the favicons.
 
 ## 10. CLI
 
@@ -641,7 +642,7 @@ The tools do not call the Worker's `/api/*` routes over HTTP. Doing so would add
 4. **Shared view** → `/v/{token}` validates share (404 on any failure) → joins to the document's **current** version → sandboxed iframe → `/raw/s_{token}` → R2 blob.
 5. **Revoke** → `revoked=1` → next request 404s immediately.
 6. **Update** → `poof update {id} file.md` (or the `update` tool, or drop/⌘V on `/d/{id}`) → stage version `MAX+1` → put blob → move `current_version` → **every existing share link serves the new content on its next load** with the same token.
-7. **Rollback** → `poof versions {id}` to pick a number (or the versions modal on `/d/{id}`) → `poof rollback {id} N` → one guarded `UPDATE` of the pointer, no blob written → live share links follow immediately, and a later update is numbered `MAX+1`, not `N+1`.
+7. **Rollback** → `poof versions {id}` to pick a number (or the History panel on `/d/{id}`) → `poof rollback {id} N` → one guarded `UPDATE` of the pointer, no blob written → live share links follow immediately, and a later update is numbered `MAX+1`, not `N+1`.
 
 ## 13. Future work (explicitly not now)
 

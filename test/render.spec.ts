@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { renderMarkdown, wrapViewerHtml } from "../src/lib/render";
+import { renderMarkdown } from "../src/lib/render";
+import { wrapViewerHtml } from "../src/ui/document";
 
 describe("renderMarkdown", () => {
   it("renders headings", () => {
@@ -125,7 +126,8 @@ describe("viewer highlighting", () => {
       explicit,
       alreadyHighlighted,
     ]);
-    expect(loader.assets).toHaveLength(2);
+    // Light and dark highlight themes, then the highlighter itself.
+    expect(loader.assets).toHaveLength(3);
     for (const asset of loader.assets) {
       expect(asset.integrity).toMatch(/^sha384-/);
       expect(asset.crossOrigin).toBe("anonymous");
@@ -145,7 +147,10 @@ describe("viewer highlighting", () => {
     expect(loader.assets).toHaveLength(1);
     expect(loader.assets[0].src).toContain("mermaid.min.js");
     loader.assets[0].onload!();
-    expect(loader.mermaid.initialize).toHaveBeenCalledWith({ startOnLoad: false });
+    expect(loader.mermaid.initialize).toHaveBeenCalledWith({
+      startOnLoad: false,
+      theme: "neutral",
+    });
     expect(loader.mermaid.run).toHaveBeenCalledOnce();
     expect(loader.tasks).toEqual([]);
   });

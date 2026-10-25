@@ -346,7 +346,7 @@ describe("GET /d/:id?v=N read-only viewer", () => {
     await addVersion(doc.id, "# two");
 
     const html = await viewerPage(`/d/${doc.id}?v=1`);
-    expect(html).toContain('class="banner"');
+    expect(html).toContain('class="notice"');
     expect(html).toContain("read-only");
     expect(html).toContain('id="ver-restore"');
     // No Share button and no uploader wiring on a past version.
@@ -363,7 +363,7 @@ describe("GET /d/:id?v=N read-only viewer", () => {
     const html = await viewerPage(`/d/${doc.id}?v=1`);
     expect(html).toContain('id="share-current"');
     expect(html).toContain('id="drop"');
-    expect(html).not.toContain('class="banner"');
+    expect(html).not.toContain('class="notice"');
   });
 
   it("404s on a malformed or unknown ?v=", async () => {
