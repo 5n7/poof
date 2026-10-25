@@ -150,6 +150,6 @@ export function ttlToSeconds(ttl: Ttl): number {
 }
 
 /** Convert "1h", "1d", or "1w" to seconds. Return null for other values. */
-export function parseTtl(s: string): number | null {
-  return Object.hasOwn(TTL_SECONDS, s) ? TTL_SECONDS[s as Ttl] : null;
+export function parseTtl(s: unknown): number | null {
+  return typeof s === "string" && Object.hasOwn(TTL_SECONDS, s) ? TTL_SECONDS[s as Ttl] : null;
 }

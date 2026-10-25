@@ -9,6 +9,7 @@ import {
   compareAndSetDocumentTitle,
   deleteDocument,
   deleteVersion,
+  extendShareExpiry,
   getLiveDocument,
   getLiveDocumentAt,
   getVersion,
@@ -352,7 +353,7 @@ export async function issueShare(
   env: Env,
   id: string,
   now: number,
-  ttl: string,
+  ttl: unknown,
 ): Promise<IssueShareResult> {
   if (!(await getLiveDocument(env.DB, id, now))) return { ok: false, reason: "not-found" };
 
@@ -368,6 +369,25 @@ export async function issueShare(
   };
   await insertShare(env.DB, share);
   return { ok: true, share };
+}
+
+export type ExtendShareResult =
+  | { ok: true; share: ShareRow; renewed: boolean }
+  | { ok: false; reason: "invalid-ttl" | "not-found" };
+
+export async function extendShare(
+  env: Env,
+  token: string,
+  now: number,
+  ttl: unknown,
+): Promise<ExtendShareResult> {
+  const ttlSeconds = parseTtl(ttl);
+  if (ttlSeconds === null) return { ok: false, reason: "invalid-ttl" };
+
+  const until = now + ttlSeconds;
+  const share = await extendShareExpiry(env.DB, token, until, now);
+  if (!share) return { ok: false, reason: "not-found" };
+  return { ok: true, share, renewed: share.expires_at === until };
 }
 
 /**

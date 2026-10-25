@@ -8,6 +8,7 @@ import {
   isDocumentKind,
 } from "../lib/content";
 import {
+  type ShareRow,
   getLiveDocument,
   getLiveUpdateSnapshot,
   getLiveDocumentAt,
@@ -30,6 +31,7 @@ import {
   createDocument,
   documentTitleMetadata,
   deleteDocumentWithBlobs,
+  extendShare,
   issueShare,
   readVersionContent,
   rollbackDocument,
@@ -355,23 +357,31 @@ apiRoutes.post("/documents/:id/versions/:version/rollback", async (c) => {
   return c.json(result);
 });
 
+function shareJson(share: ShareRow) {
+  return { token: share.token, expires_at: share.expires_at, url: `/v/${share.token}` };
+}
+
+async function shareTtl(c: Context): Promise<unknown> {
+  const text = await c.req.text();
+  if (!text.trim()) return "1d";
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  if (typeof body !== "object" || body === null || Array.isArray(body)) return undefined;
+  return "ttl" in body ? body.ttl : "1d";
+}
+
 // The `Promise<Response>` annotation is what makes the switch below exhaustive:
 // without it Hono widens the handler's return to `Response | undefined`, and a
 // refusal nobody phrased would fall out of the switch as a silent 200-less
 // nothing instead of a type error.
 apiRoutes.post("/documents/:id/shares", async (c): Promise<Response> => {
   const id = c.req.param("id");
-  const body = await c.req.json<{ ttl?: string }>().catch(() => ({}) as { ttl?: string });
-  const ttl = (typeof body.ttl === "string" && body.ttl) || "1d";
-
-  const issued = await issueShare(c.env, id, nowSeconds(), ttl);
-  if (issued.ok) {
-    const { share } = issued;
-    return c.json(
-      { token: share.token, expires_at: share.expires_at, url: `/v/${share.token}` },
-      201,
-    );
-  }
+  const issued = await issueShare(c.env, id, nowSeconds(), await shareTtl(c));
+  if (issued.ok) return c.json(shareJson(issued.share), 201);
   // Wording only. Which refusal wins when both apply is the core's call, and it
   // has to stay there: a 400 for an unknown id would say the id exists.
   switch (issued.reason) {
@@ -394,6 +404,19 @@ apiRoutes.delete("/shares/:token", async (c) => {
   const ok = await revokeShare(c.env.DB, token);
   if (!ok) return uniform404(c);
   return c.json({ revoked: true });
+});
+
+// Annotated for the same exhaustive switch as issuing a share.
+apiRoutes.post("/shares/:token/extend", async (c): Promise<Response> => {
+  const token = c.req.param("token");
+  const extended = await extendShare(c.env, token, nowSeconds(), await shareTtl(c));
+  if (extended.ok) return c.json({ ...shareJson(extended.share), renewed: extended.renewed });
+  switch (extended.reason) {
+    case "invalid-ttl":
+      return c.json({ error: "invalid ttl" }, 400);
+    case "not-found":
+      return uniform404(c);
+  }
 });
 
 apiRoutes.get("/documents/:id", async (c) => {

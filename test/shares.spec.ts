@@ -1,8 +1,8 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { getLiveShare } from "../src/lib/db";
-import { issueShare } from "../src/lib/documents";
+import { getLiveDocumentByShareToken, getLiveShare } from "../src/lib/db";
+import { extendShare, issueShare } from "../src/lib/documents";
 import { seedDoc, seedShare } from "./helpers";
 
 const BASE = "https://poof.5n7.me";
@@ -24,6 +24,35 @@ async function postShare(id: string, ttl?: string) {
     body: JSON.stringify(ttl ? { ttl } : {}),
   });
 }
+
+async function postExtend(token: string, body?: unknown) {
+  return SELF.fetch(`${BASE}/api/shares/${token}/extend`, {
+    method: "POST",
+    ...(body === undefined
+      ? {}
+      : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+  });
+}
+
+async function postRaw(path: string, body: string) {
+  return SELF.fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+  });
+}
+
+const MALFORMED_TTL_BODIES = [
+  '{"ttl":""}',
+  '{"ttl":5}',
+  '{"ttl":null}',
+  '{"ttl":["1d"]}',
+  '["1d"]',
+  '"1d"',
+  "ttl=1d",
+];
+
+const nowS = () => (Date.now() / 1000) | 0;
 
 describe("share lifecycle through the API", () => {
   it("uploads, shares (default 1d TTL), views, revokes, and re-issues", async () => {
@@ -172,7 +201,25 @@ describe("refusing to issue a share through the API", () => {
     expect(await res.json()).toEqual({ error: "invalid ttl" });
   });
 
-  it("treats a body that is not JSON as no ttl at all, i.e. the 1d default", async () => {
+  it("answers 400 for a malformed ttl or body on a live document", async () => {
+    const doc = await (await upload("# Malformed ttl", "md")).json<{ id: string }>();
+
+    for (const body of MALFORMED_TTL_BODIES) {
+      const res = await postRaw(`/api/documents/${doc.id}/shares`, body);
+      expect(res.status, body).toBe(400);
+      expect(await res.json()).toEqual({ error: "invalid ttl" });
+    }
+  });
+
+  it("answers 404 for an unknown id even when the body is malformed", async () => {
+    for (const body of MALFORMED_TTL_BODIES) {
+      expect((await postRaw("/api/documents/no_such_document/shares", body)).status, body).toBe(
+        404,
+      );
+    }
+  });
+
+  it("treats an empty body as no ttl at all, i.e. the 1d default", async () => {
     const doc = await (await upload("# No body", "md")).json<{ id: string }>();
 
     const before = (Date.now() / 1000) | 0;
@@ -226,5 +273,169 @@ describe("issueShare", () => {
     expect(issued.share.document_id).toBe("core_share_ok");
     expect(issued.share.expires_at).toBe(now + 3600);
     expect(await getLiveShare(env.DB, issued.share.token, now)).toEqual(issued.share);
+  });
+});
+
+describe("extending a share through the API", () => {
+  async function shortShare(): Promise<{ id: string; token: string; expiresAt: number }> {
+    const doc = await (await upload("# Extend me", "md")).json<{ id: string }>();
+    const token = `s_extend${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`;
+    const now = nowS();
+    await seedShare(token, doc.id, { createdAt: now, expiresAt: now + 600 });
+    return { id: doc.id, token, expiresAt: now + 600 };
+  }
+
+  it("renews to a day from now by default and keeps the link live past its old expiry", async () => {
+    const { id, token, expiresAt } = await shortShare();
+
+    const before = nowS();
+    const res = await postExtend(token);
+    const after = nowS();
+    expect(res.status).toBe(200);
+    const body = await res.json<{ token: string; expires_at: number; url: string }>();
+    expect(body).toEqual({ token, expires_at: body.expires_at, url: `/v/${token}`, renewed: true });
+    expect(body.expires_at).toBeGreaterThanOrEqual(before + 86400);
+    expect(body.expires_at).toBeLessThanOrEqual(after + 86400);
+
+    expect((await SELF.fetch(`${BASE}/v/${token}`)).status).toBe(200);
+    expect(await getLiveDocumentByShareToken(env.DB, token, expiresAt + 1)).not.toBeNull();
+    expect(await getLiveDocumentByShareToken(env.DB, token, body.expires_at)).toBeNull();
+
+    const { shares } = await (
+      await SELF.fetch(`${BASE}/api/documents/${id}/shares`)
+    ).json<{ shares: { token: string; expires_at: number }[] }>();
+    expect(shares.find((s) => s.token === token)?.expires_at).toBe(body.expires_at);
+  });
+
+  it("takes the ttl from the body the way issuing does", async () => {
+    const { token } = await shortShare();
+
+    const before = nowS();
+    const hour = await (await postExtend(token, { ttl: "1h" })).json<{ expires_at: number }>();
+    expect(hour.expires_at).toBeGreaterThanOrEqual(before + 3600);
+    expect(hour.expires_at).toBeLessThanOrEqual(nowS() + 3600);
+
+    const day = await (await postExtend(token, {})).json<{ expires_at: number }>();
+    expect(day.expires_at).toBeGreaterThanOrEqual(before + 86400);
+    expect(day.expires_at).toBeLessThanOrEqual(nowS() + 86400);
+  });
+
+  it("leaves a link that already lasts longer unchanged", async () => {
+    const doc = await (await upload("# Long link", "md")).json<{ id: string }>();
+    const expiresAt = nowS() + 2 * 86400;
+    await seedShare("s_extendlonger0000000000", doc.id, { expiresAt });
+
+    const res = await postExtend("s_extendlonger0000000000", { ttl: "1d" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ expires_at: expiresAt, renewed: false });
+  });
+
+  it("answers 400 for an unknown or malformed ttl, whatever the token", async () => {
+    const { id, token, expiresAt } = await shortShare();
+    await seedShare("s_extendrevoked400000000", id, {
+      expiresAt: nowS() + 600,
+      revoked: 1,
+    });
+
+    for (const t of [token, "s_extendrevoked400000000", "s_nosuchshare"]) {
+      for (const body of ['{"ttl":"2d"}', ...MALFORMED_TTL_BODIES]) {
+        const res = await postRaw(`/api/shares/${t}/extend`, body);
+        expect(res.status, `${t} ${body}`).toBe(400);
+        expect(await res.json()).toEqual({ error: "invalid ttl" });
+      }
+    }
+    expect((await getLiveShare(env.DB, token, nowS()))!.expires_at).toBe(expiresAt);
+  });
+
+  it("answers 404 for a revoked share and leaves it dead", async () => {
+    const { token, expiresAt } = await shortShare();
+    await SELF.fetch(`${BASE}/api/shares/${token}`, { method: "DELETE" });
+
+    const res = await postExtend(token, { ttl: "1d" });
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe("Not Found");
+    expect((await SELF.fetch(`${BASE}/v/${token}`)).status).toBe(404);
+    const row = await env.DB.prepare("SELECT expires_at FROM share WHERE token = ?")
+      .bind(token)
+      .first<{ expires_at: number }>();
+    expect(row!.expires_at).toBe(expiresAt);
+  });
+
+  it("answers 404 for an expired share instead of reviving it", async () => {
+    const doc = await (await upload("# Expired link", "md")).json<{ id: string }>();
+    const now = nowS();
+    await seedShare("s_extendexpired000000000", doc.id, {
+      createdAt: now - 20,
+      expiresAt: now - 10,
+    });
+
+    expect((await postExtend("s_extendexpired000000000", { ttl: "1w" })).status).toBe(404);
+    expect((await SELF.fetch(`${BASE}/v/s_extendexpired000000000`)).status).toBe(404);
+  });
+
+  it("answers 404 when the share's document is owner-expired", async () => {
+    const now = nowS();
+    await seedDoc("extend_doc_expired", { createdAt: now - 7200, expiresAt: now - 3600 });
+    await seedShare("s_extenddocexpired000000", "extend_doc_expired", {
+      createdAt: now,
+      expiresAt: now + 600,
+    });
+
+    expect((await postExtend("s_extenddocexpired000000", { ttl: "1d" })).status).toBe(404);
+    const row = await env.DB.prepare("SELECT expires_at FROM share WHERE token = ?")
+      .bind("s_extenddocexpired000000")
+      .first<{ expires_at: number }>();
+    expect(row!.expires_at).toBe(now + 600);
+  });
+});
+
+describe("extendShare", () => {
+  const now = nowS();
+
+  it("parses the ttl before it looks up the share", async () => {
+    await seedDoc("core_extend_live", { createdAt: now });
+    await seedShare("s_coreextendlive00000000", "core_extend_live", { expiresAt: now + 60 });
+
+    for (const token of ["s_coreextendmissing00000", "s_coreextendlive00000000"]) {
+      expect(await extendShare(env, token, now, "1y")).toEqual({
+        ok: false,
+        reason: "invalid-ttl",
+      });
+    }
+    expect(await extendShare(env, "s_coreextendmissing00000", now, "1d")).toEqual({
+      ok: false,
+      reason: "not-found",
+    });
+  });
+
+  it("renews to the ttl from now, not from the old expiry, and writes the row it hands back", async () => {
+    await seedDoc("core_extend_ok", { createdAt: now });
+    await seedShare("s_coreextendok0000000000", "core_extend_ok", { expiresAt: now + 3600 });
+
+    const extended = await extendShare(env, "s_coreextendok0000000000", now, "1d");
+    if (!extended.ok) throw new Error(`expected a share, got ${extended.reason}`);
+
+    expect(extended.share.expires_at).toBe(now + 86400);
+    expect(extended.renewed).toBe(true);
+    expect(await getLiveShare(env.DB, "s_coreextendok0000000000", now)).toEqual(extended.share);
+  });
+
+  it("never shortens a link, stacks no time on a repeat, and never leaves more than a week", async () => {
+    await seedDoc("core_extend_cap", { createdAt: now });
+    await seedShare("s_coreextendcap000000000", "core_extend_cap", { expiresAt: now + 60 });
+
+    const results: [end: number, renewed: boolean][] = [];
+    for (const ttl of ["1w", "1w", "1d", "1h", "1w"]) {
+      const extended = await extendShare(env, "s_coreextendcap000000000", now, ttl);
+      if (!extended.ok) throw new Error(`expected a share, got ${extended.reason}`);
+      results.push([extended.share.expires_at, extended.renewed]);
+    }
+    expect(results).toEqual([
+      [now + 604800, true],
+      [now + 604800, true],
+      [now + 604800, false],
+      [now + 604800, false],
+      [now + 604800, true],
+    ]);
   });
 });
