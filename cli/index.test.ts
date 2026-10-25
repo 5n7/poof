@@ -27,7 +27,7 @@ async function run(
 test("top-level help lists auth and keeps status at the top level", async () => {
   const result = await run(["--help"]);
   expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain("auth|cat|ls");
+  expect(result.stdout).toContain("auth|cat|extend|files|ls");
   expect(result.stdout).toContain("share|status|suggest-title|update");
   expect(result.stdout).toContain("Only 'poof auth login' opens a browser");
   expect(result.stderr).toBe("");
@@ -337,6 +337,50 @@ test("update does not treat title or root values as deletion options", async () 
   } finally {
     server.stop(true);
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("extend posts the share ttl for one share token and prints its URL, expiry, and any no-op", async () => {
+  const JAN_9_2027_8AM_UTC = 1_799_481_600;
+  const requests: { method: string; path: string; body: unknown }[] = [];
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    async fetch(request) {
+      const body = await request.json();
+      requests.push({ method: request.method, path: new URL(request.url).pathname, body });
+      const renewed = (body as { ttl?: string }).ttl === "1w";
+      return Response.json({
+        token: "s_tok",
+        expires_at: JAN_9_2027_8AM_UTC,
+        url: "/v/s_tok",
+        renewed,
+      });
+    },
+  });
+  try {
+    const environment = {
+      POOF_URL: `http://127.0.0.1:${server.port}`,
+      POOF_ACCESS_CLIENT_ID: "test",
+      POOF_ACCESS_CLIENT_SECRET: "test",
+      TZ: "UTC",
+    };
+    const result = await run(["extend", "s_tok/?", "--share-ttl", "1w"], environment);
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toBe(
+      `http://127.0.0.1:${server.port}/v/s_tok\nexpires 2027-01-09 08:00\n`,
+    );
+    const defaulted = await run(["extend", "s_tok"], environment);
+    expect(defaulted.exitCode, defaulted.stderr).toBe(0);
+    expect(defaulted.stdout).toBe(
+      `http://127.0.0.1:${server.port}/v/s_tok\nexpires 2027-01-09 08:00 (unchanged: already lasts longer than 1d)\n`,
+    );
+    expect(requests).toEqual([
+      { method: "POST", path: "/api/shares/s_tok%2F%3F/extend", body: { ttl: "1w" } },
+      { method: "POST", path: "/api/shares/s_tok/extend", body: {} },
+    ]);
+  } finally {
+    server.stop(true);
   }
 });
 

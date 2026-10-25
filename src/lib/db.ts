@@ -582,6 +582,23 @@ export async function getLiveShare(
     .first<ShareRow>();
 }
 
+export async function extendShareExpiry(
+  db: D1Database,
+  token: string,
+  until: number,
+  now: number,
+): Promise<ShareRow | null> {
+  return db
+    .prepare(
+      `UPDATE share SET expires_at = MAX(expires_at, ?)
+			WHERE token = ? AND revoked = 0 AND expires_at > ?
+				AND EXISTS (SELECT 1 FROM document d WHERE d.id = share.document_id AND (d.expires_at IS NULL OR d.expires_at >= ?))
+			RETURNING *`,
+    )
+    .bind(until, token, now, now)
+    .first<ShareRow>();
+}
+
 export async function revokeShare(db: D1Database, token: string): Promise<boolean> {
   const res = await db.prepare("UPDATE share SET revoked = 1 WHERE token = ?").bind(token).run();
   return (res.meta.changes ?? 0) > 0;

@@ -51,6 +51,7 @@ meaning.
 
 ```sh
 poof cat <doc-id> [--file <path>] [--raw] [--version <n>]
+poof extend <share-token> [--share-ttl 1h|1d|1w]
 poof files <doc-id> [--version <n>]
 poof ls
 poof push <file-or-directory>... [--root <directory>] [--share] [--share-ttl 1h|1d|1w] [--title <t>] [--ttl 1h|1d|1w]
@@ -68,6 +69,14 @@ poof versions <doc-id>
   Pass `--file <path>` to select a file and `--version <n>` for a past version. Use `--raw` to retrieve original bytes
   for editing HTML or downloading binary files. Default binary output gives
   metadata and a raw-download command.
+- `extend` makes a live share link last at least `--share-ttl` (default
+  `1d`) from now and prints the same `/v/{token}` URL with its expiry. It
+  takes the `s_...` token. A link never gets shorter: one that already lasts
+  longer keeps its expiry, and the expiry line then says `unchanged`. Running
+  it again cannot stack time, so a retry is harmless. Extending widens
+  access like sharing, so use it only when the user asks to give a recipient
+  more time. A revoked or expired link cannot be extended; issue a new one
+  with `share`. MCP: `extend` with `token` and optional `share_ttl`.
 - `files` lists paths and file types for the current or selected version.
 - `ls` lists documents (id, title, kind, current version, last updated,
   expires).

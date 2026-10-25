@@ -1,4 +1,5 @@
 import { MAX_BYTES, MAX_FILES } from "../lib/files";
+import { ENDS_HEADER } from "../lib/http";
 import { iconSvg, type IconName } from "./icons";
 import { TITLE_EDITOR_JS } from "./title-editor";
 
@@ -42,6 +43,15 @@ function stateOf(shareExpires, docExpires, now) {
 }
 function fadeOf(end, now) { return Math.round(Math.max(0, Math.min(1, 1 - (end - now) / 86400)) * 100) / 100; }
 const calm = matchMedia("(prefers-reduced-motion: reduce)");
+// The client clock can run ahead of the server's, so what looks ended here is
+// the server's call. Each key asks at most once a minute, one request at a time.
+const nextAsk = new Map();
+async function askServer(key, request) {
+	if ((nextAsk.get(key) || 0) > Date.now()) return null;
+	const next = Date.now() + 60000;
+	nextAsk.set(key, Infinity);
+	try { return await request(); } finally { nextAsk.set(key, next); }
+}
 `;
 
 /** Owner-only helpers: DOM, toast, puff, popovers, state pills. */
@@ -270,33 +280,38 @@ function setShares(docId, shares) {
 async function refreshShares(docId) {
 	try {
 		const res = await fetch("/api/documents/" + docId + "/shares");
-		if (res.ok) setShares(docId, (await res.json()).shares || []);
-	} catch (e) {}
+		if (!res.ok) return null;
+		const shares = (await res.json()).shares || [];
+		setShares(docId, shares);
+		return shares;
+	} catch (e) { return null; }
 }
-// The client clock can run ahead of the server's, so a document that looks
-// expired here is checked before it leaves the page, at most once a minute.
-const nextCheck = new Map();
-async function confirmGone(docId) {
-	if ((nextCheck.get(docId) || 0) > Date.now()) return false;
-	nextCheck.set(docId, Date.now() + 60000);
-	try { return (await fetch("/api/documents/" + docId)).status === 404; } catch (e) { return false; }
+function confirmGone(docId) {
+	return askServer("document " + docId, async function () {
+		try { return (await fetch("/api/documents/" + docId)).status === 404; } catch (e) { return false; }
+	});
 }
 `;
 
-// The share panel: choose a lifetime, create a link, copy or revoke live links.
+// The share panel: choose a lifetime, create a link, copy, extend, or revoke live links.
 const SHARE = String.raw`
 const TTL = [["1h", "1 hour"], ["1d", "1 day"], ["1w", "1 week"]];
-function linkRow(s, fresh, sync, fallbackFocus) {
+function ttlName(ttl) { return TTL.find(function (o) { return o[0] === ttl; })[1]; }
+function linkRow(s, fresh, ctx) {
 	const full = location.origin + "/v/" + s.token;
 	const row = el("div", "link" + (fresh ? " fresh" : ""));
 	row.setAttribute("role", "listitem");
-	row.dataset.shareExpires = String(s.expires_at);
-	row.onGone = sync;
+	row.dataset.token = s.token;
 	const text = el("div");
 	text.append(el("span", "link-url", location.host + "/v/" + s.token));
-	const left = el("span", "link-left", fmtLeft(s.expires_at - nowSec()) + " left");
-	left.dataset.countdown = String(s.expires_at);
+	const left = el("span", "link-left");
 	text.append(left);
+	row.setExpires = function (end) {
+		row.dataset.shareExpires = String(end);
+		left.dataset.countdown = String(end);
+		left.textContent = fmtLeft(end - nowSec()) + " left";
+	};
+	row.setExpires(s.expires_at);
 	const copy = el("button", "btn ghost small", "Copy");
 	copy.type = "button";
 	copy.addEventListener("click", function () {
@@ -306,6 +321,43 @@ function linkRow(s, fresh, sync, fallbackFocus) {
 			setTimeout(function () { copy.textContent = "Copy"; }, 1600);
 		});
 	});
+	let leaving = false;
+	row.gone = async function (message) {
+		if (leaving) return;
+		leaving = true;
+		const focus = document.activeElement;
+		if (!focus || focus === document.body || row.contains(focus)) {
+			const stay = Array.from(row.parentElement.children).filter(function (r) { return r === row || !r.classList.contains("puff"); });
+			const i = stay.indexOf(row);
+			const next = stay[i + 1] || stay[i - 1];
+			(next ? next.querySelector("button") : ctx.fallbackFocus).focus();
+		}
+		await puff(row);
+		if (message) toast(message);
+		ctx.sync();
+	};
+	const extend = el("button", "btn ghost small", "Extend");
+	extend.type = "button";
+	extend.addEventListener("click", async function () {
+		const ttl = ctx.ttl();
+		extend.disabled = true;
+		try {
+			const r = await fetch("/api/shares/" + s.token + "/extend", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ ttl: ttl }),
+			});
+			if (r.status === 404) { await row.gone("This link already ended."); return; }
+			if (!r.ok) throw new Error();
+			const extended = await r.json();
+			row.setExpires(extended.expires_at);
+			toast(extended.renewed
+				? "Link now lasts " + ttlName(ttl) + "."
+				: "This link already lasts longer than " + ttlName(ttl) + ".");
+			ctx.sync();
+		} catch (e) { toast("Could not extend the link. Try again."); }
+		finally { extend.disabled = false; }
+	});
 	const revoke = el("button", "btn ghost small", "Revoke");
 	revoke.type = "button";
 	revoke.addEventListener("click", async function () {
@@ -314,13 +366,9 @@ function linkRow(s, fresh, sync, fallbackFocus) {
 			const r = await fetch("/api/shares/" + s.token, { method: "DELETE" });
 			if (!r.ok) throw new Error();
 		} catch (e) { revoke.disabled = false; toast("Could not revoke the link. Try again."); return; }
-		const next = row.nextElementSibling || row.previousElementSibling;
-		(next ? next.querySelector("button") : fallbackFocus).focus();
-		await puff(row);
-		toast("Link revoked. It now shows a 404.");
-		sync();
+		await row.gone("Link revoked. It now shows a 404.");
 	});
-	row.append(text, copy, revoke);
+	row.append(text, copy, extend, revoke);
 	return row;
 }
 function radioGroup(label, options, value, onChange) {
@@ -355,6 +403,7 @@ function radioGroup(label, options, value, onChange) {
 	select(value, false);
 	return group;
 }
+let sharePanel = null;
 async function openShare(anchor, docId, title) {
 	const pop = panel("Share", title);
 	let ttl = "1d";
@@ -375,6 +424,25 @@ async function openShare(anchor, docId, title) {
 			: "No live links. Only you can open this document.";
 		setShares(docId, shares);
 	}
+	const ctx = { fallbackFocus: create, sync: sync, ttl: function () { return ttl; } };
+	sharePanel = {
+		docId: docId,
+		settle: function (shares) {
+			if (!isOpen(pop)) return;
+			const ends = new Map(shares.map(function (s) { return [s.token, s.expires_at]; }));
+			const now = nowSec();
+			Array.from(rows.children).forEach(function (row) {
+				if (Number(row.dataset.shareExpires) > now) return;
+				if (ends.has(row.dataset.token)) row.setExpires(ends.get(row.dataset.token));
+				else row.gone();
+			});
+		},
+		stale: function (now) {
+			return isOpen(pop) && Array.from(rows.children).some(function (row) {
+				return Number(row.dataset.shareExpires) <= now && !row.classList.contains("puff");
+			});
+		},
+	};
 	create.addEventListener("click", async function () {
 		create.disabled = true;
 		try {
@@ -386,7 +454,7 @@ async function openShare(anchor, docId, title) {
 			if (!res.ok) throw new Error();
 			const s = await res.json();
 			// The link is live now; show it before the clipboard can stall.
-			rows.prepend(linkRow(s, true, sync, create));
+			rows.prepend(linkRow(s, true, ctx));
 			sync();
 			const ok = await copyToClipboard(location.origin + "/v/" + s.token);
 			toast(ok ? "Link created and copied" : "Link created. Copy it from the list.");
@@ -400,7 +468,7 @@ async function openShare(anchor, docId, title) {
 	try {
 		const res = await fetch("/api/documents/" + docId + "/shares");
 		if (!res.ok) throw new Error();
-		((await res.json()).shares || []).forEach(function (s) { rows.append(linkRow(s, false, sync, create)); });
+		((await res.json()).shares || []).forEach(function (s) { rows.append(linkRow(s, false, ctx)); });
 		create.disabled = false;
 		sync();
 	} catch (e) {
@@ -584,8 +652,13 @@ if (dropEl && fileInput) {
 // Live time: countdowns tick, state pills recompute, and anything whose time
 // runs out leaves the page the way it leaves the server.
 const CLOCK = String.raw`
+async function checkShares(docId) {
+	const shares = await askServer("shares " + docId, function () { return refreshShares(docId); });
+	if (shares && sharePanel && sharePanel.docId === docId) sharePanel.settle(shares);
+}
 function tick() {
 	const now = nowSec();
+	const ask = new Set();
 	document.querySelectorAll("[data-state-pill]").forEach(function (pill) {
 		const docEnd = Number(pill.dataset.docExpires) || 0;
 		const shareEnd = Number(pill.dataset.shareExpires) || 0;
@@ -597,14 +670,12 @@ function tick() {
 				else location.reload();
 			});
 		} else if (shareEnd && shareEnd <= now) {
-			pill.dataset.shareExpires = "";
-			refreshShares(pill.dataset.id);
+			ask.add(pill.dataset.id);
 		}
 		paintState(pill);
 	});
-	document.querySelectorAll(".link[data-share-expires]").forEach(function (row) {
-		if (Number(row.dataset.shareExpires) <= now && !row.classList.contains("puff")) puff(row).then(row.onGone);
-	});
+	if (sharePanel && sharePanel.stale(now)) ask.add(sharePanel.docId);
+	ask.forEach(checkShares);
 	document.querySelectorAll("[data-countdown]").forEach(function (label) {
 		label.textContent = fmtLeft(Number(label.dataset.countdown) - now) + " left";
 	});
@@ -743,15 +814,36 @@ document.querySelectorAll(".cmd-copy").forEach(function (btn) {
 });
 `;
 
-// A recipient's page: the link's countdown, and when it runs out the document
-// dissolves in place instead of waiting for the next reload to 404.
+// A recipient's page: the link's countdown, and once the server confirms the
+// link has ended, the document dissolves in place instead of waiting for the
+// next reload to 404.
 const PUBLIC = String.raw`
 const expiry = document.querySelector("[data-share-expires]");
 let publicTimer;
-function publicTick() {
-	if (!expiry) return;
-	const left = Number(expiry.dataset.shareExpires) - nowSec();
-	if (left > 0) { expiry.textContent = "Gone in " + fmtLeft(left); return; }
+let ended = false;
+function setEnd(end) {
+	expiry.dataset.shareExpires = String(end);
+	expiry.title = "This link stops working " + new Date(end * 1000).toLocaleString();
+}
+async function linkEnd() {
+	try {
+		const res = await fetch(location.pathname, { method: "HEAD", cache: "no-store" });
+		if (res.status === 404) return "gone";
+		if (res.ok) return Number(res.headers.get("${ENDS_HEADER}")) || null;
+	} catch (e) {}
+	return null;
+}
+async function publicTick() {
+	if (!expiry || ended) return;
+	if (Number(expiry.dataset.shareExpires) <= nowSec()) {
+		const answer = await askServer("link", linkEnd);
+		if (answer === "gone") { dissolve(); return; }
+		if (typeof answer === "number") setEnd(answer);
+	}
+	expiry.textContent = "Gone in " + fmtLeft(Number(expiry.dataset.shareExpires) - nowSec());
+}
+function dissolve() {
+	ended = true;
 	clearInterval(publicTimer);
 	expiry.textContent = "Expired";
 	expiry.classList.remove("live");
@@ -765,7 +857,7 @@ function publicTick() {
 	}, calm.matches ? 0 : 900);
 }
 if (expiry) {
-	expiry.title = "This link stops working " + new Date(Number(expiry.dataset.shareExpires) * 1000).toLocaleString();
+	setEnd(Number(expiry.dataset.shareExpires));
 	publicTimer = setInterval(publicTick, 15000);
 	document.addEventListener("visibilitychange", function () { if (!document.hidden) publicTick(); });
 }

@@ -16,7 +16,7 @@ View AI-generated Markdown and HTML design documents or memos in a browser. Most
 
 - Upload related files into one document, preserving original bytes and relative paths; browse mixed formats in file tabs
 - Personal library (list view, authenticated, owner-only)
-- Per-document disposable share links (unlisted URL + TTL), with manual revocation
+- Per-document disposable share links (unlisted URL + TTL), with manual extension and revocation
 - **In-place document update**: merge uploaded paths and explicitly delete files while keeping the same `/d/{id}` and the same already-issued share links
 - **Version history**: past versions are retained, viewable, and restorable by the owner
 - JavaScript execution inside documents (interactive charts, tabs, widgets)
@@ -38,7 +38,7 @@ View AI-generated Markdown and HTML design documents or memos in a browser. Most
 | **A. Library (private)** | Your documents. Persistent entities. | Yes (owner only)    | Optional |
 | **B. Disposable shares** | Links to a specific document.        | None (unlisted URL) | Required |
 
-A share is **its own entity (`share`)**, not an attribute of a document. Share links expire or get revoked independently. A document can have several links for different recipients or deadlines. Revoking a share does not affect the document.
+A share is **its own entity (`share`)**, not an attribute of a document. Share links expire, get extended, or get revoked independently, and an extension never shortens a link. A document can have several links for different recipients or deadlines. Revoking a share does not affect the document.
 
 **Documents are mutable, versions are not.** A document has a stable id, title, and TTL. Its content is an ordered sequence of immutable versions plus a pointer to the live one. `/d/{id}` and every `/v/{token}` resolve that pointer **at request time**, so existing links show updates without being reissued. Recipients always see the current version and never see version numbers or history. Only the owner can view or restore past versions (§9).
 
@@ -320,7 +320,7 @@ This is the Worker-side half of "the MCP application has no Service Auth policy"
 ### Defaults
 
 - **Library**: no default TTL (keep forever). `expires_at` optional.
-- **Shares**: default TTL **1 day**; selectable at issue time (1h / 1d / 1w).
+- **Shares**: default TTL **1 day**; selectable at issue time (1h / 1d / 1w). Extending a live share takes the same choice and the same default, with the same meaning: the link then lasts at least that long from now. A link never gets shorter, so a share that already lasts longer keeps its expiry. A repeated extension cannot stack time: it ends the link the same TTL after the later call, so no live share ever has more than 1 week left. A revoked or expired share, or one whose document is owner-expired, cannot be extended and returns the standard 404.
 
 ### Enforcement
 
@@ -449,10 +449,11 @@ Every route below is on `poof.5n7.me` except `POST /mcp`, which is on `mcp.poof.
 | `POST /api/documents/:id/versions`                   | Access (incl. service token) | Merge repeated file/path fields, optional delete paths and title         |
 | `POST /api/documents/:id/versions/:version/rollback` | Access                       | Point the document at an existing version                                |
 | `DELETE /api/shares/:token`                          | Access                       | Revoke (`revoked=1`, immediate)                                          |
+| `POST /api/shares/:token/extend`                     | Access                       | Make a live share last at least its TTL param from now                   |
 | `GET /d/:id`                                         | Access                       | Private viewer page (mints `o_` token, embeds iframe)                    |
 | `GET /d/:id?v=N`                                     | Access                       | Read-only view of version N (notice, no Share, no uploader)              |
 | `GET /guide`                                         | Access                       | Owner guide page                                                         |
-| `POST /mcp`                                          | Access, MCP application      | MCP server (Streamable HTTP): twelve tools over the same core (§11)      |
+| `POST /mcp`                                          | Access, MCP application      | MCP server (Streamable HTTP): thirteen tools over the same core (§11)    |
 | `GET /raw/:token`                                    | none (token is the auth)     | Rendered content with sandbox headers; `?format=raw` downloads source    |
 | `GET /raw/:token/*`                                  | none (token is the auth)     | Linked file or asset with the same sandbox headers                       |
 | `GET /v/:token`                                      | none                         | Public shared viewer page; **always the current version**                |
@@ -466,6 +467,9 @@ Version routes follow these rules:
 - `GET /api/documents/:id/files?v=N` returns ordered file metadata without R2 keys. Omit `v` for the current version. `GET …/content?file=adr/001.md` selects one file and combines with `v` and `format=raw`; the first file is the default.
 - Owner viewers accept `/d/{id}?file=path&v=N`. Shared viewers accept `/v/{token}?file=path` for the current version. Both use tabs to switch files without changing the document or share identity. HTML and Markdown relative links resolve within the selected version. `/raw/{token}/{path}` validates the same token for linked files and assets; it never accepts a version query. Selecting a missing path returns 404.
 - A document must be **live**, not merely present, to create or list versions. Both requests return 404 for an owner-expired document, as does `POST …/shares`.
+- `POST …/shares` and `POST /api/shares/:token/extend` read the TTL from a JSON body `{ttl}`. An empty body, or an object without a `ttl` key, means `1d`. Any other `ttl` than the strings `1h`, `1d`, or `1w`, including an empty string or a non-string, returns `400 {error:"invalid ttl"}`, as does a non-empty body that is not a JSON object. Issuing looks up the document first, so an unknown or owner-expired id returns the standard 404 whatever the body.
+- `POST /api/shares/:token/extend` returns `{token,expires_at,url,renewed}`. `renewed` is false when the share already lasted longer than the TTL, which leaves its expiry as it was. The TTL is checked before the token is looked up, so a bad one gets the same 400 for every token and the reply never says whether a token is live. An unknown, revoked, or expired token, or a share of an owner-expired document, returns the standard 404.
+- `GET /v/:token` sends `X-Poof-Ends`, the epoch second the page stops working: the earlier of the share's and the document's expiry. A recipient's open page whose countdown runs out asks `HEAD /v/{token}` for it, dissolves on a 404, and otherwise keeps counting toward the end it reads.
 - Plain file links, including fragments, select the matching outer tab. Links with a query string navigate within the sandboxed iframe so HTML query parameters and `?format=raw` keep their meaning; these links do not synchronize the outer tab selection. External URLs and external `<base>` URLs retain native browser behavior.
 - Writes have three phases. The Worker stages the version and complete file manifest, uploads every new blob, and atomically publishes the current pointer and readiness flag in one guarded transaction. Reads and rollback reject unready versions. Readers see a complete old or new snapshot; an interrupted or conflicting write does not publish a partial file set.
 - Rollback uses the `…/versions/:version/rollback` path instead of a `PATCH` to `current_version`. The route verifies that the target exists and matches the verb used by the CLI and UI. A malformed `:version` returns `400 {error:"invalid version"}`. A valid but unknown version returns the standard 404. Rolling back to the live version is an idempotent no-op and does not change `updated_at`.
@@ -489,6 +493,8 @@ poof auth logout
 poof cat <doc-id> [--file <path>] [--version <n>]
                                 # print source text or readable Markdown extracted from HTML
 poof cat <doc-id> --raw          # original bytes, suitable for redirecting to a file
+poof extend <share-token> [--share-ttl 1h|1d|1w]
+                                # make a live share last at least this long from now (default 1d); prints /v/{token} and its expiry, noting when it was unchanged
 poof files <doc-id> [--version <n>] # file paths and types
 poof ls                         # list documents
 poof push <file-or-directory>... [--root <directory>] [--share [--share-ttl 1d]] [--title <t>] [--ttl <dur>]
@@ -579,11 +585,12 @@ The CLI still talks only to the owner JSON API. Its OAuth grant comes from the o
 
 ### 11.3 Tools
 
-The twelve tools use the CLI subcommand names from §10, with `suggest_title` using an underscore. Clients add their own namespace. For example, Claude Code exposes `push` as `mcp__poof__push`.
+The thirteen tools use the CLI subcommand names from §10, with `suggest_title` using an underscore. Clients add their own namespace. For example, Claude Code exposes `push` as `mcp__poof__push`.
 
 | Tool            | Input                                                                       | Result                                                                     |
 | --------------- | --------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | `cat`           | document id, optional file path and version                                 | Readable content, capped at 128 KiB after conversion; optional raw (§11.4) |
+| `extend`        | share token, optional share TTL (`1h` / `1d` / `1w`)                        | The same `/v/{token}` URL and its expiry, or that it already lasts longer  |
 | `files`         | document id, optional version                                               | Ordered file paths, kinds, and media types                                 |
 | `ls`            | none                                                                        | Documents, newest first, with a STATE token for rename                     |
 | `push`          | files or content, optional kind/title, document TTL, share flag + share TTL | New document: `/d/{id}` URL, plus a `/v/{token}` URL when shared           |
@@ -622,11 +629,11 @@ They are built from `OWNER_HOST`, **not from the request origin**. The server an
 
 The cap counts emitted UTF-8 bytes after decoding, including replacement characters for invalid input, and avoids splitting a character. HTML parsing reads the full source before conversion, so styles cannot consume the output budget and hide the document body. `raw: true` returns original text/HTML under the same cap. Binary files always return metadata and an owner-only raw download URL instead of binary content.
 
-**Agent instructions.** The server's `instructions` and tool descriptions make uploads owner-only by default. Return `/d/{id}` for ordinary uploads; create a public `/v/{token}` link only when the user explicitly requests sharing. Revisions use `update` on the existing id; updates and rollbacks immediately affect all live shares. Treat share URLs as secrets and keep secrets out of shared content. For HTML edits, `cat` with `raw: true` retrieves source markup; default `cat` output is a readable extraction.
+**Agent instructions.** The server's `instructions` and tool descriptions make uploads owner-only by default. Return `/d/{id}` for ordinary uploads; create a public `/v/{token}` link only when the user explicitly requests sharing. Extending a link widens access the same way, so `extend` waits for the user to ask to give a recipient more time. Revisions use `update` on the existing id; updates and rollbacks immediately affect all live shares. Treat share URLs as secrets and keep secrets out of shared content. For HTML edits, `cat` with `raw: true` retrieves source markup; default `cat` output is a readable extraction.
 
 ### 11.5 One core, two adapters
 
-The tools and JSON API share one implementation of the rules. `src/lib/` contains document creation, version creation, title suggestion and rename, rollback, and share creation. `src/routes/api.ts` adapts multipart input to JSON output. The MCP layer adapts tool arguments to text output. Keeping the version numbering from §5 and the three-phase write from §9 in one place prevents the two clients from drifting.
+The tools and JSON API share one implementation of the rules. `src/lib/` contains document creation, version creation, title suggestion and rename, rollback, and share creation and extension. `src/routes/api.ts` adapts multipart input to JSON output. The MCP layer adapts tool arguments to text output. Keeping the version numbering from §5 and the three-phase write from §9 in one place prevents the two clients from drifting.
 
 Limits live where their reason applies. The 10 MiB upload cap (§9) applies to the sum of decoded file bytes in each upload and protects R2, so `src/lib/` enforces it. Both adapters check size first and return their native error form, either `413` from `/api` or `isError` from `/mcp`. The core exception protects future adapters that forget the check.
 
@@ -641,8 +648,9 @@ The tools do not call the Worker's `/api/*` routes over HTTP. Doing so would add
 3. **Issue share** → insert `share` row → return `poof.5n7.me/v/{token}`.
 4. **Shared view** → `/v/{token}` validates share (404 on any failure) → joins to the document's **current** version → sandboxed iframe → `/raw/s_{token}` → R2 blob.
 5. **Revoke** → `revoked=1` → next request 404s immediately.
-6. **Update** → `poof update {id} file.md` (or the `update` tool, or drop/⌘V on `/d/{id}`) → stage version `MAX+1` → put blob → move `current_version` → **every existing share link serves the new content on its next load** with the same token.
-7. **Rollback** → `poof versions {id}` to pick a number (or the History panel on `/d/{id}`) → `poof rollback {id} N` → one guarded `UPDATE` of the pointer, no blob written → live share links follow immediately, and a later update is numbered `MAX+1`, not `N+1`.
+6. **Extend** → `poof extend {token}` (or the `extend` tool, or a link's Extend button in the Share panel, which uses the "Link lasts" choice) → one guarded `UPDATE` sets `expires_at` to the later of its current value and now + TTL while the share and its document are still live → the same URL keeps working, and a recipient's open page picks up the new expiry instead of dissolving at the old one. An expired or revoked link stays dead.
+7. **Update** → `poof update {id} file.md` (or the `update` tool, or drop/⌘V on `/d/{id}`) → stage version `MAX+1` → put blob → move `current_version` → **every existing share link serves the new content on its next load** with the same token.
+8. **Rollback** → `poof versions {id}` to pick a number (or the History panel on `/d/{id}`) → `poof rollback {id} N` → one guarded `UPDATE` of the pointer, no blob written → live share links follow immediately, and a later update is numbered `MAX+1`, not `N+1`.
 
 ## 13. Future work (explicitly not now)
 
@@ -671,14 +679,14 @@ Workers AI is the only metered addition. Auto-naming uses about 3 to 5 neurons f
 | JWT verification  | `Cf-Access-Jwt-Assertion` only, RS256 against the team JWKS, pinned `iss`, route-specific `aud`, and required `exp` / `iat` / `sub` / `type: "app"`. `nbf` is checked when present but never required. `/mcp` additionally requires an identity assertion and refuses service tokens (§6.6).                                                  |
 | MCP auth          | Its own Access application and AUD tag, authenticated with Managed OAuth (authorization code + PKCE) and **no Service Auth policy**, enforced again in-Worker by refusing service-token assertions, plus the shared CSRF guard.                                                                                                               |
 | MCP server        | Worker-hosted at `POST mcp.poof.5n7.me/mcp` with Streamable HTTP (`@hono/mcp`). It creates a server per request and issues no session id because isolates are not sticky. The path is exact; other methods return `405` with `Allow: POST` and the server offers no SSE stream.                                                               |
-| MCP tools         | Twelve, matching CLI names with underscores; `push`/`update` take files or content; `files` lists paths; file metadata determines omitted `kind`, falling back to md/file on push and current kind on update; `cat` capped at 128 KiB after conversion; results carry absolute `OWNER_HOST` URLs; one shared core in `src/lib/`, two adapters |
+| MCP tools         | Thirteen, matching CLI names with underscores; `push`/`update` take files or content; `files` lists paths; file metadata determines omitted `kind`, falling back to md/file on push and current kind on update; `cat` capped at 128 KiB once converted; results carry absolute `OWNER_HOST` URLs; one shared core in `src/lib/`, two adapters |
 | Provisioning      | Idempotent `scripts/bootstrap.sh` + `docs/SETUP.md` + `docs/MCP-OAUTH-RUNBOOK.md`; no Terraform until environments multiply; `workers_dev` disabled; Access JWT verified in-Worker                                                                                                                                                            |
 | Renaming          | Editable document metadata; AI suggestions require a separate save; state tokens bind saves to the reviewed title and version; no new version or file changes.                                                                                                                                                                                |
 | Rendering         | View-time `markdown-it` in the Worker; Mermaid + highlight.js lazily loaded client-side inside the sandbox                                                                                                                                                                                                                                    |
 | Rollback          | `POST …/versions/:version/rollback`; pointer move only, no blob copied; already-current is an idempotent no-op                                                                                                                                                                                                                                |
 | Sanitization      | None; all docs treated as untrusted blobs, sandbox is the boundary                                                                                                                                                                                                                                                                            |
 | Security boundary | **CSP `sandbox allow-scripts allow-popups` response header** on `/raw/*`, plus the iframe `sandbox` attribute. Never add `allow-same-origin`.                                                                                                                                                                                                 |
-| Share model       | Unlisted URL + TTL; `share` as its own entity; revocation in initial scope                                                                                                                                                                                                                                                                    |
+| Share model       | Unlisted URL + TTL; `share` as its own entity; revocation in initial scope; a live share can be extended but never shortened or revived                                                                                                                                                                                                       |
 | Share on update   | Shares **follow the current version**. An update reaches every live link without reissuing it. Per-share pinning is out of scope (§13).                                                                                                                                                                                                       |
 | Titling           | Create-only when `title` is absent: Workers AI → first `#` heading → client fallback. `/api` uses the file name, and MCP `push` uses `untitled`. It runs synchronously so the create response contains the selected title. Failures use the next fallback.                                                                                    |
 | Tokens            | `crypto.getRandomValues`, 128-bit, base64url                                                                                                                                                                                                                                                                                                  |

@@ -13,7 +13,7 @@ One item within a document, identified by its relative path. Files in the same d
 _Avoid_: Record, document when referring to one item in a collection
 
 **Share**:
-Temporary public access to a document through a secret URL. Each share has its own expiry and can be revoked independently.
+Temporary public access to a document through a secret URL. Each share has its own expiry, which can be extended but never shortened, and can be revoked independently.
 _Avoid_: Document lifetime, owner URL
 
 **Version**:

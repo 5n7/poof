@@ -24,6 +24,7 @@ import {
   createDocument,
   deleteDocumentWithBlobs,
   documentTitleState,
+  extendShare,
   issueShare,
   readVersionContent,
   renameDocument,
@@ -122,7 +123,7 @@ const TTL = z.enum(TTL_KEYS);
 const INSTRUCTIONS = `poof stores original files in an owner-only library. For uploads, call push without share and return the /d/{id} owner URL. Create a public link only when the user explicitly requests sharing: use push with share: true for a new document or share for an existing one.
 
 - /d/{id} requires Cloudflare Access. Never hand this URL to a recipient; it will not work for them.
-- /v/{token} is public until expiry or revocation. Send recipients only this URL. Treat it as a secret; prefer short share TTLs and revoke to end access early.
+- /v/{token} is public until expiry or revocation. Send recipients only this URL. Treat it as a secret; prefer short share TTLs and revoke to end access early. Extending a link widens access like issuing one, so call extend only when the user asks to give a recipient more time.
 
 Use files with relative paths to keep related files together. update merges by path and retains omitted files; delete_paths removes files. rollback restores the complete file set. Use files to list paths and cat with file to read one.
 
@@ -189,7 +190,7 @@ function ownerLine(origin: string, id: string): string {
 function shareLines(origin: string, row: ShareRow): string[] {
   return [
     `Share URL. Hand out this URL only. It expires ${formatTime(row.expires_at)}: ${origin}/v/${row.token}`,
-    `Share token (for the \`revoke\` tool): ${row.token}`,
+    `Share token (for the \`extend\` and \`revoke\` tools): ${row.token}`,
   ];
 }
 
@@ -337,6 +338,44 @@ function buildServer(c: Context<{ Bindings: Env }>): McpServer {
           `The whole thing is at ${origin}/d/${id}. This URL is owner-only. Do not send it to a recipient.]`,
         ].join("\n"),
       );
+    },
+  );
+
+  server.registerTool(
+    "extend",
+    {
+      // Not idempotent: a later call moves the expiry to its own now + share_ttl,
+      // an effect on the environment the first call did not have. A retry is
+      // still safe, because it cannot stack time.
+      annotations: {
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+        readOnlyHint: false,
+      },
+      description:
+        "Give a live share link more time only when the user asks to give a recipient more time; like issuing a link, it widens public access. The link then lasts at least share_ttl from now and keeps the same /v/{token} URL. A link that already lasts longer is left unchanged. Takes the s_… share token, not a document id. A revoked or expired link cannot be revived.",
+      inputSchema: {
+        token: z.string().describe("Share token to extend (the s_… value, not a document id)."),
+        share_ttl: TTL.default("1d").describe("How long the link lasts from now, at least."),
+      },
+    },
+    async ({ token, share_ttl }) => {
+      const extended = await extendShare(c.env, token, nowSeconds(), share_ttl);
+      if (extended.ok) {
+        const summary = extended.renewed
+          ? `Extended ${token}: it now lasts ${share_ttl} from now.`
+          : `${token} already lasts longer than ${share_ttl}, so it was left unchanged.`;
+        return text([summary, ...shareLines(origin, extended.share)].join("\n"));
+      }
+      switch (extended.reason) {
+        case "invalid-ttl":
+          return failure(`Invalid share ttl ${JSON.stringify(share_ttl)}.`);
+        case "not-found":
+          return failure(
+            `No live share token ${token}. It may have been revoked or expired, or its document's TTL has passed. Issue a new link with \`share\`.`,
+          );
+      }
     },
   );
 
