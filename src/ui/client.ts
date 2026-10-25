@@ -283,20 +283,25 @@ async function confirmGone(docId) {
 }
 `;
 
-// The share panel: choose a lifetime, create a link, copy or revoke live links.
+// The share panel: choose a lifetime, create a link, copy, extend, or revoke live links.
 const SHARE = String.raw`
 const TTL = [["1h", "1 hour"], ["1d", "1 day"], ["1w", "1 week"]];
-function linkRow(s, fresh, sync, fallbackFocus) {
+function ttlName(ttl) { return TTL.find(function (o) { return o[0] === ttl; })[1]; }
+function linkRow(s, fresh, ctx) {
 	const full = location.origin + "/v/" + s.token;
 	const row = el("div", "link" + (fresh ? " fresh" : ""));
 	row.setAttribute("role", "listitem");
-	row.dataset.shareExpires = String(s.expires_at);
-	row.onGone = sync;
+	row.dataset.token = s.token;
 	const text = el("div");
 	text.append(el("span", "link-url", location.host + "/v/" + s.token));
-	const left = el("span", "link-left", fmtLeft(s.expires_at - nowSec()) + " left");
-	left.dataset.countdown = String(s.expires_at);
+	const left = el("span", "link-left");
 	text.append(left);
+	row.setExpires = function (end) {
+		row.dataset.shareExpires = String(end);
+		left.dataset.countdown = String(end);
+		left.textContent = fmtLeft(end - nowSec()) + " left";
+	};
+	row.setExpires(s.expires_at);
 	const copy = el("button", "btn ghost small", "Copy");
 	copy.type = "button";
 	copy.addEventListener("click", function () {
@@ -306,6 +311,43 @@ function linkRow(s, fresh, sync, fallbackFocus) {
 			setTimeout(function () { copy.textContent = "Copy"; }, 1600);
 		});
 	});
+	let leaving = false;
+	row.gone = async function (message) {
+		if (leaving) return;
+		leaving = true;
+		const focus = document.activeElement;
+		if (!focus || focus === document.body || row.contains(focus)) {
+			const stay = Array.from(row.parentElement.children).filter(function (r) { return r === row || !r.classList.contains("puff"); });
+			const i = stay.indexOf(row);
+			const next = stay[i + 1] || stay[i - 1];
+			(next ? next.querySelector("button") : ctx.fallbackFocus).focus();
+		}
+		await puff(row);
+		if (message) toast(message);
+		ctx.sync();
+	};
+	const extend = el("button", "btn ghost small", "Extend");
+	extend.type = "button";
+	extend.addEventListener("click", async function () {
+		const ttl = ctx.ttl();
+		extend.disabled = true;
+		try {
+			const r = await fetch("/api/shares/" + s.token + "/extend", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ ttl: ttl }),
+			});
+			if (r.status === 404) { await row.gone("This link already ended."); return; }
+			if (!r.ok) throw new Error();
+			const extended = await r.json();
+			row.setExpires(extended.expires_at);
+			toast(extended.renewed
+				? "Link now lasts " + ttlName(ttl) + "."
+				: "This link already lasts longer than " + ttlName(ttl) + ".");
+			ctx.sync();
+		} catch (e) { toast("Could not extend the link. Try again."); }
+		finally { extend.disabled = false; }
+	});
 	const revoke = el("button", "btn ghost small", "Revoke");
 	revoke.type = "button";
 	revoke.addEventListener("click", async function () {
@@ -314,13 +356,9 @@ function linkRow(s, fresh, sync, fallbackFocus) {
 			const r = await fetch("/api/shares/" + s.token, { method: "DELETE" });
 			if (!r.ok) throw new Error();
 		} catch (e) { revoke.disabled = false; toast("Could not revoke the link. Try again."); return; }
-		const next = row.nextElementSibling || row.previousElementSibling;
-		(next ? next.querySelector("button") : fallbackFocus).focus();
-		await puff(row);
-		toast("Link revoked. It now shows a 404.");
-		sync();
+		await row.gone("Link revoked. It now shows a 404.");
 	});
-	row.append(text, copy, revoke);
+	row.append(text, copy, extend, revoke);
 	return row;
 }
 function radioGroup(label, options, value, onChange) {
@@ -375,6 +413,7 @@ async function openShare(anchor, docId, title) {
 			: "No live links. Only you can open this document.";
 		setShares(docId, shares);
 	}
+	const ctx = { fallbackFocus: create, sync: sync, ttl: function () { return ttl; } };
 	create.addEventListener("click", async function () {
 		create.disabled = true;
 		try {
@@ -386,7 +425,7 @@ async function openShare(anchor, docId, title) {
 			if (!res.ok) throw new Error();
 			const s = await res.json();
 			// The link is live now; show it before the clipboard can stall.
-			rows.prepend(linkRow(s, true, sync, create));
+			rows.prepend(linkRow(s, true, ctx));
 			sync();
 			const ok = await copyToClipboard(location.origin + "/v/" + s.token);
 			toast(ok ? "Link created and copied" : "Link created. Copy it from the list.");
@@ -400,7 +439,7 @@ async function openShare(anchor, docId, title) {
 	try {
 		const res = await fetch("/api/documents/" + docId + "/shares");
 		if (!res.ok) throw new Error();
-		((await res.json()).shares || []).forEach(function (s) { rows.append(linkRow(s, false, sync, create)); });
+		((await res.json()).shares || []).forEach(function (s) { rows.append(linkRow(s, false, ctx)); });
 		create.disabled = false;
 		sync();
 	} catch (e) {
@@ -603,7 +642,7 @@ function tick() {
 		paintState(pill);
 	});
 	document.querySelectorAll(".link[data-share-expires]").forEach(function (row) {
-		if (Number(row.dataset.shareExpires) <= now && !row.classList.contains("puff")) puff(row).then(row.onGone);
+		if (Number(row.dataset.shareExpires) <= now) row.gone();
 	});
 	document.querySelectorAll("[data-countdown]").forEach(function (label) {
 		label.textContent = fmtLeft(Number(label.dataset.countdown) - now) + " left";
