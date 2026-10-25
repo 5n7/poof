@@ -2,7 +2,8 @@ import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { getLiveDocumentByShareToken, getLiveShare } from "../src/lib/db";
-import { extendShare, issueShare } from "../src/lib/documents";
+import { createDocument, extendShare, issueShare } from "../src/lib/documents";
+import { ENDS_HEADER } from "../src/lib/http";
 import { seedDoc, seedShare } from "./helpers";
 
 const BASE = "https://poof.5n7.me";
@@ -437,5 +438,50 @@ describe("extendShare", () => {
       [now + 604800, false],
       [now + 604800, true],
     ]);
+  });
+});
+
+describe("the recipient page's end header", () => {
+  async function docWithShare(docExpiresAt: number | null): Promise<string> {
+    const now = nowS();
+    const id = await createDocument(env, now, {
+      title: "Ends",
+      expires_at: docExpiresAt,
+      files: [{ path: "README.md", kind: "md", source: "# Ends" }],
+    });
+    const token = `s_ends${crypto.randomUUID().replaceAll("-", "").slice(0, 18)}`;
+    await seedShare(token, id, { createdAt: now, expiresAt: now + 600 });
+    return token;
+  }
+
+  it("carries the extended expiry on GET and HEAD", async () => {
+    const token = await docWithShare(null);
+    const { expires_at } = await (
+      await postExtend(token, { ttl: "1d" })
+    ).json<{
+      expires_at: number;
+    }>();
+
+    for (const method of ["GET", "HEAD"]) {
+      const res = await SELF.fetch(`${BASE}/v/${token}`, { method });
+      expect(res.status, method).toBe(200);
+      expect(res.headers.get(ENDS_HEADER), method).toBe(String(expires_at));
+    }
+  });
+
+  it("carries the document's expiry when that ends first", async () => {
+    const docEnds = nowS() + 3600;
+    const token = await docWithShare(docEnds);
+    await postExtend(token, { ttl: "1d" });
+
+    const res = await SELF.fetch(`${BASE}/v/${token}`, { method: "HEAD" });
+    expect(res.headers.get(ENDS_HEADER)).toBe(String(docEnds));
+  });
+
+  it("answers HEAD on a revoked link with 404", async () => {
+    const token = await docWithShare(null);
+    await SELF.fetch(`${BASE}/api/shares/${token}`, { method: "DELETE" });
+
+    expect((await SELF.fetch(`${BASE}/v/${token}`, { method: "HEAD" })).status).toBe(404);
   });
 });

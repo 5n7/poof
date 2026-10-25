@@ -16,6 +16,7 @@ import { rawFileUrl, viewerFileUrl } from "../lib/file-links";
 import { originForHost } from "../lib/hosts";
 import {
   applyHeaders,
+  ENDS_HEADER,
   isVersionString,
   PAGE_HEADERS,
   uniform404,
@@ -642,6 +643,7 @@ export async function publicViewerPage(c: Ctx<"/v/:token">) {
     doc.expires_at === null ? share.expires_at : Math.min(share.expires_at, doc.expires_at);
 
   applyHeaders(c, VIEWER_HEADERS);
+  c.header(ENDS_HEADER, String(ends));
   return c.html(
     <Layout title={doc.title} audience="public">
       <ViewerShell

@@ -136,6 +136,9 @@ export const VIEWER_HEADERS: Record<string, string> = {
   "X-Robots-Tag": "noindex",
 };
 
+/** On `/v/*`, the epoch second the page stops working (SPEC §9). */
+export const ENDS_HEADER = "X-Poof-Ends";
+
 /**
  * Middleware that stamps a fixed header set onto every response leaving a
  * route, including 200s, 400s, and 404s. Applying them at the route ensures

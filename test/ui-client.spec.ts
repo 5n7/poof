@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { ENDS_HEADER } from "../src/lib/http";
 import { CLIENT_TIME, OWNER_JS, PUBLIC_JS } from "../src/ui/client";
 import { documentState, formatRemaining } from "../src/ui/format";
 import { type FakeElement, FakePage } from "./fake-dom";
@@ -56,6 +57,162 @@ describe("client and server time helpers", () => {
     for (const [share, doc] of cases) {
       expect(client.stateOf(share ?? 0, doc ?? 0, NOW)).toEqual(documentState(share, doc, NOW));
     }
+  });
+});
+
+function publicPage(
+  end: number,
+  fetch: (path: string, init: RequestInit) => Promise<Response>,
+  search = "",
+) {
+  let ms = NOW * 1000;
+  class FakeDate extends Date {
+    static override now() {
+      return ms;
+    }
+  }
+  const pill = {
+    dataset: { shareExpires: String(end) },
+    textContent: "",
+    title: "",
+    classList: { remove: vi.fn() },
+  };
+  const gone = { hidden: true, querySelector: () => ({ focus: vi.fn() }) };
+  const sheet = { classList: { add: vi.fn() } };
+  let tick = (): Promise<void> => Promise.reject(new Error("no tick registered"));
+  let onVisible = () => {};
+  const fetchSpy = vi.fn(fetch);
+  new Function(
+    "document",
+    "window",
+    "location",
+    "matchMedia",
+    "setInterval",
+    "clearInterval",
+    "setTimeout",
+    "fetch",
+    "Date",
+    PUBLIC_JS,
+  )(
+    {
+      hidden: false,
+      querySelector: (selector: string) =>
+        ({ "[data-share-expires]": pill, ".sheet": sheet })[selector] ?? null,
+      querySelectorAll: () => [],
+      getElementById: (id: string) => (id === "gone" ? gone : null),
+      addEventListener: (_type: string, listener: () => void) => {
+        onVisible = listener;
+      },
+    },
+    { addEventListener: () => {} },
+    { href: `https://poof.5n7.me/v/s_tok${search}`, pathname: "/v/s_tok", search, hash: "" },
+    () => ({ matches: false }),
+    (listener: () => Promise<void>) => {
+      tick = listener;
+      return 1;
+    },
+    () => {},
+    (callback: () => void) => callback(),
+    fetchSpy,
+    FakeDate,
+  );
+  return {
+    pill,
+    gone,
+    fetch: fetchSpy,
+    tick: () => tick(),
+    visible: () => onVisible(),
+    advance: (sec: number) => {
+      ms += sec * 1000;
+    },
+  };
+}
+
+const ends = (end: number) =>
+  new Response(null, { status: 200, headers: { [ENDS_HEADER]: String(end) } });
+
+describe("the recipient page when its countdown runs out", () => {
+  it("asks with a HEAD request and dissolves on a 404, then stays dissolved", async () => {
+    const page = publicPage(NOW - 1, async () => new Response(null, { status: 404 }));
+
+    await page.tick();
+    expect(page.fetch).toHaveBeenCalledWith("/v/s_tok", { method: "HEAD", cache: "no-store" });
+    expect(page.gone.hidden).toBe(false);
+    expect(page.pill.textContent).toBe("Expired");
+
+    page.visible();
+    await page.tick();
+    expect(page.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the page and counts down to a later end the server reports", async () => {
+    const page = publicPage(NOW - 1, async () => ends(NOW + 2 * H));
+
+    await page.tick();
+    expect(page.gone.hidden).toBe(true);
+    expect(page.pill.dataset.shareExpires).toBe(String(NOW + 2 * H));
+    expect(page.pill.textContent).toBe("Gone in 2h");
+
+    await page.tick();
+    expect(page.fetch).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the page when the request fails and asks again only a minute later", async () => {
+    const page = publicPage(NOW - 1, async () => {
+      throw new TypeError("offline");
+    });
+
+    await page.tick();
+    page.advance(30);
+    await page.tick();
+    expect(page.gone.hidden).toBe(true);
+    expect(page.fetch).toHaveBeenCalledOnce();
+
+    page.advance(31);
+    await page.tick();
+    expect(page.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("sends one request at a time, even when it takes longer than a minute", async () => {
+    let answer = (_: Response) => {};
+    const page = publicPage(NOW - 1, () => new Promise<Response>((resolve) => (answer = resolve)));
+
+    const first = page.tick();
+    page.advance(61);
+    await page.tick();
+    expect(page.fetch).toHaveBeenCalledOnce();
+
+    answer(ends(NOW + 2 * H));
+    await first;
+    expect(page.pill.textContent).toBe("Gone in 1h");
+  });
+
+  it("waits a minute before asking again when the server's end has not passed for it", async () => {
+    const page = publicPage(NOW - 1, async () => ends(NOW - 1));
+
+    await page.tick();
+    page.advance(30);
+    await page.tick();
+    expect(page.gone.hidden).toBe(true);
+    expect(page.fetch).toHaveBeenCalledOnce();
+
+    page.advance(31);
+    await page.tick();
+    expect(page.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("asks about the link itself, not a file the owner may have removed since", async () => {
+    const page = publicPage(
+      NOW - 1,
+      async (path) =>
+        path === "/v/s_tok" ? ends(NOW + 2 * H) : new Response(null, { status: 404 }),
+      "?file=gone.md",
+    );
+
+    await page.tick();
+    expect(page.fetch).toHaveBeenCalledWith("/v/s_tok", { method: "HEAD", cache: "no-store" });
+    expect(page.gone.hidden).toBe(true);
+    expect(page.pill.textContent).toBe("Gone in 2h");
   });
 });
 
@@ -249,5 +406,63 @@ describe("the Share panel's link rows", () => {
     extendAnswer({ status: 404 });
     await owner.tick();
     expect(owner.toasts).toEqual(["Link revoked. It now shows a 404."]);
+  });
+
+  describe("when the clock runs a row out", () => {
+    it("keeps a row the server lists as extended elsewhere, with the server's expiry", async () => {
+      let listed = [
+        { token: "s_one", expires_at: NOW + 5 * H },
+        { token: "s_two", expires_at: NOW + 2 * H },
+      ];
+      const owner = await panelWithTwoLinks((path) =>
+        path === LIST ? { status: 200, body: { shares: listed } } : undefined,
+      );
+      listed = [listed[0]!, { token: "s_two", expires_at: NOW + 86400 }];
+
+      owner.advance(2 * H + 1);
+      await owner.tick();
+
+      expect(owner.tokens()).toEqual(["s_one", "s_two"]);
+      expect(countdown(owner.row("s_two"))).toBe("21h left");
+    });
+
+    it("removes a row the server no longer lists and hands its focus on", async () => {
+      let listed = [
+        { token: "s_one", expires_at: NOW + 5 * H },
+        { token: "s_two", expires_at: NOW + 2 * H },
+      ];
+      const owner = await panelWithTwoLinks((path) =>
+        path === LIST ? { status: 200, body: { shares: listed } } : undefined,
+      );
+      listed = [listed[0]!];
+      button(owner.row("s_two"), "Copy").focus();
+
+      owner.advance(2 * H + 1);
+      await owner.tick();
+
+      expect(owner.tokens()).toEqual(["s_one"]);
+      expect(owner.page.activeElement).toBe(button(owner.row("s_one"), "Copy"));
+      expect(owner.toasts).toEqual([]);
+    });
+
+    it("asks for the list at most once a minute, even when the request fails", async () => {
+      let listFails = false;
+      const owner = await panelWithTwoLinks((path) =>
+        path === LIST && listFails ? { status: 500 } : undefined,
+      );
+      listFails = true;
+      const listRequests = () => owner.fetch.mock.calls.filter(([path]) => path === LIST).length;
+
+      owner.advance(2 * H + 1);
+      await owner.tick();
+      owner.advance(20);
+      await owner.tick();
+      expect(listRequests()).toBe(2);
+      expect(owner.tokens()).toEqual(["s_one", "s_two"]);
+
+      owner.advance(41);
+      await owner.tick();
+      expect(listRequests()).toBe(3);
+    });
   });
 });
