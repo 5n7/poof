@@ -1,5 +1,5 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
-  "ignorePatterns": ["bun.lock", "worker-configuration.d.ts"],
+  "ignorePatterns": ["bun.lock", "src/ui/fonts.generated.ts", "worker-configuration.d.ts"],
   "sortImports": true
 }

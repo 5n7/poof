@@ -21,7 +21,7 @@ describe("GET / library chrome", () => {
     const library = await SELF.fetch(`${OWNER_BASE}/`);
     const libraryHtml = await library.text();
     expect(libraryHtml).toContain('href="/guide"');
-    expect(libraryHtml).toContain("Connect an AI assistant →");
+    expect(libraryHtml).toContain("Connect an AI assistant");
 
     const guide = await SELF.fetch(GUIDE_URL);
     expect(guide.status).toBe(200);

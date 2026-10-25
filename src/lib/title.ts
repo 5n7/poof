@@ -40,7 +40,7 @@ const SYSTEM_PROMPT_JA =
  * Build both the example request and the real request in the same format.
  *
  * The <document> delimiter helps the model separate data from instructions. It
- * is not a security boundary. lib/render.ts and hono/jsx escape the title.
+ * is not a security boundary. src/ui/document.ts and hono/jsx escape the title.
  */
 function documentTurn(excerpt: string) {
   return { role: "user", content: `Title this document:\n\n<document>\n${excerpt}\n</document>` };
@@ -167,7 +167,7 @@ function unwrapQuotes(text: string): string {
  * Reject long output instead of truncating it. Use only the first non-empty
  * line, so an added explanation does not become part of the title.
  *
- * Do not HTML-escape here. lib/render.ts and hono/jsx escape at render time.
+ * Do not HTML-escape here. src/ui/document.ts and hono/jsx escape at render time.
  */
 export function sanitizeAiTitle(raw: unknown): string | null {
   if (typeof raw !== "string" || !raw) return null;

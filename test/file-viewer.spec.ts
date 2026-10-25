@@ -11,6 +11,8 @@ import {
   viewerFileUrl,
 } from "../src/lib/file-links";
 import { mintOwnerToken } from "../src/lib/tokens";
+import { ASSET_URLS } from "../src/ui/assets";
+import { PUBLIC_JS } from "../src/ui/client";
 import { OWNER_BASE, seedShare } from "./helpers";
 
 const now = () => Math.floor(Date.now() / 1000);
@@ -203,7 +205,8 @@ describe("document file navigation", () => {
     expect(html).toContain(`/raw/${token}/adr/001.md?view=1`);
     expect(html).not.toContain('id="remove-file"');
     expect(html).not.toContain('id="file"');
-    expect(html).toContain("event.source !== frame.contentWindow");
+    expect(html).toContain(ASSET_URLS.publicJs);
+    expect(PUBLIC_JS).toContain("event.source !== frame.contentWindow");
   });
 
   it("scopes Markdown links and images to the same bearer token", async () => {

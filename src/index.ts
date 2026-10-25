@@ -5,6 +5,7 @@ import { canonicalHost, hostIdentity } from "./lib/hosts";
 import { csrfProtection, notConfigured, unknownHost } from "./lib/http";
 import { accessAuth } from "./middleware/access";
 import { apiRoutes } from "./routes/api";
+import { assetFile } from "./routes/assets";
 import { mcpRoutes } from "./routes/mcp";
 import { guidePage, libraryPage, ownerViewerPage, publicViewerPage } from "./routes/pages";
 import { rawRoutes } from "./routes/raw";
@@ -24,6 +25,9 @@ import { rawRoutes } from "./routes/raw";
 const ownerApp = new Hono<{ Bindings: Env }>();
 
 ownerApp.route("/raw", rawRoutes);
+// Static files ride under /v/ so the Access bypass already covers them for
+// share recipients; the extra path segment keeps them apart from /v/:token.
+ownerApp.get("/v/assets/:file", assetFile);
 ownerApp.get("/v/:token", publicViewerPage);
 
 // Exact-path middleware keeps /raw and /v public. See PLAN §3.1.
