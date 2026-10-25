@@ -11,6 +11,7 @@ import { MCP_BASE, MCP_CALL, OWNER_BASE, fetchWorker, seedDoc } from "./helpers"
 /** The document tools, named after the CLI subcommands (SPEC §10). */
 const TOOL_NAMES = [
   "cat",
+  "extend",
   "files",
   "ls",
   "push",
@@ -95,7 +96,7 @@ function createdId(body: string): string {
 
 /** The `s_…` token out of a `push --share` or `share` result. */
 function shareToken(body: string): string {
-  return field(body, "Share token (for the `revoke` tool): ");
+  return field(body, "Share token (for the `extend` and `revoke` tools): ");
 }
 
 /** Push a document and return its result text and id. */
@@ -158,6 +159,7 @@ describe("MCP endpoint", () => {
     // `revoke` and `rm` are destructive. `update` appends a version and `rollback`
     // moves a pointer, so neither is destructive.
     const writes: [name: string, destructiveHint: boolean, idempotentHint: boolean][] = [
+      ["extend", false, false],
       ["push", false, false],
       ["rename", true, true],
       ["revoke", true, true],
@@ -579,6 +581,36 @@ describe("MCP endpoint", () => {
 
     expect(await callTool("revoke", { token })).toContain(`Revoked ${token}`);
     expect((await SELF.fetch(`${OWNER_BASE}/raw/${token}`)).status).toBe(404);
+  });
+
+  it("extend renews a live link to at least share_ttl from now and refuses a dead one", async () => {
+    const { id } = await pushDoc({ content: "# Extendable\n\nbody" });
+    const token = shareToken(await callTool("share", { id, share_ttl: "1h" }));
+    const expiresAt = async () =>
+      (await env.DB.prepare("SELECT expires_at FROM share WHERE token = ?")
+        .bind(token)
+        .first<{ expires_at: number }>())!.expires_at;
+
+    const before = Math.floor(Date.now() / 1000);
+    const extended = await callTool("extend", { token });
+    const renewed = await expiresAt();
+    expect(renewed).toBeGreaterThanOrEqual(before + 86400);
+    expect(renewed).toBeLessThanOrEqual(Math.floor(Date.now() / 1000) + 86400);
+    expect(extended).toContain(`Extended ${token}: it now lasts 1d from now.`);
+    expect(extended).toContain(`It expires ${new Date(renewed * 1000).toISOString()}`);
+    expect(extended).toContain(`${OWNER_BASE}/v/${token}`);
+    expect(shareToken(extended)).toBe(token);
+
+    const unchanged = await callTool("extend", { token, share_ttl: "1h" });
+    expect(unchanged).toContain(`${token} already lasts longer than 1h, so it was left unchanged.`);
+    expect(unchanged).toContain(`It expires ${new Date(renewed * 1000).toISOString()}`);
+    expect(await expiresAt()).toBe(renewed);
+
+    await callTool("revoke", { token });
+    expect(await callToolExpectingError("extend", { token })).toContain(
+      `No live share token ${token}.`,
+    );
+    expect(await callToolExpectingError("extend", { token: "s_nope" })).toContain("s_nope");
   });
 
   // Both `share` and `push` use `share_ttl`, matching the CLI's `--share-ttl`
