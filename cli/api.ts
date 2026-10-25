@@ -92,6 +92,10 @@ export interface ShareResult {
   url: string;
 }
 
+export interface ExtendResult extends ShareResult {
+  renewed: boolean;
+}
+
 /**
  * Read the deployment URL and select one authentication method. A complete
  * service credential pair is an explicit machine credential; otherwise the

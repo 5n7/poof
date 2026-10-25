@@ -15,6 +15,7 @@ import {
   p,
   type ApiTiming,
   type DocumentRow,
+  type ExtendResult,
   type RollbackResult,
   type ShareResult,
   type TitleSnapshot,
@@ -161,6 +162,43 @@ const cat = defineCommand({
           if (err.code !== "EPIPE") throw err;
         },
       );
+    }),
+});
+
+const extend = defineCommand({
+  meta: {
+    name: "extend",
+    description:
+      "Make a live share link last at least --share-ttl from now; prints its /v/{token} URL and expiry.",
+  },
+  args: {
+    "share-token": {
+      type: "positional",
+      description: "Share token to extend.",
+      required: true,
+    },
+    "share-ttl": {
+      type: "enum",
+      options: TTL_OPTIONS,
+      description: "How long the link lasts from now, at least (default: 1d).",
+      valueHint: "dur",
+    },
+  },
+  run: ({ args }) =>
+    attempt(async () => {
+      const cfg = loadConfig();
+      const body = args["share-ttl"] ? { ttl: args["share-ttl"] } : {};
+      const result = await api<ExtendResult>(
+        cfg,
+        "POST",
+        p`/api/shares/${args["share-token"]}/extend`,
+        body,
+      );
+      const unchanged = result.renewed
+        ? ""
+        : ` (unchanged: already lasts longer than ${args["share-ttl"] ?? "1d"})`;
+      process.stdout.write(`${cfg.url}/v/${result.token}\n`);
+      process.stdout.write(`expires ${formatTime(result.expires_at)}${unchanged}\n`);
     }),
 });
 
@@ -665,8 +703,9 @@ const main = defineCommand({
   subCommands: {
     auth,
     cat,
-    ls,
+    extend,
     files,
+    ls,
     push,
     rename,
     revoke,
