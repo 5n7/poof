@@ -150,7 +150,7 @@ const LIBRARY_CSS = `
 
 const VIEWER_CSS = `
 .viewer { display: flex; flex-direction: column; gap: 8px; height: 100vh; height: 100dvh; padding: max(10px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left)); }
-.viewer > * { width: 100%; max-width: 76rem; margin: 0 auto; }
+.viewer > * { width: 100%; max-width: 96rem; margin: 0 auto; }
 .bar { flex: none; display: flex; align-items: center; gap: 2px; padding: 5px; border: 1px solid var(--line); border-radius: 999px; background: color-mix(in srgb, var(--surface) 90%, transparent); box-shadow: var(--shadow-soft); }
 .bar .title, .title-btn { min-width: 0; padding: 7px 10px; font: 650 14.5px/1.2 var(--font-body); }
 .bar .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
